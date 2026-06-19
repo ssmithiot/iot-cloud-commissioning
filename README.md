@@ -11,7 +11,9 @@ IOT Cloud Commissioning is the foundation for an enterprise commissioning platfo
 - `scripts/`: installation helpers.
 - `docs/`: architecture notes.
 
-MVP-001 supports outbound edge heartbeats only. BACnet discovery, point trending, remote writes, user login, and a full web UI are intentionally outside this first scope.
+MVP-001 supports outbound edge heartbeats. MVP-002 adds a cloud-to-edge job framework where the cloud queues work, the edge agent polls outbound for one job at a time, executes a handler, stores local job history in SQLite, and posts the result back to the cloud.
+
+The only MVP-002 job type is `echo`. BACnet discovery, BACnet writes, point trending, user login, and a full web UI are intentionally outside this scope.
 
 ## Local Setup
 
@@ -86,11 +88,17 @@ Run continuously:
 iot-cx-agent --config edge-agent/agent.local.yaml
 ```
 
+The agent sends a heartbeat first, then polls for one queued job each loop.
+
 ## API Endpoints
 
 - `GET /health`
 - `POST /api/edge/heartbeat`
 - `GET /api/edge/gateways`
+- `POST /api/edge/jobs`
+- `GET /api/edge/{gateway_id}/jobs/next`
+- `POST /api/edge/jobs/{job_id}/result`
+- `GET /api/edge/jobs`
 
 Example heartbeat:
 
@@ -116,6 +124,56 @@ List gateways:
 ```bash
 curl http://localhost:8000/api/edge/gateways
 ```
+
+Create an echo job:
+
+```bash
+curl -X POST http://localhost:8000/api/edge/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gateway_id": "GW001",
+    "job_type": "echo",
+    "request": {
+      "message": "hello edge"
+    }
+  }'
+```
+
+List recent jobs:
+
+```bash
+curl http://localhost:8000/api/edge/jobs
+```
+
+## Verify Echo Job Flow
+
+Start the cloud API:
+
+```bash
+docker compose up --build
+```
+
+In another terminal, run the edge agent continuously:
+
+```bash
+iot-cx-agent --config edge-agent/agent.local.yaml
+```
+
+Create the echo job:
+
+```bash
+curl -X POST http://localhost:8000/api/edge/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"gateway_id":"GW001","job_type":"echo","request":{"message":"hello edge"}}'
+```
+
+After the next agent polling loop, confirm the cloud has the completed result:
+
+```bash
+curl http://localhost:8000/api/edge/jobs
+```
+
+The completed `echo` job includes `result_json` with the original request, `gateway_id`, and `agent_version`.
 
 ## Run Tests
 
@@ -144,4 +202,3 @@ sudo scripts/install-edge-agent.sh
 ```
 
 The installer creates required directories, avoids overwriting existing config, and installs the systemd unit when possible. It does not include secrets.
-

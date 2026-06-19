@@ -1,14 +1,15 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import Base, engine, get_db
-from app.models import EdgeHeartbeat, EdgeNode, Site, utc_now
-from app.schemas import GatewayOut, HeartbeatAccepted, HeartbeatIn
+from app.models import EdgeHeartbeat, EdgeJob, EdgeNode, Site, utc_now
+from app.schemas import EdgeJobClaimOut, GatewayOut, HeartbeatAccepted, HeartbeatIn, JobCreateIn, JobOut, JobResultIn
 
 
 @asynccontextmanager
@@ -83,3 +84,61 @@ def receive_heartbeat(payload: HeartbeatIn, db: Session = Depends(get_db)) -> He
 def list_gateways(db: Session = Depends(get_db)) -> list[EdgeNode]:
     return list(db.scalars(select(EdgeNode).order_by(EdgeNode.gateway_id)).all())
 
+
+@app.post("/api/edge/jobs", response_model=JobOut)
+def create_job(payload: JobCreateIn, db: Session = Depends(get_db)) -> EdgeJob:
+    job = EdgeJob(
+        job_id=f"job-{uuid4().hex}",
+        gateway_id=payload.gateway_id,
+        job_type=payload.job_type,
+        status="queued",
+        request_json=payload.request,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@app.get("/api/edge/{gateway_id}/jobs/next", response_model=EdgeJobClaimOut | None)
+def claim_next_job(gateway_id: str, db: Session = Depends(get_db)) -> EdgeJobClaimOut | None:
+    job = db.scalar(
+        select(EdgeJob)
+        .where(EdgeJob.gateway_id == gateway_id, EdgeJob.status == "queued")
+        .order_by(EdgeJob.created_at, EdgeJob.id)
+        .limit(1)
+    )
+    if job is None:
+        return None
+
+    job.status = "claimed"
+    job.claimed_at = utc_now()
+    db.commit()
+    db.refresh(job)
+    return EdgeJobClaimOut(
+        job_id=job.job_id,
+        gateway_id=job.gateway_id,
+        job_type=job.job_type,
+        request=job.request_json,
+    )
+
+
+@app.post("/api/edge/jobs/{job_id}/result", response_model=JobOut)
+def receive_job_result(job_id: str, payload: JobResultIn, db: Session = Depends(get_db)) -> EdgeJob:
+    job = db.scalar(select(EdgeJob).where(EdgeJob.job_id == job_id))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job.status = payload.status
+    job.result_json = payload.result
+    job.error_message = payload.error_message
+    job.completed_at = utc_now()
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@app.get("/api/edge/jobs", response_model=list[JobOut])
+def list_jobs(db: Session = Depends(get_db), limit: int = 50) -> list[EdgeJob]:
+    limit = max(1, min(limit, 200))
+    return list(db.scalars(select(EdgeJob).order_by(EdgeJob.created_at.desc(), EdgeJob.id.desc()).limit(limit)).all())

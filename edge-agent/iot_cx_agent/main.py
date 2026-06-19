@@ -8,6 +8,7 @@ import requests
 from iot_cx_agent.config import DEFAULT_CONFIG_PATH, AgentConfig, load_config
 from iot_cx_agent.db import initialize_database, record_heartbeat_attempt
 from iot_cx_agent.heartbeat import send_heartbeat
+from iot_cx_agent.jobs import process_next_job
 from iot_cx_agent.status import collect_status, utc_timestamp
 
 
@@ -25,25 +26,28 @@ def run_once(config: AgentConfig) -> bool:
 
     payload = collect_status(config, sqlite_db_ok=sqlite_db_ok)
     attempted_at = utc_timestamp()
+    heartbeat_success = False
     try:
         response = send_heartbeat(config, payload)
-        success = 200 <= response.status_code < 300
+        heartbeat_success = 200 <= response.status_code < 300
         safe_record_heartbeat_attempt(
             config.sqlite_path,
             attempted_at=attempted_at,
-            success=success,
+            success=heartbeat_success,
             status_code=response.status_code,
             response_body=response.text[:1000],
         )
-        if success:
+        if heartbeat_success:
             logger.info("Heartbeat accepted for gateway %s", config.gateway_id)
         else:
             logger.warning("Heartbeat returned HTTP %s", response.status_code)
-        return success
     except requests.RequestException as exc:
         safe_record_heartbeat_attempt(config.sqlite_path, attempted_at=attempted_at, success=False, error=str(exc))
         logger.warning("Heartbeat upload failed: %s", exc)
-        return False
+
+    if sqlite_db_ok:
+        process_next_job(config)
+    return heartbeat_success
 
 
 def safe_record_heartbeat_attempt(config_path: Path, **kwargs: object) -> None:
@@ -73,4 +77,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

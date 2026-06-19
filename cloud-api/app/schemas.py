@@ -38,3 +38,36 @@ class GatewayOut(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+class JobCreateIn(BaseModel):
+    gateway_id: str = Field(min_length=1, max_length=120)
+    job_type: str = Field(min_length=1, max_length=80)
+    request: dict[str, object] = Field(default_factory=dict)
+
+
+class JobResultIn(BaseModel):
+    status: str = Field(pattern="^(completed|failed)$")
+    result: dict[str, object] | None = None
+    error_message: str | None = Field(default=None, max_length=1000)
+
+
+class JobOut(BaseModel):
+    job_id: str
+    gateway_id: str
+    job_type: str
+    status: str
+    request_json: dict[str, object]
+    result_json: dict[str, object] | None
+    error_message: str | None
+    created_at: datetime
+    claimed_at: datetime | None
+    completed_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EdgeJobClaimOut(BaseModel):
+    job_id: str
+    gateway_id: str
+    job_type: str
+    request: dict[str, object]

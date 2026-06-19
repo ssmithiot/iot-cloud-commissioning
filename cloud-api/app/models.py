@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -75,3 +75,19 @@ class EdgeHeartbeat(Base):
 
     edge_node: Mapped[EdgeNode] = relationship(back_populates="heartbeats")
 
+
+class EdgeJob(Base):
+    __tablename__ = "edge_jobs"
+    __table_args__ = (UniqueConstraint("job_id", name="uq_edge_jobs_job_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    gateway_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    job_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="queued", index=True)
+    request_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    result_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
