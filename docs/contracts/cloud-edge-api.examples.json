@@ -1,0 +1,56 @@
+{
+  "heartbeat": {
+    "request": {
+      "gateway_id": "GW001",
+      "site_id": "demo-site",
+      "hostname": "edge-demo",
+      "lan_ip": "192.168.1.10",
+      "bacnet_port": 47814,
+      "agent_version": "0.1.0",
+      "ui_version": "0.1.0",
+      "sqlite_db_ok": true,
+      "queued_upload_count": 0,
+      "timestamp_utc": "2026-06-19T00:00:00Z"
+    },
+    "response": {
+      "gateway_id": "GW001",
+      "status": "online",
+      "latest_heartbeat_at": "2026-06-19T00:00:00Z"
+    }
+  },
+  "create_echo_job": {
+    "request": {
+      "gateway_id": "GW001",
+      "job_type": "echo",
+      "request": {
+        "message": "hello edge"
+      }
+    }
+  },
+  "create_bacnet_discover_job": {
+    "request": {
+      "gateway_id": "GW001",
+      "job_type": "bacnet_discover",
+      "request": {
+        "port": 47814,
+        "timeout_sec": 10
+      }
+    }
+  },
+  "job_result_completed": {
+    "request": {
+      "status": "completed",
+      "result": {
+        "echo": true
+      },
+      "error_message": null
+    }
+  },
+  "job_result_failed": {
+    "request": {
+      "status": "failed",
+      "result": null,
+      "error_message": "BACnet discovery command not found: bacwi"
+    }
+  }
+}

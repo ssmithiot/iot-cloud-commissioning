@@ -15,6 +15,8 @@ MVP-001 supports outbound edge heartbeats. MVP-002 adds a cloud-to-edge job fram
 
 MVP-003 adds a minimal `bacnet_discover` job. Discovery runs locally on the edge gateway through a configured `bacwi` command, and the structured result is posted back through the existing cloud job result endpoint. BACnet UDP stays local to the edge gateway and is not exposed to the cloud. BACnet writes, point trending, user login, and a full web UI are intentionally outside this scope.
 
+MVP-004 prepares the repository for Supabase without connecting to a live project. Supabase Postgres is the target cloud database, while FastAPI remains the current thin API adapter. Supabase Auth, Row Level Security, Storage, Realtime, and selected Edge Functions are planned platform services for later MVPs. No live Supabase credentials, anon keys, service-role keys, or real database URLs are committed.
+
 ## Local Setup
 
 Use Python 3.10 or newer. For local development, create one virtual environment per service or reuse a single development environment.
@@ -44,6 +46,26 @@ docker compose up --build
 ```
 
 The API will be available at `http://localhost:8000`.
+
+## Supabase Readiness
+
+The `supabase/` folder contains reviewable SQL migrations for the future Supabase Postgres schema:
+
+- `supabase/migrations/0001_core_schema.sql`
+- `supabase/migrations/0002_edge_jobs.sql`
+- `supabase/migrations/0003_security_foundation.sql`
+- `supabase/migrations/0004_future_features.sql`
+
+These files are not applied automatically and do not require the Supabase CLI to run tests. They prepare the schema direction for current cloud records, future portal users and permissions, audit events, report files, trend upload placeholders, point samples, and BACnet device summaries.
+
+FastAPI remains the active cloud API adapter. Edge gateways continue to call `cloud_url` only and must not connect directly to Supabase Postgres. Selected endpoints may later move to Supabase Edge Functions without changing the edge agent's outbound API contract.
+
+Related docs:
+
+- `docs/architecture.md`
+- `docs/api-contract.md`
+- `docs/security-model.md`
+- `docs/supabase-plan.md`
 
 ## Run Cloud API Locally
 
