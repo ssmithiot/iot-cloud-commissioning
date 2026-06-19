@@ -3,6 +3,7 @@ from typing import Any
 
 import requests
 
+from iot_cx_agent.bacnet import run_bacnet_discovery
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.db import record_claimed_job, record_job_result
 from iot_cx_agent.status import utc_timestamp
@@ -49,6 +50,12 @@ def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str
             },
             None,
         )
+
+    if job_type == "bacnet_discover":
+        result, error_message = run_bacnet_discovery(config, request if isinstance(request, dict) else {})
+        if error_message is not None:
+            return "failed", None, error_message
+        return "completed", result, None
 
     return "failed", None, f"Unknown job_type: {job_type}"
 

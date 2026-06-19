@@ -5,6 +5,9 @@ bacnet_default_port: 47814
 heartbeat_interval_sec: 30
 agent_version: 0.1.0
 ui_version: 0.1.0
+bacnet:
+  default_port: 47814
+  bacwi_path: bacwi
+  timeout_sec: 10
 # For local development, override the default /var/lib/iot-cx-agent/edge.db:
 # sqlite_path: ./edge.db
-

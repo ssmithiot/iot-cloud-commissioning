@@ -13,7 +13,7 @@ IOT Cloud Commissioning is the foundation for an enterprise commissioning platfo
 
 MVP-001 supports outbound edge heartbeats. MVP-002 adds a cloud-to-edge job framework where the cloud queues work, the edge agent polls outbound for one job at a time, executes a handler, stores local job history in SQLite, and posts the result back to the cloud.
 
-The only MVP-002 job type is `echo`. BACnet discovery, BACnet writes, point trending, user login, and a full web UI are intentionally outside this scope.
+MVP-003 adds a minimal `bacnet_discover` job. Discovery runs locally on the edge gateway through a configured `bacwi` command, and the structured result is posted back through the existing cloud job result endpoint. BACnet UDP stays local to the edge gateway and is not exposed to the cloud. BACnet writes, point trending, user login, and a full web UI are intentionally outside this scope.
 
 ## Local Setup
 
@@ -74,6 +74,10 @@ Edit `edge-agent/agent.local.yaml` and uncomment or add:
 
 ```yaml
 sqlite_path: ./edge.db
+bacnet:
+  default_port: 47814
+  bacwi_path: bacwi
+  timeout_sec: 10
 ```
 
 Send one heartbeat:
@@ -139,6 +143,23 @@ curl -X POST http://localhost:8000/api/edge/jobs \
   }'
 ```
 
+Create a BACnet discovery job:
+
+```bash
+curl -X POST http://localhost:8000/api/edge/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gateway_id": "GW001",
+    "job_type": "bacnet_discover",
+    "request": {
+      "port": 47814,
+      "timeout_sec": 10
+    }
+  }'
+```
+
+For real BACnet discovery, install `bacwi` on the gateway or set `bacnet.bacwi_path` to the full command path in `agent.yaml`.
+
 List recent jobs:
 
 ```bash
@@ -174,6 +195,24 @@ curl http://localhost:8000/api/edge/jobs
 ```
 
 The completed `echo` job includes `result_json` with the original request, `gateway_id`, and `agent_version`.
+
+## Verify BACnet Discovery Job Flow
+
+Start the cloud API and run the edge agent as above. Then create a discovery job:
+
+```bash
+curl -X POST http://localhost:8000/api/edge/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"gateway_id":"GW001","job_type":"bacnet_discover","request":{"port":47814,"timeout_sec":10}}'
+```
+
+After the next agent polling loop, list jobs:
+
+```bash
+curl http://localhost:8000/api/edge/jobs
+```
+
+If `bacwi` is installed and reachable from the edge agent, the completed job includes discovered devices in `result_json`. If `bacwi` is missing, exits with an error, or times out, the job is marked `failed` with a clear `error_message`.
 
 ## Run Tests
 
