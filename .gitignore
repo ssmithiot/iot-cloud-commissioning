@@ -1,6 +1,7 @@
 .env
 .venv/
 .codex-deps/
+edge-agent/agent.local.yaml
 venv/
 __pycache__/
 *.py[cod]
@@ -16,4 +17,3 @@ htmlcov/
 *.sqlite
 *.sqlite3
 .DS_Store
-
