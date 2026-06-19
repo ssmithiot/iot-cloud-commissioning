@@ -1,0 +1,38 @@
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+
+DEFAULT_CONFIG_PATH = Path("/etc/iot-cx-agent/agent.yaml")
+DEFAULT_SQLITE_PATH = Path("/var/lib/iot-cx-agent/edge.db")
+
+
+@dataclass(frozen=True)
+class AgentConfig:
+    gateway_id: str
+    site_id: str
+    cloud_url: str
+    bacnet_default_port: int = 47814
+    heartbeat_interval_sec: int = 30
+    agent_version: str = "0.1.0"
+    ui_version: str = "0.1.0"
+    sqlite_path: Path = DEFAULT_SQLITE_PATH
+
+
+def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
+    with path.open("r", encoding="utf-8") as config_file:
+        raw = yaml.safe_load(config_file) or {}
+
+    sqlite_path = Path(raw.get("sqlite_path", DEFAULT_SQLITE_PATH))
+    return AgentConfig(
+        gateway_id=str(raw["gateway_id"]),
+        site_id=str(raw["site_id"]),
+        cloud_url=str(raw["cloud_url"]).rstrip("/"),
+        bacnet_default_port=int(raw.get("bacnet_default_port", 47814)),
+        heartbeat_interval_sec=int(raw.get("heartbeat_interval_sec", 30)),
+        agent_version=str(raw.get("agent_version", "0.1.0")),
+        ui_version=str(raw.get("ui_version", "0.1.0")),
+        sqlite_path=sqlite_path,
+    )
+

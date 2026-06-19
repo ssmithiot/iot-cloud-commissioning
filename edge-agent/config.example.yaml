@@ -1,0 +1,10 @@
+gateway_id: GW001
+site_id: demo-site
+cloud_url: http://localhost:8000
+bacnet_default_port: 47814
+heartbeat_interval_sec: 30
+agent_version: 0.1.0
+ui_version: 0.1.0
+# For local development, override the default /var/lib/iot-cx-agent/edge.db:
+# sqlite_path: ./edge.db
+

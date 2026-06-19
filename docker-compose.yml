@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: iot_cloud_commissioning
+      POSTGRES_USER: iot_cloud
+      POSTGRES_PASSWORD: iot_cloud_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iot_cloud -d iot_cloud_commissioning"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  cloud-api:
+    build:
+      context: ./cloud-api
+    env_file:
+      - .env.example
+    environment:
+      CLOUD_DATABASE_URL: postgresql+psycopg://iot_cloud:iot_cloud_dev@postgres:5432/iot_cloud_commissioning
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+
