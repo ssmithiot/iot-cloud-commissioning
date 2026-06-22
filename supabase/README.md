@@ -18,5 +18,6 @@ Migration order:
 2. `0002_edge_jobs.sql`
 3. `0003_security_foundation.sql`
 4. `0004_future_features.sql`
+5. `0005_gateway_credentials.sql`
 
 Review these files before applying them to a real Supabase project.
