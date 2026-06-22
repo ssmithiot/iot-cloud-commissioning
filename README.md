@@ -15,7 +15,7 @@ MVP-001 supports outbound edge heartbeats. MVP-002 adds a cloud-to-edge job fram
 
 MVP-003 adds a minimal `bacnet_discover` job. Discovery runs locally on the edge gateway through a configured `bacwi` command, and the structured result is posted back through the existing cloud job result endpoint. BACnet UDP stays local to the edge gateway and is not exposed to the cloud. BACnet writes, point trending, user login, and a full web UI are intentionally outside this scope.
 
-MVP-004 prepares the repository for Supabase without connecting to a live project. Supabase Postgres is the target cloud database, while FastAPI remains the current thin API adapter. Supabase Auth, Row Level Security, Storage, Realtime, and selected Edge Functions are planned platform services for later MVPs. No live Supabase credentials, anon keys, service-role keys, or real database URLs are committed.
+MVP-005 connects the FastAPI cloud adapter to Supabase Postgres through `DATABASE_URL`. Supabase Postgres is the target cloud database, while FastAPI remains the current thin API adapter. Supabase Auth, Row Level Security, Storage, Realtime, and selected Edge Functions are planned platform services for later MVPs. No live Supabase credentials, anon keys, service-role keys, or real database URLs are committed.
 
 ## Local Setup
 
@@ -47,7 +47,7 @@ docker compose up --build
 
 The API will be available at `http://localhost:8000`.
 
-## Supabase Readiness
+## Supabase Setup
 
 The `supabase/` folder contains reviewable SQL migrations for the future Supabase Postgres schema:
 
@@ -56,9 +56,20 @@ The `supabase/` folder contains reviewable SQL migrations for the future Supabas
 - `supabase/migrations/0003_security_foundation.sql`
 - `supabase/migrations/0004_future_features.sql`
 
-These files are not applied automatically and do not require the Supabase CLI to run tests. They prepare the schema direction for current cloud records, future portal users and permissions, audit events, report files, trend upload placeholders, point samples, and BACnet device summaries.
+These files are applied with the Supabase CLI when developing against a Supabase project. They prepare the schema direction for current cloud records, future portal users and permissions, audit events, report files, trend upload placeholders, point samples, and BACnet device summaries.
 
 FastAPI remains the active cloud API adapter. Edge gateways continue to call `cloud_url` only and must not connect directly to Supabase Postgres. Selected endpoints may later move to Supabase Edge Functions without changing the edge agent's outbound API contract.
+
+For MVP-005 development:
+
+1. Create a Supabase project.
+2. Copy the Session pooler connection string on port `5432`.
+3. Copy `.env.example` to `.env` and set `DATABASE_URL` to the Session pooler URL.
+4. Link the project with `npx supabase link --project-ref <project-ref>`.
+5. Preview migrations with `npx supabase db push --dry-run`.
+6. Apply migrations with `npx supabase db push`.
+7. Run tests with `pytest` from `cloud-api/` and `edge-agent/`.
+8. Start FastAPI with `uvicorn app.main:app --reload` from `cloud-api/`.
 
 Related docs:
 
@@ -76,11 +87,10 @@ cd cloud-api
 uvicorn app.main:app --reload
 ```
 
-For PostgreSQL, set `CLOUD_DATABASE_URL` from `.env.example`, then run:
+For Supabase Postgres, set `DATABASE_URL` from `.env.example`, push the Supabase migrations, then run:
 
 ```bash
 cd cloud-api
-alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
@@ -119,6 +129,7 @@ The agent sends a heartbeat first, then polls for one queued job each loop.
 ## API Endpoints
 
 - `GET /health`
+- `GET /health/db`
 - `POST /api/edge/heartbeat`
 - `GET /api/edge/gateways`
 - `POST /api/edge/jobs`
