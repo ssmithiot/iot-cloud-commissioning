@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 import yaml
@@ -20,6 +21,7 @@ class AgentConfig:
     agent_version: str = "0.1.0"
     ui_version: str = "0.1.0"
     sqlite_path: Path = DEFAULT_SQLITE_PATH
+    gateway_api_token: str | None = None
 
 
 def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
@@ -39,4 +41,5 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         agent_version=str(raw.get("agent_version", "0.1.0")),
         ui_version=str(raw.get("ui_version", "0.1.0")),
         sqlite_path=sqlite_path,
+        gateway_api_token=os.getenv("GATEWAY_API_TOKEN") or raw.get("gateway_api_token"),
     )

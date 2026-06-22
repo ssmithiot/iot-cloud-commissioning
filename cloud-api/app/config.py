@@ -11,6 +11,7 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("AUTO_CREATE_TABLES", "CLOUD_AUTO_CREATE_TABLES"),
     )
+    gateway_auth_pepper: str = Field(min_length=1, validation_alias="GATEWAY_AUTH_PEPPER")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),

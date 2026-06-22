@@ -17,6 +17,8 @@ MVP-003 adds a minimal `bacnet_discover` job. Discovery runs locally on the edge
 
 MVP-005 connects the FastAPI cloud adapter to Supabase Postgres through `DATABASE_URL`. Supabase Postgres is the target cloud database, while FastAPI remains the current thin API adapter. Supabase Auth, Row Level Security, Storage, Realtime, and selected Edge Functions are planned platform services for later MVPs. No live Supabase credentials, anon keys, service-role keys, or real database URLs are committed.
 
+MVP-006 adds gateway API credentials for edge-facing FastAPI endpoints. Edge gateways still receive only a gateway API token and continue to call HTTPS API endpoints; they never receive Supabase, Postgres, or privileged database credentials.
+
 ## Local Setup
 
 Use Python 3.10 or newer. For local development, create one virtual environment per service or reuse a single development environment.
@@ -70,6 +72,39 @@ For MVP-005 development:
 6. Apply migrations with `npx supabase db push`.
 7. Run tests with `pytest` from `cloud-api/` and `edge-agent/`.
 8. Start FastAPI with `uvicorn app.main:app --reload` from `cloud-api/`.
+
+## Gateway Authentication
+
+Gateway API tokens use this format:
+
+```text
+iotcc_gw_<token_prefix>_<secret>
+```
+
+Edge requests authenticate with:
+
+```text
+Authorization: Bearer iotcc_gw_<token_prefix>_<secret>
+```
+
+FastAPI stores only `token_prefix` and an HMAC-SHA256 `token_hash` in `public.gateway_credentials`. The HMAC key is the server-side `GATEWAY_AUTH_PEPPER` environment variable. Do not configure this pepper on edge gateways.
+
+Create a gateway credential after the gateway exists in `public.edge_nodes`:
+
+```bash
+cd cloud-api
+python scripts/create_gateway_credential.py GW001 --label "GW001 edge agent"
+```
+
+The script prints the full token once. Store it securely, then configure the edge agent with `GATEWAY_API_TOKEN` in the service environment. A local YAML `gateway_api_token` value is supported for development, but environment configuration is preferred.
+
+Authenticated endpoints:
+
+- `POST /api/edge/heartbeat`
+- `GET /api/edge/{gateway_id}/jobs/next`
+- `POST /api/edge/jobs/{job_id}/result`
+
+Credential revocation is handled by setting `public.gateway_credentials.revoked_at`. Expiration is handled by setting `expires_at`; expired or revoked credentials receive HTTP 401.
 
 Related docs:
 

@@ -6,6 +6,7 @@ import requests
 from iot_cx_agent.bacnet import run_bacnet_discovery
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.db import record_claimed_job, record_job_result
+from iot_cx_agent.heartbeat import auth_headers
 from iot_cx_agent.status import utc_timestamp
 
 
@@ -15,6 +16,7 @@ logger = logging.getLogger("iot-cx-agent")
 def fetch_next_job(config: AgentConfig) -> dict[str, Any] | None:
     response = requests.get(
         f"{config.cloud_url}/api/edge/{config.gateway_id}/jobs/next",
+        headers=auth_headers(config),
         timeout=10,
     )
     response.raise_for_status()
@@ -30,6 +32,7 @@ def post_job_result(
 ) -> requests.Response:
     return requests.post(
         f"{config.cloud_url}/api/edge/jobs/{job_id}/result",
+        headers=auth_headers(config),
         json={"status": status, "result": result, "error_message": error_message},
         timeout=10,
     )

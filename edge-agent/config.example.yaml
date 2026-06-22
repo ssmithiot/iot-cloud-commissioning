@@ -1,6 +1,8 @@
 gateway_id: GW001
 site_id: demo-site
 cloud_url: http://localhost:8000
+# Prefer setting GATEWAY_API_TOKEN in the environment instead of this file.
+# gateway_api_token: iotcc_gw_<token_prefix>_<secret>
 bacnet_default_port: 47814
 heartbeat_interval_sec: 30
 agent_version: 0.1.0
