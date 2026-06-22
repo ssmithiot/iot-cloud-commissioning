@@ -1,8 +1,13 @@
+import os
 from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
+os.environ["DATABASE_URL"] = "sqlite:///./test-cloud-api.db"
+os.environ["AUTO_CREATE_TABLES"] = "true"
+
+from app.config import Settings
 from app.database import Base, engine
 from app.main import app
 
@@ -21,6 +26,21 @@ client = TestClient(app)
 
 def test_health() -> None:
     response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_settings_load_database_url_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    database_url = "postgresql+psycopg://postgres.project-ref:password@example.pooler.supabase.com:5432/postgres?sslmode=require"
+
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    assert Settings().database_url == database_url
+
+
+def test_database_health() -> None:
+    response = client.get("/health/db")
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}

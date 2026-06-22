@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -24,6 +24,12 @@ app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lif
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/health/db")
+def database_health(db: Session = Depends(get_db)) -> dict[str, str]:
+    db.execute(text("select 1"))
     return {"status": "ok"}
 
 

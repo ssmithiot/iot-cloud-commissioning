@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import iot_cx_agent.db as edge_db
 from iot_cx_agent.db import (
     initialize_database,
     local_job,
@@ -18,6 +19,11 @@ def test_initialize_database_creates_tables(tmp_path: Path) -> None:
 
     assert db_path.exists()
     assert queued_upload_count(db_path) == 0
+
+
+def test_edge_database_uses_sqlite_only() -> None:
+    assert edge_db.sqlite3.__name__ == "sqlite3"
+    assert not hasattr(edge_db, "create_engine")
 
 
 def test_job_history_round_trip(tmp_path: Path) -> None:
