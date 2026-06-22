@@ -1,10 +1,21 @@
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import ARRAY, JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 from app.database import Base
+
+
+class StringList(TypeDecorator):
+    impl = JSON
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(ARRAY(String))
+        return dialect.type_descriptor(JSON)
 
 
 def utc_now() -> datetime:
@@ -100,7 +111,7 @@ class GatewayCredential(Base):
         UniqueConstraint("token_prefix", name="uq_gateway_credentials_token_prefix"),
     )
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     gateway_id: Mapped[str] = mapped_column(
         String(120),
         ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"),
@@ -109,10 +120,9 @@ class GatewayCredential(Base):
     )
     token_prefix: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    scopes: Mapped[list[str]] = mapped_column(StringList(), nullable=False, default=list)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)

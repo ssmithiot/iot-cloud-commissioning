@@ -14,6 +14,7 @@ from app.config import Settings
 from app.database import Base, engine
 from app.main import app
 from app.models import EdgeNode, GatewayCredential, Site
+from scripts.create_gateway_credential import DEFAULT_SCOPES, create_gateway_credential
 
 
 @pytest.fixture(autouse=True)
@@ -80,7 +81,7 @@ def create_gateway_token(
                 gateway_id=gateway_id,
                 token_prefix=token_prefix,
                 token_hash=hash_gateway_token(raw_token),
-                scopes=["edge"],
+                scopes=DEFAULT_SCOPES,
                 revoked_at=revoked_at,
                 expires_at=expires_at,
             )
@@ -168,6 +169,44 @@ def test_expired_credential_returns_401() -> None:
     response = client.post("/api/edge/heartbeat", headers=auth_headers(raw_token), json=heartbeat_payload("GW001"))
 
     assert response.status_code == 401
+
+
+def test_create_gateway_credential_helper_writes_name_not_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.database import SessionLocal
+
+    monkeypatch.setattr(
+        "scripts.create_gateway_credential.generate_token",
+        lambda: ("helper01", "iotcc_gw_helper01_test-secret-value"),
+    )
+
+    with SessionLocal() as db:
+        site = Site(site_id="demo-site", name="demo-site")
+        db.add(site)
+        db.flush()
+        db.add(
+            EdgeNode(
+                gateway_id="GW001",
+                site_id="demo-site",
+                hostname="edge-demo",
+                bacnet_port=47814,
+                agent_version="0.1.0",
+                ui_version="0.1.0",
+                sqlite_db_ok=True,
+                queued_upload_count=0,
+                latest_status="online",
+            )
+        )
+        db.commit()
+
+        raw_token = create_gateway_credential(db, "GW001", name="Primary edge credential")
+        credential = db.scalar(select(GatewayCredential).where(GatewayCredential.token_prefix == "helper01"))
+
+    assert raw_token == "iotcc_gw_helper01_test-secret-value"
+    assert credential is not None
+    assert credential.name == "Primary edge credential"
+    assert credential.scopes == DEFAULT_SCOPES
+    assert credential.token_hash == hash_gateway_token(raw_token)
+    assert not hasattr(credential, "label")
 
 
 def test_create_claim_and_complete_job() -> None:
