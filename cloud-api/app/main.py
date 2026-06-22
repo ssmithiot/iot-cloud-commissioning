@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.auth import GatewayAuthContext, require_gateway_auth
 from app.config import settings
 from app.database import Base, engine, get_db
 from app.models import EdgeHeartbeat, EdgeJob, EdgeNode, Site, utc_now
@@ -34,7 +35,14 @@ def database_health(db: Session = Depends(get_db)) -> dict[str, str]:
 
 
 @app.post("/api/edge/heartbeat", response_model=HeartbeatAccepted)
-def receive_heartbeat(payload: HeartbeatIn, db: Session = Depends(get_db)) -> HeartbeatAccepted:
+def receive_heartbeat(
+    payload: HeartbeatIn,
+    auth: GatewayAuthContext = Depends(require_gateway_auth),
+    db: Session = Depends(get_db),
+) -> HeartbeatAccepted:
+    if auth.gateway_id != payload.gateway_id:
+        raise HTTPException(status_code=403, detail="Gateway credential does not match heartbeat gateway_id")
+
     site = db.scalar(select(Site).where(Site.site_id == payload.site_id))
     if site is None:
         site = Site(site_id=payload.site_id, name=payload.site_id)
@@ -107,7 +115,14 @@ def create_job(payload: JobCreateIn, db: Session = Depends(get_db)) -> EdgeJob:
 
 
 @app.get("/api/edge/{gateway_id}/jobs/next", response_model=EdgeJobClaimOut | None)
-def claim_next_job(gateway_id: str, db: Session = Depends(get_db)) -> EdgeJobClaimOut | None:
+def claim_next_job(
+    gateway_id: str,
+    auth: GatewayAuthContext = Depends(require_gateway_auth),
+    db: Session = Depends(get_db),
+) -> EdgeJobClaimOut | None:
+    if auth.gateway_id != gateway_id:
+        raise HTTPException(status_code=403, detail="Gateway credential does not match requested gateway_id")
+
     job = db.scalar(
         select(EdgeJob)
         .where(EdgeJob.gateway_id == gateway_id, EdgeJob.status == "queued")
@@ -130,10 +145,17 @@ def claim_next_job(gateway_id: str, db: Session = Depends(get_db)) -> EdgeJobCla
 
 
 @app.post("/api/edge/jobs/{job_id}/result", response_model=JobOut)
-def receive_job_result(job_id: str, payload: JobResultIn, db: Session = Depends(get_db)) -> EdgeJob:
+def receive_job_result(
+    job_id: str,
+    payload: JobResultIn,
+    auth: GatewayAuthContext = Depends(require_gateway_auth),
+    db: Session = Depends(get_db),
+) -> EdgeJob:
     job = db.scalar(select(EdgeJob).where(EdgeJob.job_id == job_id))
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    if job.gateway_id != auth.gateway_id:
+        raise HTTPException(status_code=403, detail="Gateway credential does not own this job")
 
     job.status = payload.status
     job.result_json = payload.result
