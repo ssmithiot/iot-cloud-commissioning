@@ -1,6 +1,47 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+BACNET_READ_OBJECT_TYPES = {
+    "analog-input",
+    "analog-output",
+    "analog-value",
+    "binary-input",
+    "binary-output",
+    "binary-value",
+    "multi-state-input",
+    "multi-state-output",
+    "multi-state-value",
+}
+
+
+def _read_required_int(request: dict[str, object], field_name: str) -> int:
+    value = request.get(field_name)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer")
+    return value
+
+
+def normalize_bacnet_read_request(request: dict[str, object]) -> dict[str, object]:
+    device_instance = _read_required_int(request, "device_instance")
+    object_instance = _read_required_int(request, "object_instance")
+
+    object_type = request.get("object_type")
+    if not isinstance(object_type, str) or object_type not in BACNET_READ_OBJECT_TYPES:
+        allowed = ", ".join(sorted(BACNET_READ_OBJECT_TYPES))
+        raise ValueError(f"object_type must be one of: {allowed}")
+
+    property_name = request.get("property", "present-value")
+    if property_name != "present-value":
+        raise ValueError("property must be present-value")
+
+    return {
+        "device_instance": device_instance,
+        "object_type": object_type,
+        "object_instance": object_instance,
+        "property": "present-value",
+    }
 
 
 class HeartbeatIn(BaseModel):
@@ -43,6 +84,12 @@ class JobCreateIn(BaseModel):
     gateway_id: str = Field(min_length=1, max_length=120)
     job_type: str = Field(min_length=1, max_length=80)
     request: dict[str, object] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_known_job_payloads(self) -> "JobCreateIn":
+        if self.job_type == "bacnet_read":
+            self.request = normalize_bacnet_read_request(self.request)
+        return self
 
 
 class JobResultIn(BaseModel):
