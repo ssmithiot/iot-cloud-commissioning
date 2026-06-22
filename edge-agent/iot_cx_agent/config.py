@@ -16,6 +16,7 @@ class AgentConfig:
     cloud_url: str
     bacnet_default_port: int = 47814
     bacwi_path: str = "bacwi"
+    bacrp_path: str = "bacrp"
     bacnet_timeout_sec: int = 10
     heartbeat_interval_sec: int = 30
     agent_version: str = "0.1.0"
@@ -36,6 +37,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         cloud_url=str(raw["cloud_url"]).rstrip("/"),
         bacnet_default_port=int(raw.get("bacnet_default_port", bacnet.get("default_port", 47814))),
         bacwi_path=str(bacnet.get("bacwi_path", "bacwi")),
+        bacrp_path=str(bacnet.get("bacrp_path", "bacrp")),
         bacnet_timeout_sec=int(bacnet.get("timeout_sec", 10)),
         heartbeat_interval_sec=int(raw.get("heartbeat_interval_sec", 30)),
         agent_version=str(raw.get("agent_version", "0.1.0")),
