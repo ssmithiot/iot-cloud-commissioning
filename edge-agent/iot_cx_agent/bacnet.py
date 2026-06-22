@@ -1,6 +1,8 @@
 import os
 import re
+import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from iot_cx_agent.config import AgentConfig
@@ -19,6 +21,113 @@ BACNET_READ_OBJECT_TYPES = {
 }
 BACNET_PRESENT_VALUE = "present-value"
 BACNET_PRESENT_VALUE_PROPERTY_ID = 85
+CLOUD_BACNET_PORT = 47814
+BACNET_RUNTIME_BUSY = "bacnet_runtime_busy"
+BACNET_RUNTIME_BUSY_MESSAGE = "Local commissioning UI is using BACnet port 47814. Cloud BACnet job yielded."
+
+
+def bacnet_runtime_lock_held(config: AgentConfig) -> bool:
+    return config.bacnet_lock_path.exists()
+
+
+def acquire_bacnet_runtime_lock(config: AgentConfig) -> int | None:
+    try:
+        config.bacnet_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        return os.open(str(config.bacnet_lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+
+
+def release_bacnet_runtime_lock(config: AgentConfig, lock_fd: int) -> None:
+    os.close(lock_fd)
+    try:
+        config.bacnet_lock_path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _command_status(command_path: str) -> dict[str, object]:
+    candidate = Path(command_path)
+    has_path_part = candidate.is_absolute() or len(candidate.parts) > 1
+    resolved_path = candidate if has_path_part else None
+    if resolved_path is None:
+        found = shutil.which(command_path)
+        if found is None:
+            return {
+                "configured_path": command_path,
+                "resolved_path": None,
+                "exists": False,
+                "executable": False,
+            }
+        resolved_path = Path(found)
+    exists = resolved_path.exists()
+    return {
+        "configured_path": command_path,
+        "resolved_path": str(resolved_path) if exists else None,
+        "exists": exists,
+        "executable": exists and os.access(resolved_path, os.X_OK),
+    }
+
+
+def _deferred_result(base_result: dict[str, object], config: AgentConfig) -> dict[str, object]:
+    result = dict(base_result)
+    result.update(
+        {
+            "status": "deferred",
+            "error": BACNET_RUNTIME_BUSY,
+            "message": BACNET_RUNTIME_BUSY_MESSAGE,
+            "lock_path": str(config.bacnet_lock_path),
+            "lock_held": True,
+        }
+    )
+    return result
+
+
+def run_bacnet_runtime_check(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[str, object], str | None]:
+    try:
+        port = int(request.get("port", config.bacnet_default_port))
+        timeout_sec = int(request.get("timeout_sec", config.bacnet_timeout_sec))
+    except (TypeError, ValueError):
+        port = config.bacnet_default_port
+        timeout_sec = config.bacnet_timeout_sec
+
+    bacwi = _command_status(config.bacwi_path)
+    bacrp = _command_status(config.bacrp_path)
+    result = {
+        "job_type": "bacnet_runtime_check",
+        "bacnet_port": port,
+        "timeout_sec": timeout_sec,
+        "lock_path": str(config.bacnet_lock_path),
+        "lock_held": bacnet_runtime_lock_held(config),
+        "bacwi_configured_path": bacwi["configured_path"],
+        "bacwi_resolved_path": bacwi["resolved_path"],
+        "bacwi_exists": bacwi["exists"],
+        "bacwi_executable": bacwi["executable"],
+        "bacrp_configured_path": bacrp["configured_path"],
+        "bacrp_resolved_path": bacrp["resolved_path"],
+        "bacrp_exists": bacrp["exists"],
+        "bacrp_executable": bacrp["executable"],
+    }
+
+    if port != CLOUD_BACNET_PORT:
+        error = f"Cloud BACnet jobs must use UDP {CLOUD_BACNET_PORT}"
+        result.update({"status": "error", "error": error})
+        return result, error
+    if timeout_sec <= 0:
+        error = "BACnet timeout_sec must be greater than 0"
+        result.update({"status": "error", "error": error})
+        return result, error
+    if not bacwi["executable"]:
+        error = f"BACnet discovery command is not executable: {config.bacwi_path}"
+        result.update({"status": "error", "error": error})
+        return result, error
+    if not bacrp["executable"]:
+        error = f"BACnet read command is not executable: {config.bacrp_path}"
+        result.update({"status": "error", "error": error})
+        return result, error
+
+    result["status"] = "ok"
+    return result, None
 
 
 def parse_bacwi_output(raw_output: str) -> list[dict[str, object]]:
@@ -50,29 +159,37 @@ def parse_bacwi_output(raw_output: str) -> list[dict[str, object]]:
 
 def run_bacnet_discovery(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[str, object] | None, str | None]:
     try:
-        port = int(request.get("port", config.bacnet_default_port))
         timeout_sec = int(request.get("timeout_sec", config.bacnet_timeout_sec))
     except (TypeError, ValueError):
-        return None, "BACnet discovery request has invalid port or timeout_sec"
+        return None, "BACnet discovery request has invalid timeout_sec"
+
+    port = CLOUD_BACNET_PORT
+    base_result = {"bacnet_discover": True, "port": port}
+    lock_fd = acquire_bacnet_runtime_lock(config)
+    if lock_fd is None:
+        return _deferred_result(base_result, config), BACNET_RUNTIME_BUSY
 
     env = os.environ.copy()
     env["BACNET_IP_PORT"] = str(port)
 
     try:
-        completed = subprocess.run(
-            [config.bacwi_path],
-            capture_output=True,
-            check=False,
-            env=env,
-            text=True,
-            timeout=timeout_sec,
-        )
-    except FileNotFoundError:
-        return None, f"BACnet discovery command not found: {config.bacwi_path}"
-    except subprocess.TimeoutExpired:
-        return None, f"BACnet discovery command timed out after {timeout_sec} seconds"
-    except OSError as exc:
-        return None, f"BACnet discovery command failed to start: {exc}"
+        try:
+            completed = subprocess.run(
+                [config.bacwi_path],
+                capture_output=True,
+                check=False,
+                env=env,
+                text=True,
+                timeout=timeout_sec,
+            )
+        except FileNotFoundError:
+            return None, f"BACnet discovery command not found: {config.bacwi_path}"
+        except subprocess.TimeoutExpired:
+            return None, f"BACnet discovery command timed out after {timeout_sec} seconds"
+        except OSError as exc:
+            return None, f"BACnet discovery command failed to start: {exc}"
+    finally:
+        release_bacnet_runtime_lock(config, lock_fd)
 
     raw_output = completed.stdout
     if completed.returncode != 0:
@@ -214,28 +331,35 @@ def run_bacnet_read(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[
         return result, str(exc)
 
     env = os.environ.copy()
-    env["BACNET_IP_PORT"] = str(config.bacnet_default_port)
+    env["BACNET_IP_PORT"] = str(CLOUD_BACNET_PORT)
     args = build_bacnet_read_args(config, normalized)
 
+    lock_fd = acquire_bacnet_runtime_lock(config)
+    if lock_fd is None:
+        return _deferred_result(normalized, config), BACNET_RUNTIME_BUSY
+
     try:
-        completed = subprocess.run(
-            args,
-            capture_output=True,
-            check=False,
-            env=env,
-            text=True,
-            timeout=config.bacnet_timeout_sec,
-        )
-    except FileNotFoundError:
-        error = f"BACnet read command not found: {config.bacrp_path}"
-        return _failure_result(normalized, error), error
-    except subprocess.TimeoutExpired as exc:
-        raw_output = "\n".join(part for part in (_text(exc.stdout).strip(), _text(exc.stderr).strip()) if part)
-        error = f"BACnet read command timed out after {config.bacnet_timeout_sec} seconds"
-        return _failure_result(normalized, error, raw_output or None), error
-    except OSError as exc:
-        error = f"BACnet read command failed to start: {exc}"
-        return _failure_result(normalized, error), error
+        try:
+            completed = subprocess.run(
+                args,
+                capture_output=True,
+                check=False,
+                env=env,
+                text=True,
+                timeout=config.bacnet_timeout_sec,
+            )
+        except FileNotFoundError:
+            error = f"BACnet read command not found: {config.bacrp_path}"
+            return _failure_result(normalized, error), error
+        except subprocess.TimeoutExpired as exc:
+            raw_output = "\n".join(part for part in (_text(exc.stdout).strip(), _text(exc.stderr).strip()) if part)
+            error = f"BACnet read command timed out after {config.bacnet_timeout_sec} seconds"
+            return _failure_result(normalized, error, raw_output or None), error
+        except OSError as exc:
+            error = f"BACnet read command failed to start: {exc}"
+            return _failure_result(normalized, error), error
+    finally:
+        release_bacnet_runtime_lock(config, lock_fd)
 
     raw_output = completed.stdout
     combined_output = "\n".join(part for part in (completed.stdout.strip(), completed.stderr.strip()) if part)

@@ -17,6 +17,7 @@ def config(tmp_path: Path, bacrp_path: str = "bacrp") -> AgentConfig:
         agent_version="0.1.0",
         ui_version="0.1.0",
         sqlite_path=tmp_path / "edge.db",
+        bacnet_lock_path=tmp_path / "bacnet.lock",
     )
 
 

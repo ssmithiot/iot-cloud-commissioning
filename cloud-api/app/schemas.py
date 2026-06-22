@@ -93,7 +93,7 @@ class JobCreateIn(BaseModel):
 
 
 class JobResultIn(BaseModel):
-    status: str = Field(pattern="^(completed|failed)$")
+    status: str = Field(pattern="^(completed|failed|deferred)$")
     result: dict[str, object] | None = None
     error_message: str | None = Field(default=None, max_length=1000)
 
