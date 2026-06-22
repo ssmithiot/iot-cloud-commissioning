@@ -32,6 +32,38 @@ def test_echo_job_returns_expected_payload(tmp_path: Path) -> None:
     }
 
 
+def test_bacnet_read_job_dispatches_to_handler(tmp_path: Path, monkeypatch) -> None:
+    def fake_run_bacnet_read(agent_config, request):
+        assert agent_config.gateway_id == "GW001"
+        assert request == {
+            "device_instance": 1,
+            "object_type": "analog-value",
+            "object_instance": 1,
+            "property": "present-value",
+        }
+        return {"job_type": "bacnet_read", "status": "ok", "value": 72.4}, None
+
+    monkeypatch.setattr("iot_cx_agent.jobs.run_bacnet_read", fake_run_bacnet_read)
+
+    status, result, error = execute_job(
+        config(tmp_path),
+        {
+            "job_id": "job-2",
+            "job_type": "bacnet_read",
+            "request": {
+                "device_instance": 1,
+                "object_type": "analog-value",
+                "object_instance": 1,
+                "property": "present-value",
+            },
+        },
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert result == {"job_type": "bacnet_read", "status": "ok", "value": 72.4}
+
+
 def test_agent_config_keeps_jobs_on_cloud_api_and_local_sqlite(tmp_path: Path) -> None:
     agent_config = config(tmp_path)
 
@@ -65,12 +97,36 @@ def test_load_config_reads_gateway_api_token_from_env(tmp_path: Path, monkeypatc
     assert agent_config.gateway_api_token == "iotcc_gw_prefix_secret"
 
 
+def test_load_config_reads_bacrp_path(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW001\n"
+        "site_id: demo-site\n"
+        "cloud_url: http://localhost:8000\n"
+        "bacnet:\n"
+        "  bacrp_path: /opt/bacnet-stack/bin/bacrp\n",
+        encoding="utf-8",
+    )
+
+    agent_config = load_config(config_path)
+
+    assert agent_config.bacrp_path == "/opt/bacnet-stack/bin/bacrp"
+
+
 def test_unknown_job_type_fails_gracefully(tmp_path: Path) -> None:
     status, result, error = execute_job(
         config(tmp_path),
-        {"job_id": "job-2", "job_type": "not-real", "request": {}},
+        {"job_id": "job-3", "job_type": "not-real", "request": {}},
     )
 
     assert status == "failed"
     assert result is None
     assert error == "Unknown job_type: not-real"
+
+
+def test_edge_agent_does_not_import_or_reference_supabase_or_postgres_clients() -> None:
+    package_root = Path(__file__).resolve().parents[1] / "iot_cx_agent"
+    source_text = "\n".join(path.read_text(encoding="utf-8").lower() for path in package_root.rglob("*.py"))
+
+    for forbidden in ("supabase", "psycopg", "sqlalchemy", "postgres"):
+        assert forbidden not in source_text
