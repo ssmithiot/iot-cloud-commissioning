@@ -11,6 +11,7 @@ bacnet:
   default_port: 47814
   bacwi_path: bacwi
   bacrp_path: bacrp
+  lock_path: /tmp/iot-cloud-commissioning-bacnet-47814.lock
   timeout_sec: 10
 # For local development, override the default /var/lib/iot-cx-agent/edge.db:
 # sqlite_path: ./edge.db

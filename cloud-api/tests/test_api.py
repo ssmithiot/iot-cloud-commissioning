@@ -288,6 +288,41 @@ def test_job_result_can_mark_failed() -> None:
     assert jobs_response.json()[0]["job_id"] == job_id
 
 
+def test_job_result_can_mark_deferred() -> None:
+    raw_token = create_gateway_token("GW001")
+    create_response = client.post(
+        "/api/edge/jobs",
+        json={
+            "gateway_id": "GW001",
+            "job_type": "bacnet_read",
+            "request": {
+                "device_instance": 1,
+                "object_type": "analog-value",
+                "object_instance": 1,
+                "property": "present-value",
+            },
+        },
+    )
+    job_id = create_response.json()["job_id"]
+    result_payload = {
+        "job_type": "bacnet_read",
+        "status": "deferred",
+        "error": "bacnet_runtime_busy",
+        "lock_path": "/tmp/iot-cloud-commissioning-bacnet-47814.lock",
+        "lock_held": True,
+    }
+
+    result_response = client.post(
+        f"/api/edge/jobs/{job_id}/result",
+        headers=auth_headers(raw_token),
+        json={"status": "deferred", "result": result_payload, "error_message": "bacnet_runtime_busy"},
+    )
+
+    assert result_response.status_code == 200
+    assert result_response.json()["status"] == "deferred"
+    assert result_response.json()["result_json"] == result_payload
+
+
 def test_job_result_without_token_returns_401() -> None:
     create_response = client.post(
         "/api/edge/jobs",

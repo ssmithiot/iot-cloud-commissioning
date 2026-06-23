@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from iot_cx_agent.bacnet import parse_bacwi_output
+from iot_cx_agent.bacnet import run_bacnet_runtime_check, parse_bacwi_output
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.jobs import execute_job
 
@@ -16,17 +16,24 @@ SAMPLE_BACWI_OUTPUT = """
 """
 
 
-def config(tmp_path: Path, bacwi_path: str = "bacwi") -> AgentConfig:
+def config(
+    tmp_path: Path,
+    bacwi_path: str = "bacwi",
+    bacrp_path: str = "bacrp",
+    bacnet_default_port: int = 47814,
+) -> AgentConfig:
     return AgentConfig(
         gateway_id="GW001",
         site_id="demo-site",
         cloud_url="http://localhost:8000",
-        bacnet_default_port=47814,
+        bacnet_default_port=bacnet_default_port,
         bacwi_path=bacwi_path,
+        bacrp_path=bacrp_path,
         bacnet_timeout_sec=10,
         agent_version="0.1.0",
         ui_version="0.1.0",
         sqlite_path=tmp_path / "edge.db",
+        bacnet_lock_path=tmp_path / "bacnet.lock",
     )
 
 
@@ -112,3 +119,53 @@ def test_bacnet_discover_timeout_fails_gracefully(tmp_path: Path, monkeypatch) -
     assert status == "failed"
     assert result is None
     assert error == "BACnet discovery command timed out after 3 seconds"
+
+
+def test_bacnet_discover_deferred_when_lock_is_held(tmp_path: Path, monkeypatch) -> None:
+    agent_config = config(tmp_path)
+    agent_config.bacnet_lock_path.write_text("ui-active", encoding="utf-8")
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("subprocess.run should not be called while BACnet runtime lock is held")
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+
+    status, result, error = execute_job(
+        agent_config,
+        {"job_id": "job-4", "job_type": "bacnet_discover", "request": {}},
+    )
+
+    assert status == "deferred"
+    assert error == "bacnet_runtime_busy"
+    assert result is not None
+    assert result["status"] == "deferred"
+    assert result["error"] == "bacnet_runtime_busy"
+    assert result["message"] == "Local commissioning UI is using BACnet port 47814. Cloud BACnet job yielded."
+    assert result["port"] == 47814
+
+
+def test_bacnet_runtime_check_success(tmp_path: Path) -> None:
+    bacwi_path = tmp_path / "bacwi"
+    bacrp_path = tmp_path / "bacrp"
+    bacwi_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    bacrp_path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    agent_config = config(tmp_path, bacwi_path=str(bacwi_path), bacrp_path=str(bacrp_path))
+    result, error = run_bacnet_runtime_check(agent_config, {})
+
+    assert error is None
+    assert result["status"] == "ok"
+    assert result["bacnet_port"] == 47814
+    assert result["timeout_sec"] == 10
+    assert result["lock_path"] == str(agent_config.bacnet_lock_path)
+    assert result["lock_held"] is False
+    assert result["bacwi_exists"] is True
+    assert result["bacrp_exists"] is True
+
+
+def test_bacnet_runtime_check_failure_when_port_is_47808(tmp_path: Path) -> None:
+    result, error = run_bacnet_runtime_check(config(tmp_path, bacnet_default_port=47808), {})
+
+    assert error == "Cloud BACnet jobs must use UDP 47814"
+    assert result["status"] == "error"
+    assert result["bacnet_port"] == 47808

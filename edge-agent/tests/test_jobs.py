@@ -13,6 +13,7 @@ def config(tmp_path: Path) -> AgentConfig:
         agent_version="0.1.0",
         ui_version="0.1.0",
         sqlite_path=tmp_path / "edge.db",
+        bacnet_lock_path=tmp_path / "bacnet.lock",
     )
 
 
@@ -62,6 +63,37 @@ def test_bacnet_read_job_dispatches_to_handler(tmp_path: Path, monkeypatch) -> N
     assert status == "completed"
     assert error is None
     assert result == {"job_type": "bacnet_read", "status": "ok", "value": 72.4}
+
+
+def test_bacnet_read_deferred_when_lock_is_held(tmp_path: Path, monkeypatch) -> None:
+    agent_config = config(tmp_path)
+    agent_config.bacnet_lock_path.write_text("ui-active", encoding="utf-8")
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("subprocess.run should not be called while BACnet runtime lock is held")
+
+    monkeypatch.setattr("iot_cx_agent.bacnet.subprocess.run", fail_run)
+
+    status, result, error = execute_job(
+        agent_config,
+        {
+            "job_id": "job-4",
+            "job_type": "bacnet_read",
+            "request": {
+                "device_instance": 1,
+                "object_type": "analog-value",
+                "object_instance": 1,
+                "property": "present-value",
+            },
+        },
+    )
+
+    assert status == "deferred"
+    assert error == "bacnet_runtime_busy"
+    assert result is not None
+    assert result["status"] == "deferred"
+    assert result["error"] == "bacnet_runtime_busy"
+    assert result["message"] == "Local commissioning UI is using BACnet port 47814. Cloud BACnet job yielded."
 
 
 def test_agent_config_keeps_jobs_on_cloud_api_and_local_sqlite(tmp_path: Path) -> None:
