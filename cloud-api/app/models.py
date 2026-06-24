@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import ARRAY, JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy.dialects.postgresql import ENUM as PostgresEnum
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
@@ -17,6 +18,27 @@ class StringList(TypeDecorator):
         if dialect.name == "postgresql":
             return dialect.type_descriptor(ARRAY(String))
         return dialect.type_descriptor(JSON)
+
+
+class EdgeJobStatus(TypeDecorator):
+    impl = String
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(
+                PostgresEnum(
+                    "queued",
+                    "claimed",
+                    "completed",
+                    "failed",
+                    "deferred",
+                    name="edge_job_status",
+                    schema="public",
+                    create_type=False,
+                )
+            )
+        return dialect.type_descriptor(String(40))
 
 
 class CloudUUID(TypeDecorator):
@@ -119,7 +141,7 @@ class EdgeJob(Base):
     job_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
     gateway_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     job_type: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="queued", index=True)
+    status: Mapped[str] = mapped_column(EdgeJobStatus(), nullable=False, default="queued", index=True)
     request_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     result_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
