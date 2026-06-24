@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: iot-cloud-commissioning-api
+    runtime: docker
+    dockerfilePath: ./cloud-api/Dockerfile
+    dockerContext: ./cloud-api
+    healthCheckPath: /health/db
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: GATEWAY_AUTH_PEPPER
+        sync: false
+      - key: AUTO_CREATE_TABLES
+        value: "false"
