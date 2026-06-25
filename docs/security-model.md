@@ -34,6 +34,13 @@ The admin/operator automation token is configured with `IOT_ADMIN_API_TOKEN` in 
 
 Human users authenticate through Supabase Auth. The operator username is the user's email address. Supabase sends and verifies the confirmation email. FastAPI verifies the Supabase JWT using the server-side `SUPABASE_JWT_SECRET`, then checks the local `operator_users` row for app role and status. Email confirmation proves email ownership; local role approval decides what the user can do.
 
+The browser UI may receive only public Supabase browser configuration:
+
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+
+The browser UI must not receive service-role keys, database URLs, `IOT_ADMIN_API_TOKEN`, `GATEWAY_AUTH_PEPPER`, or `SUPABASE_JWT_SECRET`.
+
 Operator role behavior:
 
 - `pending`: registered but not approved; cannot use operator routes.
@@ -109,9 +116,7 @@ Future server-side code should write audit events for:
 
 ## Open Items
 
-- Portal session handling.
-- Signup/login page that uses Supabase Auth and then calls FastAPI with the Supabase JWT.
-- Admin page that calls the user-management endpoints.
+- Polished portal navigation and UX beyond the minimal MVP-013 pages.
 - Replacement of the shared admin token as the normal human workflow.
 - RLS policy test harness.
 - Storage bucket layout.

@@ -170,3 +170,9 @@ class CurrentOperatorOut(BaseModel):
     role: str
     status: str
     auth_type: str
+
+
+class PublicAuthConfigOut(BaseModel):
+    supabase_url: str | None
+    supabase_anon_key: str | None
+    configured: bool

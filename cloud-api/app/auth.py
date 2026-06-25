@@ -223,6 +223,38 @@ def require_operator_auth(
     )
 
 
+def require_known_user_auth(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(ADMIN_BEARER)] = None,
+    db: Session = Depends(get_db),
+) -> AdminAuthContext:
+    if credentials is None:
+        raise _admin_unauthorized("Missing admin credentials")
+
+    raw_token = credentials.credentials.strip()
+    if not raw_token:
+        raise _admin_unauthorized()
+    if _is_admin_token(raw_token):
+        return AdminAuthContext()
+
+    supabase_user = _supabase_context_from_claims(_decode_supabase_jwt(raw_token))
+    operator = db.scalar(select(OperatorUser).where(OperatorUser.email == supabase_user.email))
+    if operator is None:
+        raise _admin_unauthorized()
+
+    operator.supabase_user_id = operator.supabase_user_id or supabase_user.supabase_user_id
+    if operator.status == "active":
+        operator.last_login_at = utc_now()
+    operator.updated_at = utc_now()
+    db.commit()
+
+    return AdminAuthContext(
+        auth_type="supabase_user",
+        email=operator.email,
+        role=operator.role,
+        status=operator.status,
+    )
+
+
 def require_admin_or_admin_token_auth(
     auth: AdminAuthContext = Depends(require_operator_auth),
 ) -> AdminAuthContext:

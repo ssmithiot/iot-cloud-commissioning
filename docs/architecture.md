@@ -60,7 +60,7 @@ Edge:
 
 - No direct edge access to Supabase.
 - No live Supabase credentials in the repository.
-- No user login yet.
+- Browser login/signup is handled through Supabase Auth and FastAPI-served MVP pages.
 - No web portal yet.
 - No trend upload pipeline yet.
 - No remote BACnet writes yet.

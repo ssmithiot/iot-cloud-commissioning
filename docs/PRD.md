@@ -38,6 +38,7 @@ Current deployed backend:
 - Gateway credential validation through FastAPI
 - Operator/admin token protection for selected cloud API endpoints
 - Supabase email-user auth foundation with local app roles
+- Browser login/signup pages and protected app shell
 - Deployed commit `11c8b1f`
 - Swagger exposes `AdminBearer (http, Bearer)` for protected operator endpoints
 
@@ -412,8 +413,9 @@ The live admin smoke test passes only when:
 - FastAPI Supabase JWT verification.
 - Local `operator_users` role and status records.
 - Admin user-management API for assigning users.
+- Browser pages for login, signup, confirmation handoff, waiting-for-approval, unauthorized access, dashboard, and admin user assignment.
 - Existing `IOT_ADMIN_API_TOKEN` retained for scripts and emergency automation.
-- Future browser admin page consumes these user-management APIs.
+- The admin users page uses the logged-in Supabase session/JWT instead of manual token paste for normal use.
 
 ### MVP-014 Candidate: Commissioning Job Workflows
 

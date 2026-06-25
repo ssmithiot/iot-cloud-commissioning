@@ -16,6 +16,7 @@ from app.auth import (
     require_admin_or_admin_token_auth,
     require_gateway_auth,
     require_job_operator_auth,
+    require_known_user_auth,
     require_operator_auth,
     require_supabase_user_auth,
 )
@@ -35,6 +36,16 @@ from app.schemas import (
     JobResultIn,
     OperatorUserOut,
     OperatorUserUpsertIn,
+    PublicAuthConfigOut,
+)
+from app.ui import (
+    admin_users_html,
+    app_html,
+    check_email_html,
+    login_html,
+    signup_html,
+    unauthorized_html,
+    waiting_approval_html,
 )
 
 
@@ -59,280 +70,49 @@ def database_health(db: Session = Depends(get_db)) -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/login", response_class=HTMLResponse, include_in_schema=False)
+def login_page() -> HTMLResponse:
+    return HTMLResponse(login_html())
+
+
+@app.get("/signup", response_class=HTMLResponse, include_in_schema=False)
+def signup_page() -> HTMLResponse:
+    return HTMLResponse(signup_html())
+
+
+@app.get("/auth/check-email", response_class=HTMLResponse, include_in_schema=False)
+def check_email_page() -> HTMLResponse:
+    return HTMLResponse(check_email_html())
+
+
+@app.get("/auth/waiting-approval", response_class=HTMLResponse, include_in_schema=False)
+def waiting_approval_page() -> HTMLResponse:
+    return HTMLResponse(waiting_approval_html())
+
+
+@app.get("/auth/unauthorized", response_class=HTMLResponse, include_in_schema=False)
+def unauthorized_page() -> HTMLResponse:
+    return HTMLResponse(unauthorized_html())
+
+
+@app.get("/app", response_class=HTMLResponse, include_in_schema=False)
+def app_page() -> HTMLResponse:
+    return HTMLResponse(app_html())
+
+
 @app.get("/admin/users", response_class=HTMLResponse, include_in_schema=False)
 def admin_users_page() -> HTMLResponse:
-    return HTMLResponse(
-        """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>IOT Cloud Commissioning Admin</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --border: #c9d3df;
-      --ink: #17202c;
-      --muted: #5d6b7c;
-      --panel: #f5f7fa;
-      --accent: #0f766e;
-      --danger: #b42318;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: Arial, Helvetica, sans-serif;
-      color: var(--ink);
-      background: #ffffff;
-    }
-    header {
-      border-bottom: 1px solid var(--border);
-      padding: 18px 24px;
-    }
-    main {
-      max-width: 1180px;
-      margin: 0 auto;
-      padding: 24px;
-    }
-    h1 {
-      font-size: 22px;
-      margin: 0;
-    }
-    h2 {
-      font-size: 16px;
-      margin: 0 0 12px;
-    }
-    label {
-      display: block;
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--muted);
-      margin-bottom: 6px;
-    }
-    input, select {
-      width: 100%;
-      min-height: 38px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 8px 10px;
-      font: inherit;
-      background: #ffffff;
-    }
-    button {
-      min-height: 38px;
-      border: 1px solid var(--accent);
-      border-radius: 4px;
-      padding: 8px 14px;
-      font: inherit;
-      font-weight: 700;
-      color: #ffffff;
-      background: var(--accent);
-      cursor: pointer;
-    }
-    button.secondary {
-      color: var(--accent);
-      background: #ffffff;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(12, 1fr);
-      gap: 14px;
-      align-items: end;
-    }
-    .span-2 { grid-column: span 2; }
-    .span-3 { grid-column: span 3; }
-    .span-4 { grid-column: span 4; }
-    .span-6 { grid-column: span 6; }
-    .span-12 { grid-column: span 12; }
-    section {
-      border-bottom: 1px solid var(--border);
-      padding: 20px 0;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 14px;
-    }
-    th, td {
-      border-bottom: 1px solid var(--border);
-      padding: 10px 8px;
-      text-align: left;
-      vertical-align: top;
-    }
-    th {
-      color: var(--muted);
-      font-size: 12px;
-      text-transform: uppercase;
-    }
-    .status {
-      min-height: 24px;
-      margin-top: 10px;
-      font-size: 14px;
-      color: var(--muted);
-    }
-    .status.error { color: var(--danger); }
-    @media (max-width: 760px) {
-      main { padding: 16px; }
-      .grid { grid-template-columns: 1fr; }
-      .span-2, .span-3, .span-4, .span-6, .span-12 { grid-column: span 1; }
-      table { display: block; overflow-x: auto; white-space: nowrap; }
-    }
-  </style>
-</head>
-<body>
-  <header><h1>IOT Cloud Commissioning Admin</h1></header>
-  <main>
-    <section>
-      <h2>Authorization</h2>
-      <div class="grid">
-        <div class="span-6">
-          <label for="token">Bearer token</label>
-          <input id="token" type="password" autocomplete="off">
-        </div>
-        <div class="span-2">
-          <button id="load" type="button">Load users</button>
-        </div>
-      </div>
-      <div id="status" class="status"></div>
-    </section>
-    <section>
-      <h2>Assign User</h2>
-      <form id="user-form" class="grid">
-        <div class="span-3">
-          <label for="email">Email</label>
-          <input id="email" type="email" required>
-        </div>
-        <div class="span-3">
-          <label for="display-name">Display name</label>
-          <input id="display-name" type="text">
-        </div>
-        <div class="span-2">
-          <label for="role">Role</label>
-          <select id="role">
-            <option value="operator">operator</option>
-            <option value="admin">admin</option>
-            <option value="viewer">viewer</option>
-            <option value="pending">pending</option>
-          </select>
-        </div>
-        <div class="span-2">
-          <label for="user-status">Status</label>
-          <select id="user-status">
-            <option value="active">active</option>
-            <option value="pending">pending</option>
-            <option value="disabled">disabled</option>
-          </select>
-        </div>
-        <div class="span-2">
-          <button type="submit">Save user</button>
-        </div>
-      </form>
-    </section>
-    <section>
-      <h2>Users</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Email</th>
-            <th>Name</th>
-            <th>Role</th>
-            <th>Status</th>
-            <th>Last login</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="users"></tbody>
-      </table>
-    </section>
-  </main>
-  <script>
-    const tokenInput = document.querySelector("#token");
-    const statusEl = document.querySelector("#status");
-    const usersEl = document.querySelector("#users");
-    const form = document.querySelector("#user-form");
+    return HTMLResponse(admin_users_html())
 
-    function setStatus(message, isError = false) {
-      statusEl.textContent = message;
-      statusEl.className = isError ? "status error" : "status";
-    }
 
-    function headers() {
-      return {
-        "Authorization": `Bearer ${tokenInput.value.trim()}`,
-        "Content-Type": "application/json"
-      };
-    }
-
-    async function api(path, options = {}) {
-      const response = await fetch(path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
-      const text = await response.text();
-      const body = text ? JSON.parse(text) : null;
-      if (!response.ok) {
-        throw new Error(body?.detail || `HTTP ${response.status}`);
-      }
-      return body;
-    }
-
-    function renderUsers(users) {
-      usersEl.textContent = "";
-      for (const user of users) {
-        const row = document.createElement("tr");
-        row.innerHTML = `
-          <td>${user.email}</td>
-          <td>${user.display_name || ""}</td>
-          <td>${user.role}</td>
-          <td>${user.status}</td>
-          <td>${user.last_login_at || ""}</td>
-          <td><button class="secondary" type="button">Edit</button></td>
-        `;
-        row.querySelector("button").addEventListener("click", () => {
-          document.querySelector("#email").value = user.email;
-          document.querySelector("#display-name").value = user.display_name || "";
-          document.querySelector("#role").value = user.role;
-          document.querySelector("#user-status").value = user.status;
-        });
-        usersEl.appendChild(row);
-      }
-    }
-
-    async function loadUsers() {
-      if (!tokenInput.value.trim()) {
-        setStatus("Bearer token required.", true);
-        return;
-      }
-      try {
-        const users = await api("/api/admin/users");
-        renderUsers(users);
-        setStatus(`Loaded ${users.length} user(s).`);
-      } catch (error) {
-        setStatus(error.message, true);
-      }
-    }
-
-    document.querySelector("#load").addEventListener("click", loadUsers);
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const email = document.querySelector("#email").value.trim().toLowerCase();
-      const payload = {
-        email,
-        display_name: document.querySelector("#display-name").value.trim() || null,
-        role: document.querySelector("#role").value,
-        status: document.querySelector("#user-status").value
-      };
-      try {
-        await api(`/api/admin/users/${encodeURIComponent(email)}`, {
-          method: "PUT",
-          body: JSON.stringify(payload)
-        });
-        setStatus(`Saved ${email}.`);
-        await loadUsers();
-      } catch (error) {
-        setStatus(error.message, true);
-      }
-    });
-  </script>
-</body>
-</html>"""
+@app.get("/api/auth/public-config", response_model=PublicAuthConfigOut)
+def public_auth_config() -> PublicAuthConfigOut:
+    supabase_url = (settings.supabase_url or "").strip() or None
+    supabase_anon_key = (settings.supabase_anon_key or "").strip() or None
+    return PublicAuthConfigOut(
+        supabase_url=supabase_url,
+        supabase_anon_key=supabase_anon_key,
+        configured=bool(supabase_url and supabase_anon_key),
     )
 
 
@@ -362,7 +142,7 @@ def register_operator_profile(
 
 
 @app.get("/api/auth/me", response_model=CurrentOperatorOut)
-def current_operator(auth: AdminAuthContext = Depends(require_operator_auth)) -> CurrentOperatorOut:
+def current_operator(auth: AdminAuthContext = Depends(require_known_user_auth)) -> CurrentOperatorOut:
     return CurrentOperatorOut(email=auth.email, role=auth.role, status=auth.status, auth_type=auth.auth_type)
 
 

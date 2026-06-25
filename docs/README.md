@@ -24,6 +24,7 @@ username: email address
 email confirmation: Supabase confirmation email
 app roles: operator_users table
 automation auth: IOT_ADMIN_API_TOKEN remains server-side only
+browser pages: /login, /signup, /app, /admin/users
 ```
 
 Current live smoke handoff:

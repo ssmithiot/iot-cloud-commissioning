@@ -26,6 +26,24 @@ Supabase Auth owns email/password signup and email confirmation. FastAPI verifie
 
 `IOT_ADMIN_API_TOKEN`, `SUPABASE_JWT_SECRET`, `GATEWAY_AUTH_PEPPER`, database URLs, Supabase keys, Postgres credentials, and service-role keys are cloud/server-side only. They must not be installed on edge gateways.
 
+## GET /api/auth/public-config
+
+Purpose: provide the public browser configuration needed by the login/signup pages.
+
+Authentication: public.
+
+Response:
+
+```json
+{
+  "supabase_url": "https://project-ref.supabase.co",
+  "supabase_anon_key": "public-anon-key",
+  "configured": true
+}
+```
+
+Security notes: this endpoint returns only public Supabase browser values. It must not return service-role keys, database URLs, `IOT_ADMIN_API_TOKEN`, `GATEWAY_AUTH_PEPPER`, or `SUPABASE_JWT_SECRET`.
+
 ## POST /api/auth/register
 
 Purpose: create or refresh a pending local operator profile for a confirmed Supabase Auth user.

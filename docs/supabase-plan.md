@@ -21,7 +21,7 @@ Supabase Postgres is the target cloud system of record for IOT Cloud Commissioni
 
 - No live Supabase project connection.
 - No Supabase credentials.
-- No user login.
+- Browser login/signup now uses Supabase Auth for MVP-013.
 - No frontend.
 - No trend upload pipeline.
 - No direct edge-to-Supabase access.

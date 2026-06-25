@@ -187,6 +187,16 @@ def test_settings_load_supabase_jwt_secret_from_env(monkeypatch: pytest.MonkeyPa
     assert Settings().supabase_jwt_secret == "jwt-secret"
 
 
+def test_settings_load_public_supabase_browser_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-public-key")
+
+    loaded = Settings()
+
+    assert loaded.supabase_url == "https://example.supabase.co"
+    assert loaded.supabase_anon_key == "anon-public-key"
+
+
 def test_openapi_documents_admin_bearer_auth() -> None:
     schema = client.get("/openapi.json").json()
 
@@ -207,12 +217,64 @@ def test_database_health() -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_admin_users_page_loads() -> None:
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/login", "Login"),
+        ("/signup", "Sign Up"),
+        ("/auth/check-email", "Check Your Email"),
+        ("/auth/waiting-approval", "Waiting For Approval"),
+        ("/auth/unauthorized", "Unauthorized"),
+        ("/app", "Dashboard"),
+        ("/admin/users", "Assign User"),
+    ],
+)
+def test_auth_ui_pages_load(path: str, expected: str) -> None:
+    response = client.get(path)
+
+    assert response.status_code == 200
+    assert expected in response.text
+
+
+def test_admin_users_page_uses_session_api_not_manual_token_paste() -> None:
     response = client.get("/admin/users")
 
     assert response.status_code == 200
-    assert "IOT Cloud Commissioning Admin" in response.text
     assert "/api/admin/users" in response.text
+    assert "Bearer token" not in response.text
+
+
+def test_protected_ui_contains_unauthenticated_redirect() -> None:
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert 'window.location.assign(statePaths.login)' in response.text
+    assert "/api/auth/me" in response.text
+
+
+def test_public_auth_config_reports_missing_browser_config() -> None:
+    response = client.get("/api/auth/public-config")
+
+    assert response.status_code == 200
+    assert response.json() == {"supabase_url": None, "supabase_anon_key": None, "configured": False}
+
+
+def test_public_auth_config_exposes_only_public_supabase_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.main import settings
+
+    monkeypatch.setattr(settings, "supabase_url", "https://example.supabase.co")
+    monkeypatch.setattr(settings, "supabase_anon_key", "anon-public-key")
+
+    response = client.get("/api/auth/public-config")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "supabase_url": "https://example.supabase.co",
+        "supabase_anon_key": "anon-public-key",
+        "configured": True,
+    }
+    assert "test-admin-token" not in response.text
+    assert "test-pepper" not in response.text
 
 
 def test_heartbeat_without_token_returns_401() -> None:
@@ -300,6 +362,27 @@ def test_pending_operator_profile_cannot_call_operator_routes() -> None:
     response = client.get("/api/edge/gateways", headers=user_headers("pending@example.com", user_id))
 
     assert response.status_code == 401
+
+
+def test_pending_operator_profile_can_read_me_for_waiting_page() -> None:
+    user_id = create_operator_user("pending@example.com", role="pending", status="pending")
+
+    response = client.get("/api/auth/me", headers=user_headers("pending@example.com", user_id))
+
+    assert response.status_code == 200
+    assert response.json()["email"] == "pending@example.com"
+    assert response.json()["role"] == "pending"
+    assert response.json()["status"] == "pending"
+
+
+def test_disabled_operator_profile_can_read_me_for_unauthorized_page() -> None:
+    user_id = create_operator_user("disabled@example.com", role="operator", status="disabled")
+
+    response = client.get("/api/auth/me", headers=user_headers("disabled@example.com", user_id))
+
+    assert response.status_code == 200
+    assert response.json()["email"] == "disabled@example.com"
+    assert response.json()["status"] == "disabled"
 
 
 def test_admin_user_management_upserts_and_lists_operator_users() -> None:

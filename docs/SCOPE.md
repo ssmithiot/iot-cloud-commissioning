@@ -242,11 +242,17 @@ Features:
 - Roles: `admin`, `operator`, `viewer`, `pending`.
 - Statuses: `active`, `pending`, `disabled`.
 - Admin user-management API for assigning roles.
+- Browser login and signup pages.
+- Confirmation-required page.
+- Waiting-for-approval page.
+- Unauthorized page.
+- Protected app dashboard route.
+- Session-based admin users page.
 - Existing `IOT_ADMIN_API_TOKEN` remains for scripts, smoke tests, and emergency automation.
 
 Not included:
 
-- Full browser portal build.
+- Full polished browser portal build.
 - Direct browser access to privileged database tables.
 - BACnet writes
 - Report generation
@@ -260,6 +266,7 @@ Acceptance criteria:
 - Active operator can view gateways and queue jobs.
 - Viewer is read-only.
 - Admin-only endpoints reject non-admin users.
+- Unauthenticated users are redirected away from protected pages.
 - No edge gateway receives user, admin, or Supabase credentials.
 
 ### 6.2 MVP-014 Commissioning Job Workflows
