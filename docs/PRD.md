@@ -22,7 +22,8 @@ Released milestones:
 | MVP-006 Gateway authentication | Released |
 | MVP-011 Clone-safe gateway provisioning | Released |
 | MVP-012 Operator API security | Released |
-| MVP-013 Supabase email login and admin user roles | In progress |
+| MVP-013 Supabase email login and admin user roles | Released |
+| MVP-014A Operator UI foundation | In progress |
 
 Current live dev API:
 
@@ -39,6 +40,9 @@ Current deployed backend:
 - Operator/admin token protection for selected cloud API endpoints
 - Supabase email-user auth foundation with local app roles
 - Browser login/signup pages and protected app shell
+- Operator dashboard and gateway workspace foundation
+- Effective gateway status derived from heartbeat age
+- Saved gateway groups, BACnet devices, and BACnet points data model
 - Deployed commit `11c8b1f`
 - Swagger exposes `AdminBearer (http, Bearer)` for protected operator endpoints
 
@@ -70,7 +74,7 @@ Current known gateway proof:
 
 ### 3.2 Secondary Goals
 
-1. Provide a future operator UI for gateway status, jobs, and commissioning workflows.
+1. Provide an operator UI for gateway status, jobs, and commissioning workflows.
 2. Support downloadable commissioning evidence and reports.
 3. Support role-based access control after the initial admin/operator token model.
 4. Support trend uploads, point templates, and commissioning documentation.
@@ -247,6 +251,13 @@ The cloud API must provide:
 | `POST /api/edge/jobs` | Operator creates job | Admin/operator auth |
 | `GET /api/edge/jobs` | Operator lists jobs | Admin/operator auth |
 | `POST /api/admin/gateways/provision` | Admin provisions gateway | Admin/operator auth |
+| `GET /api/ui/gateways` | Browser UI gateway list with effective status | Viewer/operator/admin auth |
+| `GET /api/ui/gateways/summary` | Browser UI gateway status summary | Viewer/operator/admin auth |
+| `GET /api/ui/gateways/{gateway_id}/tree` | Browser UI saved group/device/point tree | Viewer/operator/admin auth |
+| `POST /api/ui/gateways/{gateway_id}/groups` | Create saved gateway group | Operator/admin auth |
+| `POST /api/ui/gateways/{gateway_id}/devices` | Save discovered BACnet device metadata | Operator/admin auth |
+| `POST /api/ui/devices/{device_id}/points` | Save BACnet point metadata | Operator/admin auth |
+| `POST /api/ui/gateways/{gateway_id}/discover-devices` | Queue safe BACnet discovery job | Operator/admin auth |
 
 ### 7.2 Admin / Operator Auth
 
@@ -418,6 +429,16 @@ The live admin smoke test passes only when:
 - The admin users page uses the logged-in Supabase session/JWT instead of manual token paste for normal use.
 
 ### MVP-014 Candidate: Commissioning Job Workflows
+
+- Operator dashboard links to per-gateway workspaces.
+- Gateway status uses heartbeat age, so stale or missing heartbeats are not shown as active just because `latest_status` was previously `online`.
+- Gateway workspace shows saved groups, devices, and points.
+- Operators can create groups and queue safe BACnet device discovery from an online gateway.
+- Discovery jobs use `request.bacnet_port = 47814`.
+- Viewers can read gateway UI state but cannot create groups, save devices/points, or queue jobs.
+- No BACnet write workflow is included.
+
+### MVP-014 Later: Commissioning Job Workflows
 
 - BACnet runtime check
 - BACnet device discovery

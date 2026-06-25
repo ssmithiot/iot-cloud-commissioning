@@ -43,6 +43,9 @@ Current known cloud tables/entities:
 - `gateway_credentials`
 - `edge_jobs`
 - `operator_users`
+- `gateway_groups`
+- `saved_bacnet_devices`
+- `saved_bacnet_points`
 
 The schema below separates current core entities from recommended target entities.
 
@@ -52,6 +55,10 @@ The schema below separates current core entities from recommended target entitie
 erDiagram
     EDGE_NODES ||--o{ EDGE_JOBS : receives
     EDGE_NODES ||--o{ GATEWAY_CREDENTIALS : authenticates_with
+    EDGE_NODES ||--o{ GATEWAY_GROUPS : organizes
+    EDGE_NODES ||--o{ SAVED_BACNET_DEVICES : has
+    GATEWAY_GROUPS ||--o{ SAVED_BACNET_DEVICES : contains
+    SAVED_BACNET_DEVICES ||--o{ SAVED_BACNET_POINTS : has
 
     EDGE_NODES {
         text gateway_id PK
@@ -100,6 +107,47 @@ erDiagram
         text role
         text status
         timestamptz last_login_at
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    GATEWAY_GROUPS {
+        uuid id PK
+        text gateway_id FK
+        text name
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    SAVED_BACNET_DEVICES {
+        uuid id PK
+        text gateway_id FK
+        uuid group_id FK
+        integer device_instance
+        text device_name
+        text vendor_name
+        integer network_number
+        text mac_address
+        timestamptz latest_discovered_at
+        boolean enabled
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    SAVED_BACNET_POINTS {
+        uuid id PK
+        text gateway_id FK
+        uuid saved_device_id FK
+        integer device_instance
+        text object_type
+        integer object_instance
+        text object_name
+        text property_name
+        text present_value
+        text units
+        boolean writable
+        timestamptz latest_read_at
+        boolean enabled
         timestamptz created_at
         timestamptz updated_at
     }
@@ -226,6 +274,77 @@ Notes:
 - FastAPI owns app authorization.
 - New users register as `pending`.
 - Email confirmation does not grant app privileges until an admin assigns an active role.
+
+### 5.5 `gateway_groups`
+
+Stores operator-defined organization buckets for one gateway workspace.
+
+Recommended fields:
+
+| Field | Type | Required | Notes |
+|---|---:|---:|---|
+| `id` | uuid | Yes | Internal row ID |
+| `gateway_id` | text | Yes | FK to `edge_nodes.gateway_id` |
+| `name` | text | Yes | Operator-facing group name |
+| `created_at` | timestamptz | Yes | Creation timestamp |
+| `updated_at` | timestamptz | Yes | Last update timestamp |
+
+Suggested constraints:
+
+- unique `(gateway_id, name)`
+
+### 5.6 `saved_bacnet_devices`
+
+Stores operator-approved BACnet device metadata for a gateway. This is cloud-side commissioning metadata; BACnet execution still happens locally on the gateway.
+
+Recommended fields:
+
+| Field | Type | Required | Notes |
+|---|---:|---:|---|
+| `id` | uuid | Yes | Internal row ID |
+| `gateway_id` | text | Yes | FK to `edge_nodes.gateway_id` |
+| `group_id` | uuid | No | Optional FK to `gateway_groups.id` |
+| `device_instance` | integer | Yes | BACnet device instance |
+| `device_name` | text | No | Operator/display name |
+| `vendor_name` | text | No | Vendor label when known |
+| `network_number` | integer | No | BACnet network number when known |
+| `mac_address` | text | No | BACnet MAC/address text when known |
+| `latest_discovered_at` | timestamptz | No | Last discovery timestamp |
+| `enabled` | boolean | Yes | Whether the saved device is active in UI workflows |
+| `created_at` | timestamptz | Yes | Creation timestamp |
+| `updated_at` | timestamptz | Yes | Last update timestamp |
+
+Suggested constraints:
+
+- unique `(gateway_id, device_instance)`
+
+### 5.7 `saved_bacnet_points`
+
+Stores operator-approved BACnet point metadata under a saved device. MVP-014A does not include BACnet writes.
+
+Recommended fields:
+
+| Field | Type | Required | Notes |
+|---|---:|---:|---|
+| `id` | uuid | Yes | Internal row ID |
+| `gateway_id` | text | Yes | FK to `edge_nodes.gateway_id` |
+| `saved_device_id` | uuid | Yes | FK to `saved_bacnet_devices.id` |
+| `device_instance` | integer | Yes | Denormalized BACnet device instance |
+| `object_type` | text | Yes | Example: `analog-input` |
+| `object_instance` | integer | Yes | BACnet object instance |
+| `object_name` | text | No | Display name |
+| `property_name` | text | Yes | Default `present-value` |
+| `present_value` | text | No | Latest saved/read value when available |
+| `units` | text | No | Unit text when known |
+| `writable` | boolean | No | Metadata only; writes remain out of scope |
+| `latest_read_at` | timestamptz | No | Last read timestamp |
+| `enabled` | boolean | Yes | Whether the saved point is active in UI workflows |
+| `created_at` | timestamptz | Yes | Creation timestamp |
+| `updated_at` | timestamptz | Yes | Last update timestamp |
+
+Suggested constraints:
+
+- unique `(saved_device_id, object_type, object_instance, property_name)`
 
 ## 6. Recommended Target ERD
 
@@ -440,6 +559,7 @@ Storage may be Supabase Storage or another controlled storage provider.
 - Cloud commissioning BACnet runtime uses UDP `47814`.
 - Legacy UDP `47808` must not be touched by cloud commissioning jobs.
 - Job requests should explicitly or implicitly use `47814`.
+- Operator UI discovery actions should queue jobs with `request.bacnet_port = 47814`.
 
 ### 8.3 Secrets
 

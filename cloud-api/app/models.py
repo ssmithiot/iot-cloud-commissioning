@@ -186,3 +186,80 @@ class OperatorUser(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class GatewayGroup(Base):
+    __tablename__ = "gateway_groups"
+    __table_args__ = (UniqueConstraint("gateway_id", "name", name="uq_gateway_groups_gateway_name"),)
+
+    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    gateway_id: Mapped[str] = mapped_column(
+        String(120),
+        ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class SavedBacnetDevice(Base):
+    __tablename__ = "saved_bacnet_devices"
+    __table_args__ = (UniqueConstraint("gateway_id", "device_instance", name="uq_saved_devices_gateway_instance"),)
+
+    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    gateway_id: Mapped[str] = mapped_column(
+        String(120),
+        ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    group_id: Mapped[UUID | None] = mapped_column(ForeignKey("gateway_groups.id", ondelete="SET NULL"), nullable=True)
+    device_instance: Mapped[int] = mapped_column(Integer, nullable=False)
+    device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    vendor_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    network_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mac_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    latest_discovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class SavedBacnetPoint(Base):
+    __tablename__ = "saved_bacnet_points"
+    __table_args__ = (
+        UniqueConstraint(
+            "saved_device_id",
+            "object_type",
+            "object_instance",
+            "property_name",
+            name="uq_saved_points_device_object_property",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    gateway_id: Mapped[str] = mapped_column(
+        String(120),
+        ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    saved_device_id: Mapped[UUID] = mapped_column(
+        ForeignKey("saved_bacnet_devices.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    device_instance: Mapped[int] = mapped_column(Integer, nullable=False)
+    object_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    object_instance: Mapped[int] = mapped_column(Integer, nullable=False)
+    object_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    property_name: Mapped[str] = mapped_column(String(80), nullable=False, default="present-value")
+    present_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    units: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    writable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    latest_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)

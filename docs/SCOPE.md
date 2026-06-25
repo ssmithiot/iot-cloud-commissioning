@@ -12,8 +12,8 @@ The scope includes:
 - clone-safe gateway provisioning
 - operator/admin API security
 - Supabase email login and admin user roles
+- operator UI foundation
 - BACnet runtime checks and read jobs
-- future operator UI
 - future reports and evidence
 - future role-based access control
 
@@ -33,7 +33,7 @@ The system includes the following components:
 6. BACnet-stack local CLI execution on gateway
 7. Gateway credential provisioning and validation
 8. Operator/admin API protection
-9. Future operator UI
+9. Operator UI foundation
 10. Future report/evidence storage
 
 ### 2.2 Out of Scope
@@ -278,6 +278,30 @@ Purpose:
 
 Add practical commissioning workflows beyond basic runtime check.
 
+MVP-014A foundation:
+
+- Operator dashboard gateway list.
+- Per-gateway workspace route.
+- Effective gateway status derived from heartbeat age:
+  - `online` when heartbeat is recent.
+  - `stale` when heartbeat is old.
+  - `offline` when heartbeat is missing or expired.
+- Gateway status summary counts.
+- Saved gateway groups.
+- Saved BACnet device metadata.
+- Saved BACnet point metadata.
+- Safe BACnet discovery job queueing for online gateways only.
+- Discovery jobs use `request.bacnet_port = 47814`.
+- Viewer read-only access to gateway UI state.
+- Operator/admin write access for group/device/point metadata and safe job queueing.
+
+Not included in MVP-014A:
+
+- BACnet writes.
+- Direct cloud execution of BACnet.
+- Faked point lists.
+- Automatic point enumeration unless the edge agent has a tested job for it.
+
 Features:
 
 - BACnet runtime check
@@ -297,6 +321,7 @@ Acceptance criteria:
 - Results are stored and visible
 - BACnet port remains `47814`
 - Failed jobs include useful error messages without secrets
+- Stale or offline gateways are not displayed as active solely because the last stored status was `online`
 
 ### 6.3 MVP-015 Gateway Lifecycle Management
 
@@ -521,12 +546,13 @@ BACnet safety tests:
 
 ### 10.2 Future Tests
 
-- UI tests
+- UI route and role tests
+- stale/offline effective status tests
+- gateway group/device/point tree tests
 - provisioning lifecycle tests
 - token rotation tests
 - report generation tests
 - audit event tests
-- stale gateway status tests
 
 ## 11. Deployment Scope
 

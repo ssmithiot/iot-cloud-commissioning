@@ -18,7 +18,7 @@ from app.auth import hash_gateway_token
 from app.config import Settings
 from app.database import Base, SessionLocal, engine
 from app.main import app
-from app.models import EdgeNode, GatewayCredential, OperatorUser, Site
+from app.models import EdgeNode, GatewayCredential, OperatorUser, Site, utc_now
 from scripts.create_gateway_credential import DEFAULT_SCOPES, create_gateway_credential
 
 
@@ -170,6 +170,15 @@ def create_operator_user(
     return user_id
 
 
+def set_gateway_heartbeat(gateway_id: str, seconds_ago: int | None) -> None:
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == gateway_id))
+        assert edge_node is not None
+        edge_node.latest_heartbeat_at = None if seconds_ago is None else utc_now() - timedelta(seconds=seconds_ago)
+        edge_node.latest_status = "online"
+        db.commit()
+
+
 def admin_route_cases() -> list[tuple[str, str, dict[str, object] | None]]:
     return [
         ("GET", "/api/edge/gateways", None),
@@ -241,6 +250,10 @@ def test_openapi_documents_admin_bearer_auth() -> None:
     assert schema["paths"]["/api/admin/gateways/provision"]["post"]["security"] == [{"AdminBearer": []}]
     assert schema["paths"]["/api/admin/users"]["get"]["security"] == [{"AdminBearer": []}]
     assert schema["paths"]["/api/auth/register"]["post"]["security"] == [{"AdminBearer": []}]
+    assert schema["paths"]["/api/ui/gateways"]["get"]["security"] == [{"AdminBearer": []}]
+    assert schema["paths"]["/api/ui/gateways/{gateway_id}/discover-devices"]["post"]["security"] == [
+        {"AdminBearer": []}
+    ]
 
 
 def test_database_health() -> None:
@@ -266,6 +279,7 @@ def test_root_redirects_to_login() -> None:
         ("/auth/waiting-approval", "Waiting For Approval"),
         ("/auth/unauthorized", "Unauthorized"),
         ("/app", "Dashboard"),
+        ("/gateways/GW001", "Gateway Workspace"),
         ("/admin/users", "Assign User"),
     ],
 )
@@ -556,6 +570,195 @@ def test_viewer_user_is_read_only_for_job_creation() -> None:
 
     assert gateway_response.status_code == 200
     assert job_response.status_code == 403
+
+
+def test_ui_gateway_status_marks_recent_heartbeat_online() -> None:
+    create_gateway_token("GW001")
+    set_gateway_heartbeat("GW001", seconds_ago=30)
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    response = client.get("/api/ui/gateways", headers=user_headers("operator@example.com", user_id))
+
+    assert response.status_code == 200
+    gateway = response.json()[0]
+    assert gateway["gateway_id"] == "GW001"
+    assert gateway["effective_status"] == "online"
+    assert gateway["is_online"] is True
+    assert gateway["bacnet_port"] == 47814
+
+
+def test_ui_gateway_status_marks_old_heartbeat_stale() -> None:
+    create_gateway_token("GW001")
+    set_gateway_heartbeat("GW001", seconds_ago=600)
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    response = client.get("/api/ui/gateways", headers=user_headers("operator@example.com", user_id))
+
+    assert response.status_code == 200
+    assert response.json()[0]["effective_status"] == "stale"
+
+
+def test_ui_gateway_status_marks_missing_or_expired_heartbeat_offline() -> None:
+    create_gateway_token("GW001")
+    create_gateway_token("GW002", token_prefix="gw00202")
+    set_gateway_heartbeat("GW001", seconds_ago=None)
+    set_gateway_heartbeat("GW002", seconds_ago=3600)
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    response = client.get("/api/ui/gateways", headers=user_headers("operator@example.com", user_id))
+
+    assert response.status_code == 200
+    statuses = {gateway["gateway_id"]: gateway["effective_status"] for gateway in response.json()}
+    assert statuses == {"GW001": "offline", "GW002": "offline"}
+
+
+def test_ui_gateway_summary_counts_online_stale_offline() -> None:
+    create_gateway_token("GW001")
+    create_gateway_token("GW002", token_prefix="gw00202")
+    create_gateway_token("GW003", token_prefix="gw00303")
+    set_gateway_heartbeat("GW001", seconds_ago=20)
+    set_gateway_heartbeat("GW002", seconds_ago=600)
+    set_gateway_heartbeat("GW003", seconds_ago=3600)
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    response = client.get("/api/ui/gateways/summary", headers=user_headers("operator@example.com", user_id))
+
+    assert response.status_code == 200
+    assert response.json() == {"total": 3, "online": 1, "stale": 1, "offline": 1}
+
+
+def test_ui_gateway_read_routes_allow_viewer() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("viewer@example.com", role="viewer", status="active")
+
+    response = client.get("/api/ui/gateways", headers=user_headers("viewer@example.com", user_id))
+
+    assert response.status_code == 200
+    assert response.json()[0]["gateway_id"] == "GW001"
+
+
+def test_ui_gateway_routes_block_pending_and_disabled_users() -> None:
+    create_gateway_token("GW001")
+    pending_id = create_operator_user("pending@example.com", role="pending", status="pending")
+    disabled_id = create_operator_user("disabled@example.com", role="operator", status="disabled")
+
+    pending_response = client.get("/api/ui/gateways", headers=user_headers("pending@example.com", pending_id))
+    disabled_response = client.get("/api/ui/gateways", headers=user_headers("disabled@example.com", disabled_id))
+
+    assert pending_response.status_code == 401
+    assert disabled_response.status_code == 401
+
+
+def test_ui_tree_write_routes_reject_viewer() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("viewer@example.com", role="viewer", status="active")
+
+    group_response = client.post(
+        "/api/ui/gateways/GW001/groups",
+        headers=user_headers("viewer@example.com", user_id),
+        json={"name": "Plant Floor"},
+    )
+    device_response = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=user_headers("viewer@example.com", user_id),
+        json={"device_instance": 1001},
+    )
+
+    assert group_response.status_code == 403
+    assert device_response.status_code == 403
+
+
+def test_ui_gateway_tree_can_store_group_device_and_point() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+
+    group_response = client.post("/api/ui/gateways/GW001/groups", headers=headers, json={"name": "Plant Floor"})
+    assert group_response.status_code == 200
+    group_id = group_response.json()["id"]
+
+    device_response = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=headers,
+        json={
+            "group_id": group_id,
+            "device_instance": 1001,
+            "device_name": "AHU-1",
+            "vendor_name": "Test Vendor",
+        },
+    )
+    assert device_response.status_code == 200
+    device_id = device_response.json()["id"]
+
+    point_response = client.post(
+        f"/api/ui/devices/{device_id}/points",
+        headers=headers,
+        json={
+            "object_type": "analog-input",
+            "object_instance": 1,
+            "object_name": "Space Temp",
+            "property": "present-value",
+            "present_value": "72.0",
+            "units": "degF",
+        },
+    )
+    tree_response = client.get("/api/ui/gateways/GW001/tree", headers=headers)
+
+    assert point_response.status_code == 200
+    assert tree_response.status_code == 200
+    tree = tree_response.json()
+    assert tree["groups"][0]["name"] == "Plant Floor"
+    assert tree["devices"][0]["device_instance"] == 1001
+    assert tree["points"][0]["object_type"] == "analog-input"
+    assert tree["points"][0]["property"] == "present-value"
+
+
+def test_ui_device_group_must_belong_to_same_gateway() -> None:
+    create_gateway_token("GW001")
+    create_gateway_token("GW002", token_prefix="gw00202")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+
+    group_response = client.post("/api/ui/gateways/GW001/groups", headers=headers, json={"name": "Plant Floor"})
+    response = client.post(
+        "/api/ui/gateways/GW002/devices",
+        headers=headers,
+        json={"group_id": group_response.json()["id"], "device_instance": 1001},
+    )
+
+    assert response.status_code == 404
+
+
+def test_ui_discover_devices_queues_safe_47814_job_for_online_gateway() -> None:
+    create_gateway_token("GW001")
+    set_gateway_heartbeat("GW001", seconds_ago=15)
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    response = client.post(
+        "/api/ui/gateways/GW001/discover-devices",
+        headers=user_headers("operator@example.com", user_id),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["gateway_id"] == "GW001"
+    assert body["job_type"] == "bacnet_discover"
+    assert body["status"] == "queued"
+    assert body["request_json"] == {"bacnet_port": 47814}
+    assert "47808" not in response.text
+
+
+def test_ui_discover_devices_rejects_offline_gateway() -> None:
+    create_gateway_token("GW001")
+    set_gateway_heartbeat("GW001", seconds_ago=3600)
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    response = client.post(
+        "/api/ui/gateways/GW001/discover-devices",
+        headers=user_headers("operator@example.com", user_id),
+    )
+
+    assert response.status_code == 409
 
 
 def test_active_admin_user_can_manage_users() -> None:

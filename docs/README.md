@@ -29,6 +29,20 @@ JWT verification: HS256 secret or Supabase JWKS signing keys
 confirmation redirect: ${window.location.origin}/login
 ```
 
+Current MVP-014A direction:
+
+```text
+operator dashboard: /app
+gateway workspace: /gateways/{gateway_id}
+gateway UI API prefix: /api/ui
+effective gateway status: heartbeat-age derived online/stale/offline
+saved tree: gateway groups, BACnet devices, BACnet points
+safe discovery action: queues bacnet_discover with { "bacnet_port": 47814 }
+viewer role: read-only UI state
+operator/admin roles: can queue safe jobs and edit saved tree metadata
+BACnet writes: out of scope
+```
+
 Current live smoke handoff:
 
 ```text

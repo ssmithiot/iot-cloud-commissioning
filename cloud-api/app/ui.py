@@ -1,3 +1,6 @@
+from html import escape
+
+
 APP_SCRIPT = r"""
 <script type="module">
   import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
@@ -92,12 +95,12 @@ APP_SCRIPT = r"""
   }
 
   function redirectForRole(me, requiredRole) {
-    if (me.status !== "active" || me.role === "pending") {
-      window.location.assign(statePaths.waiting);
-      return false;
-    }
     if (me.status === "disabled") {
       window.location.assign(statePaths.unauthorized);
+      return false;
+    }
+    if (me.status !== "active" || me.role === "pending") {
+      window.location.assign(statePaths.waiting);
       return false;
     }
     if (requiredRole === "admin" && me.role !== "admin") {
@@ -221,19 +224,137 @@ APP_SCRIPT = r"""
       return;
     }
     try {
-      const gateways = await api("/api/edge/gateways");
+      const summary = await api("/api/ui/gateways/summary");
+      const gateways = await api("/api/ui/gateways");
       const jobs = await api("/api/edge/jobs?limit=10");
-      byId("gateway-count").textContent = String(gateways.length);
+      byId("gateway-count").textContent = `${summary.total} total\n${summary.online} online\n${summary.stale} stale\n${summary.offline} offline`;
       byId("job-count").textContent = String(jobs.length);
-      byId("gateway-list").textContent = gateways.map((gateway) => (
-        `${gateway.gateway_id} | ${gateway.latest_status} | BACnet ${gateway.bacnet_port}`
-      )).join("\n") || "No gateways found.";
+      renderGatewayList(gateways);
       byId("job-list").textContent = jobs.map((job) => (
         `${job.job_id} | ${job.gateway_id} | ${job.job_type} | ${job.status}`
       )).join("\n") || "No jobs found.";
       if (me.role === "admin") {
         byId("admin-link").hidden = false;
       }
+    } catch (error) {
+      setText("status", error.message, true);
+    }
+  }
+
+  function statusLabel(gateway) {
+    if (gateway.heartbeat_age_seconds === null || gateway.heartbeat_age_seconds === undefined) {
+      return `${gateway.effective_status} | no heartbeat`;
+    }
+    return `${gateway.effective_status} | heartbeat ${gateway.heartbeat_age_seconds}s ago`;
+  }
+
+  function renderGatewayList(gateways) {
+    const table = byId("gateway-list");
+    table.textContent = "";
+    if (!gateways.length) {
+      const row = document.createElement("tr");
+      row.innerHTML = `<td colspan="6">No gateways found.</td>`;
+      table.appendChild(row);
+      return;
+    }
+    for (const gateway of gateways) {
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td><a href="/gateways/${encodeURIComponent(gateway.gateway_id)}">${gateway.gateway_id}</a></td>
+        <td>${gateway.site_id}</td>
+        <td>${gateway.hostname}</td>
+        <td>${statusLabel(gateway)}</td>
+        <td>${gateway.bacnet_port}</td>
+        <td>${gateway.agent_version || ""}</td>
+      `;
+      table.appendChild(row);
+    }
+  }
+
+  function renderTree(tree) {
+    const target = byId("tree");
+    target.textContent = "";
+    if (!tree.groups.length && !tree.devices.length) {
+      target.textContent = "No saved devices or points yet.";
+      return;
+    }
+    const groupNames = new Map(tree.groups.map((group) => [group.id, group.name]));
+    const lines = [];
+    for (const group of tree.groups) {
+      lines.push(`Group: ${group.name}`);
+      const groupedDevices = tree.devices.filter((device) => device.group_id === group.id);
+      for (const device of groupedDevices) {
+        lines.push(`  Device ${device.device_instance}: ${device.device_name || "unnamed"}`);
+        for (const point of tree.points.filter((item) => item.saved_device_id === device.id)) {
+          lines.push(`    ${point.object_type} ${point.object_instance} ${point.property}: ${point.object_name || "unnamed"}`);
+        }
+      }
+    }
+    for (const device of tree.devices.filter((item) => !item.group_id || !groupNames.has(item.group_id))) {
+      lines.push(`Ungrouped device ${device.device_instance}: ${device.device_name || "unnamed"}`);
+      for (const point of tree.points.filter((item) => item.saved_device_id === device.id)) {
+        lines.push(`  ${point.object_type} ${point.object_instance} ${point.property}: ${point.object_name || "unnamed"}`);
+      }
+    }
+    target.textContent = lines.join("\n");
+  }
+
+  async function loadGatewayWorkspace() {
+    const gatewayId = document.body.dataset.gatewayId;
+    const gateway = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}`);
+    const tree = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`);
+    byId("gateway-title").textContent = `${gateway.gateway_id} Workspace`;
+    byId("gateway-status").textContent = `${statusLabel(gateway)} | BACnet ${gateway.bacnet_port} | ${gateway.lan_ip || "no LAN IP"}`;
+    const details = byId("gateway-details");
+    if (details) {
+      details.textContent = JSON.stringify({
+      site_id: gateway.site_id,
+      hostname: gateway.hostname,
+      latest_status: gateway.latest_status,
+      latest_heartbeat_at: gateway.latest_heartbeat_at,
+      agent_version: gateway.agent_version,
+      ui_version: gateway.ui_version
+      }, null, 2);
+    }
+    renderTree(tree);
+  }
+
+  async function initGatewayWorkspace() {
+    const me = await initProtectedPage(null);
+    if (!me) {
+      return;
+    }
+    const groupForm = byId("group-form");
+    const discoverButton = byId("discover-devices");
+    const gatewayId = document.body.dataset.gatewayId;
+    const technicalSection = byId("technical-section");
+    if (technicalSection && me.role === "admin") {
+      technicalSection.hidden = false;
+    }
+    groupForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/groups`, {
+          method: "POST",
+          body: JSON.stringify({ name: byId("group-name").value.trim() })
+        });
+        byId("group-name").value = "";
+        setText("status", "Group saved.");
+        await loadGatewayWorkspace();
+      } catch (error) {
+        setText("status", error.message, true);
+      }
+    });
+    discoverButton.addEventListener("click", async () => {
+      try {
+        const job = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/discover-devices`, { method: "POST" });
+        setText("status", `Queued ${job.job_id} on BACnet 47814.`);
+      } catch (error) {
+        setText("status", error.message, true);
+      }
+    });
+    try {
+      await loadGatewayWorkspace();
     } catch (error) {
       setText("status", error.message, true);
     }
@@ -277,7 +398,7 @@ APP_SCRIPT = r"""
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const email = byId("email").value.trim().toLowerCase();
-      const payload = {
+      const userUpdate = {
         email,
         display_name: byId("display-name").value.trim() || null,
         role: byId("role").value,
@@ -286,7 +407,7 @@ APP_SCRIPT = r"""
       try {
         await api(`/api/admin/users/${encodeURIComponent(email)}`, {
           method: "PUT",
-          body: JSON.stringify(payload)
+          body: JSON.stringify(userUpdate)
         });
         setText("status", `Saved ${email}.`);
         await loadUsers();
@@ -308,6 +429,8 @@ APP_SCRIPT = r"""
     initSignup();
   } else if (page === "app") {
     initDashboard();
+  } else if (page === "gateway-workspace") {
+    initGatewayWorkspace();
   } else if (page === "admin-users") {
     initAdminUsers();
   } else if (page === "waiting" || page === "unauthorized") {
@@ -320,7 +443,7 @@ APP_SCRIPT = r"""
 """
 
 
-def _layout(title: str, body: str, page: str) -> str:
+def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -456,7 +579,7 @@ def _layout(title: str, body: str, page: str) -> str:
     }}
   </style>
 </head>
-<body data-page="{page}">
+<body data-page="{page}" {body_attrs}>
   {body}
   {APP_SCRIPT}
 </body>
@@ -586,7 +709,19 @@ def app_html() -> str:
     </section>
     <section>
       <h2>Gateways</h2>
-      <pre id="gateway-list">Loading...</pre>
+      <table>
+        <thead>
+          <tr>
+            <th>Gateway</th>
+            <th>Site</th>
+            <th>Hostname</th>
+            <th>Status</th>
+            <th>BACnet</th>
+            <th>Agent</th>
+          </tr>
+        </thead>
+        <tbody id="gateway-list"></tbody>
+      </table>
     </section>
     <section>
       <h2>Recent Jobs</h2>
@@ -594,6 +729,55 @@ def app_html() -> str:
     </section>
   </main>"""
     return _layout("Dashboard - IOT Cloud Commissioning", body, "app")
+
+
+def gateway_workspace_html(gateway_id: str) -> str:
+    escaped_gateway_id = escape(gateway_id, quote=True)
+    body = """
+  <header>
+    <h1 id="gateway-title">Gateway Workspace</h1>
+    <div class="toolbar">
+      <span id="identity"></span>
+      <a class="button secondary" href="/app">Dashboard</a>
+      <button id="logout" class="secondary" type="button">Logout</button>
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>Status</h2>
+      <pre id="gateway-status">Loading...</pre>
+      <div id="status" class="notice"></div>
+    </section>
+    <section>
+      <h2>Saved Groups, Devices, And Points</h2>
+      <pre id="tree">Loading...</pre>
+      <form id="group-form" class="grid">
+        <div class="span-4">
+          <label for="group-name">Group name</label>
+          <input id="group-name" type="text" maxlength="120" required>
+        </div>
+        <div class="span-2">
+          <button type="submit">Add group</button>
+        </div>
+      </form>
+    </section>
+    <section>
+      <h2>Discovery</h2>
+      <div class="toolbar">
+        <button id="discover-devices" type="button">Discover devices</button>
+      </div>
+    </section>
+    <section id="technical-section" hidden>
+      <h2>Technical</h2>
+      <pre id="gateway-details">Loading...</pre>
+    </section>
+  </main>"""
+    return _layout(
+        "Gateway Workspace - IOT Cloud Commissioning",
+        body,
+        "gateway-workspace",
+        f'data-gateway-id="{escaped_gateway_id}"',
+    )
 
 
 def admin_users_html() -> str:

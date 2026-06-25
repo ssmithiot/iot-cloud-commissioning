@@ -76,6 +76,10 @@ class GatewayOut(BaseModel):
     latest_status: str
     latest_heartbeat_at: datetime | None
     updated_at: datetime
+    effective_status: str | None = None
+    heartbeat_age_seconds: int | None = None
+    is_online: bool | None = None
+    is_stale: bool | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -176,3 +180,98 @@ class PublicAuthConfigOut(BaseModel):
     supabase_url: str | None
     supabase_anon_key: str | None
     configured: bool
+
+
+class GatewaySummaryOut(BaseModel):
+    total: int
+    online: int
+    stale: int
+    offline: int
+
+
+class GatewayGroupIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class GatewayGroupOut(BaseModel):
+    id: str
+    gateway_id: str
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class SavedDeviceIn(BaseModel):
+    device_instance: int = Field(ge=0)
+    group_id: str | None = None
+    device_name: str | None = Field(default=None, max_length=255)
+    vendor_name: str | None = Field(default=None, max_length=255)
+    network_number: int | None = None
+    mac_address: str | None = Field(default=None, max_length=255)
+    enabled: bool = True
+
+
+class SavedDevicePatchIn(BaseModel):
+    group_id: str | None = None
+    device_name: str | None = Field(default=None, max_length=255)
+    vendor_name: str | None = Field(default=None, max_length=255)
+    enabled: bool | None = None
+
+
+class SavedDeviceOut(BaseModel):
+    id: str
+    gateway_id: str
+    group_id: str | None
+    device_instance: int
+    device_name: str | None
+    vendor_name: str | None
+    network_number: int | None
+    mac_address: str | None
+    latest_discovered_at: datetime | None
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class SavedPointIn(BaseModel):
+    object_type: str = Field(min_length=1, max_length=80)
+    object_instance: int = Field(ge=0)
+    object_name: str | None = Field(default=None, max_length=255)
+    property: str = Field(default="present-value", max_length=80)
+    present_value: str | None = Field(default=None, max_length=255)
+    units: str | None = Field(default=None, max_length=80)
+    writable: bool | None = None
+    enabled: bool = True
+
+
+class SavedPointPatchIn(BaseModel):
+    object_name: str | None = Field(default=None, max_length=255)
+    present_value: str | None = Field(default=None, max_length=255)
+    units: str | None = Field(default=None, max_length=80)
+    writable: bool | None = None
+    enabled: bool | None = None
+
+
+class SavedPointOut(BaseModel):
+    id: str
+    gateway_id: str
+    saved_device_id: str
+    device_instance: int
+    object_type: str
+    object_instance: int
+    object_name: str | None
+    property: str
+    present_value: str | None
+    units: str | None
+    writable: bool | None
+    latest_read_at: datetime | None
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class GatewayTreeOut(BaseModel):
+    gateway: GatewayOut
+    groups: list[GatewayGroupOut]
+    devices: list[SavedDeviceOut]
+    points: list[SavedPointOut]
