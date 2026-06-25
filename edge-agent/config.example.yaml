@@ -1,5 +1,5 @@
-gateway_id: GW001
-site_id: demo-site
+gateway_id: UNPROVISIONED
+site_id: UNPROVISIONED
 cloud_url: http://localhost:8000
 # Prefer setting GATEWAY_API_TOKEN in the environment instead of this file.
 # gateway_api_token: iotcc_gw_<token_prefix>_<secret>

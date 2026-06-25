@@ -26,6 +26,16 @@ def run_once(config: AgentConfig) -> bool:
 
     payload = collect_status(config, sqlite_db_ok=sqlite_db_ok)
     attempted_at = utc_timestamp()
+    if not config.is_provisioned:
+        safe_record_heartbeat_attempt(
+            config.sqlite_path,
+            attempted_at=attempted_at,
+            success=False,
+            error="gateway is unprovisioned; heartbeat and job polling skipped",
+        )
+        logger.warning("Gateway is unprovisioned; heartbeat and job polling skipped")
+        return False
+
     heartbeat_success = False
     try:
         response = send_heartbeat(config, payload)

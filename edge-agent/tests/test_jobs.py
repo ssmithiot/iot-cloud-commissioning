@@ -3,6 +3,7 @@ from pathlib import Path
 from iot_cx_agent.config import AgentConfig, load_config
 from iot_cx_agent.heartbeat import auth_headers
 from iot_cx_agent.jobs import execute_job
+from iot_cx_agent.main import run_once
 
 
 def config(tmp_path: Path) -> AgentConfig:
@@ -127,6 +128,42 @@ def test_load_config_reads_gateway_api_token_from_env(tmp_path: Path, monkeypatc
     agent_config = load_config(config_path)
 
     assert agent_config.gateway_api_token == "iotcc_gw_prefix_secret"
+
+
+def test_load_config_defaults_missing_versions(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW001\n"
+        "site_id: demo-site\n"
+        "cloud_url: http://localhost:8000\n"
+        "agent_version: ''\n",
+        encoding="utf-8",
+    )
+
+    agent_config = load_config(config_path)
+
+    assert agent_config.agent_version == "0.1.0"
+    assert agent_config.ui_version == "0.1.0"
+
+
+def test_unprovisioned_agent_skips_cloud_calls(tmp_path: Path, monkeypatch) -> None:
+    agent_config = AgentConfig(
+        gateway_id="UNPROVISIONED",
+        site_id="UNPROVISIONED",
+        cloud_url="http://localhost:8000",
+        sqlite_path=tmp_path / "edge.db",
+    )
+
+    def fail_send_heartbeat(*args, **kwargs):
+        raise AssertionError("unprovisioned gateway should not send a heartbeat")
+
+    def fail_process_next_job(*args, **kwargs):
+        raise AssertionError("unprovisioned gateway should not poll for jobs")
+
+    monkeypatch.setattr("iot_cx_agent.main.send_heartbeat", fail_send_heartbeat)
+    monkeypatch.setattr("iot_cx_agent.main.process_next_job", fail_process_next_job)
+
+    assert run_once(agent_config) is False
 
 
 def test_load_config_reads_bacrp_path(tmp_path: Path) -> None:
