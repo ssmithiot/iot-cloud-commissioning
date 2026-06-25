@@ -46,6 +46,13 @@ The browser UI may receive only public Supabase browser configuration:
 
 The browser UI must not receive service-role keys, database URLs, `IOT_ADMIN_API_TOKEN`, `GATEWAY_AUTH_PEPPER`, or `SUPABASE_JWT_SECRET`.
 
+Supabase Auth URL Configuration for the live dev deployment must use:
+
+- Site URL: `https://iot-cloud-api-dev.onrender.com`
+- Redirect allow list: production app URLs, including `https://iot-cloud-api-dev.onrender.com/login`
+
+The confirmation email redirect must not point to localhost in production. The signup UI sends Supabase `emailRedirectTo` as `${window.location.origin}/login`.
+
 Operator role behavior:
 
 - `pending`: registered but not approved; cannot use operator routes.

@@ -244,6 +244,7 @@ Features:
 - Admin user-management API for assigning roles.
 - Browser login and signup pages.
 - Confirmation-required page.
+- Signup confirmation redirect uses `${window.location.origin}/login`.
 - Waiting-for-approval page.
 - Unauthorized page.
 - Protected app dashboard route.
@@ -268,6 +269,8 @@ Acceptance criteria:
 - Admin-only endpoints reject non-admin users.
 - Unauthenticated users are redirected away from protected pages.
 - No edge gateway receives user, admin, or Supabase credentials.
+- Supabase Auth Site URL is `https://iot-cloud-api-dev.onrender.com`.
+- Supabase redirect allow list includes production app URLs such as `https://iot-cloud-api-dev.onrender.com/login`.
 
 ### 6.2 MVP-014 Commissioning Job Workflows
 

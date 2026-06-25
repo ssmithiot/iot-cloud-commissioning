@@ -24,6 +24,8 @@ Authorization: Bearer <supabase_user_access_token>
 
 Supabase Auth owns email/password signup and email confirmation. FastAPI verifies the Supabase JWT, then checks local `operator_users` role and status. New confirmed users register as `pending` until an admin assigns an active role.
 
+Browser signup sends Supabase `emailRedirectTo` as `${window.location.origin}/login`. In production, Supabase Auth URL Configuration should set Site URL to `https://iot-cloud-api-dev.onrender.com` and include production app URLs such as `https://iot-cloud-api-dev.onrender.com/login` in the redirect allow list. Confirmation emails must not redirect to localhost in production.
+
 JWT verification supports:
 
 - `HS256` with server-side `SUPABASE_JWT_SECRET`.

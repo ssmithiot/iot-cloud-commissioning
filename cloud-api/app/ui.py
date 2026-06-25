@@ -173,7 +173,7 @@ APP_SCRIPT = r"""
         const client = await getSupabase();
         const email = byId("email").value.trim().toLowerCase();
         const password = byId("password").value;
-        const redirectTo = `${window.location.origin}${statePaths.app}`;
+        const redirectTo = `${window.location.origin}${statePaths.login}`;
         const { error } = await client.auth.signUp({
           email,
           password,

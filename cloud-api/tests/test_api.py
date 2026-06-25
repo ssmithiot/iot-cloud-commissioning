@@ -284,6 +284,15 @@ def test_admin_users_page_uses_session_api_not_manual_token_paste() -> None:
     assert "Bearer token" not in response.text
 
 
+def test_signup_email_confirmation_redirects_to_login_origin() -> None:
+    response = client.get("/signup")
+
+    assert response.status_code == 200
+    assert "emailRedirectTo: redirectTo" in response.text
+    assert "`${window.location.origin}${statePaths.login}`" in response.text
+    assert "localhost" not in response.text
+
+
 def test_protected_ui_contains_unauthenticated_redirect() -> None:
     response = client.get("/app")
 

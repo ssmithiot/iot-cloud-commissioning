@@ -78,6 +78,20 @@ SUPABASE_JWKS_URL=
 
 `SUPABASE_URL` and `SUPABASE_ANON_KEY` are public browser values. `SUPABASE_JWT_SECRET` is server-side only and is used for legacy `HS256` projects. For newer Supabase JWT signing keys, FastAPI verifies `RS256` and `ES256` user JWTs from `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`; set `SUPABASE_JWKS_URL` only when an explicit override is needed. Do not configure any of these values on edge gateways.
 
+In the Supabase dashboard Auth URL Configuration, set Site URL to:
+
+```text
+https://iot-cloud-api-dev.onrender.com
+```
+
+Add the production app URLs to the redirect allow list, including:
+
+```text
+https://iot-cloud-api-dev.onrender.com/login
+```
+
+The signup UI sends `emailRedirectTo` as `${window.location.origin}/login`. Confirmation emails should not point to localhost in production.
+
 For MVP-005 development:
 
 1. Create a Supabase project.
