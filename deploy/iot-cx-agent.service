@@ -5,12 +5,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-Group=root
-ExecStart=/usr/local/bin/iot-cx-agent --config /etc/iot-cx-agent/agent.yaml
+User=swadmin
+Group=swadmin
+EnvironmentFile=-/etc/iot-cx-agent/edge-agent.env
+WorkingDirectory=/home/swadmin/iot-cloud-commissioning
+ExecStart=/home/swadmin/iot-cloud-commissioning/edge-agent/.venv/bin/iot-cx-agent --config /etc/iot-cx-agent/agent.yaml
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-
