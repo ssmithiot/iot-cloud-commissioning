@@ -16,6 +16,16 @@ job creation body field: request
 runtime-check request: { "bacnet_port": 47814 }
 ```
 
+Current MVP-013 direction:
+
+```text
+identity provider: Supabase Auth
+username: email address
+email confirmation: Supabase confirmation email
+app roles: operator_users table
+automation auth: IOT_ADMIN_API_TOKEN remains server-side only
+```
+
 Current live smoke handoff:
 
 ```text

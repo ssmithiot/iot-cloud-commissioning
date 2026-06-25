@@ -22,6 +22,7 @@ Released milestones:
 | MVP-006 Gateway authentication | Released |
 | MVP-011 Clone-safe gateway provisioning | Released |
 | MVP-012 Operator API security | Released |
+| MVP-013 Supabase email login and admin user roles | In progress |
 
 Current live dev API:
 
@@ -36,6 +37,7 @@ Current deployed backend:
 - Edge agent with local SQLite job history
 - Gateway credential validation through FastAPI
 - Operator/admin token protection for selected cloud API endpoints
+- Supabase email-user auth foundation with local app roles
 - Deployed commit `11c8b1f`
 - Swagger exposes `AdminBearer (http, Bearer)` for protected operator endpoints
 
@@ -253,13 +255,33 @@ Preferred request format:
 Authorization: Bearer <IOT_ADMIN_API_TOKEN>
 ```
 
+Human operator request format after Supabase login:
+
+```text
+Authorization: Bearer <supabase_user_access_token>
+```
+
 Requirements:
 
 - Missing admin credentials return HTTP `401`.
 - Invalid admin credentials return HTTP `401`.
 - Correct Bearer token allows protected endpoints.
 - Raw token without `Bearer ` should be rejected unless the contract is explicitly changed.
+- Gateway token cannot call operator/admin routes.
+- Admin token is for scripts, smoke tests, and emergency automation.
 - Admin token must never be printed, committed, logged, or installed on a gateway.
+- Supabase Auth owns signup, password storage, login, password reset, and email confirmation.
+- The app username is the user's email address.
+- Email confirmation does not automatically approve app access.
+- Local app role and status decide authorization.
+
+Current app roles:
+
+- `pending`: signed up but not approved.
+- `viewer`: read-only gateway/job visibility.
+- `operator`: can queue commissioning jobs.
+- `admin`: can manage users and gateway provisioning.
+- `disabled`: blocked.
 
 ### 7.3 Gateway Auth
 
@@ -383,15 +405,15 @@ The live admin smoke test passes only when:
 
 ## 11. Roadmap
 
-### MVP-013 Candidate: Operator UI Foundation
+### MVP-013: Supabase Email Login And Admin User Roles
 
-- Login/admin token entry strategy
-- Gateway list
-- Gateway status detail
-- Job list
-- Queue safe runtime check
-- View job result
-- No BACnet write operations yet
+- Supabase email/password signup.
+- Email confirmation before normal login.
+- FastAPI Supabase JWT verification.
+- Local `operator_users` role and status records.
+- Admin user-management API for assigning users.
+- Existing `IOT_ADMIN_API_TOKEN` retained for scripts and emergency automation.
+- Future browser admin page consumes these user-management APIs.
 
 ### MVP-014 Candidate: Commissioning Job Workflows
 

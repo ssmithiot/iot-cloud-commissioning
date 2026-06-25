@@ -8,12 +8,14 @@ from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+import jwt
+from jwt import InvalidTokenError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.models import GatewayCredential, utc_now
+from app.models import GatewayCredential, OperatorUser, utc_now
 
 
 TOKEN_PATTERN = re.compile(r"^iotcc_gw_([A-Za-z0-9-]{6,64})_([A-Za-z0-9_-]{16,})$")
@@ -31,6 +33,16 @@ class GatewayAuthContext:
 @dataclass(frozen=True)
 class AdminAuthContext:
     authenticated: bool = True
+    auth_type: str = "admin_token"
+    email: str | None = None
+    role: str = "admin"
+    status: str = "active"
+
+
+@dataclass(frozen=True)
+class SupabaseUserContext:
+    supabase_user_id: str
+    email: str
 
 
 def parse_gateway_token(raw_token: str) -> str:
@@ -68,6 +80,10 @@ def _admin_unauthorized(detail: str = "Invalid admin credentials") -> HTTPExcept
         detail=detail,
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
 
 
 def _is_expired(expires_at: datetime | None) -> bool:
@@ -128,3 +144,96 @@ def require_admin_auth(
         raise _admin_unauthorized()
 
     return AdminAuthContext()
+
+
+def _is_admin_token(raw_token: str) -> bool:
+    expected_token = settings.admin_api_token.strip()
+    return bool(raw_token and expected_token and hmac.compare_digest(raw_token, expected_token))
+
+
+def _decode_supabase_jwt(raw_token: str) -> dict[str, object]:
+    secret = (settings.supabase_jwt_secret or "").strip()
+    if not secret:
+        raise _admin_unauthorized()
+    try:
+        claims = jwt.decode(
+            raw_token,
+            secret,
+            algorithms=["HS256"],
+            audience=settings.supabase_jwt_audience,
+        )
+    except InvalidTokenError:
+        raise _admin_unauthorized() from None
+    if not isinstance(claims, dict):
+        raise _admin_unauthorized()
+    return claims
+
+
+def _supabase_context_from_claims(claims: dict[str, object]) -> SupabaseUserContext:
+    user_id = claims.get("sub")
+    email = claims.get("email")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise _admin_unauthorized()
+    if not isinstance(email, str) or not email.strip():
+        raise _admin_unauthorized()
+    return SupabaseUserContext(supabase_user_id=user_id.strip(), email=_normalize_email(email))
+
+
+def require_supabase_user_auth(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(ADMIN_BEARER)] = None,
+) -> SupabaseUserContext:
+    if credentials is None:
+        raise _admin_unauthorized("Missing admin credentials")
+    raw_token = credentials.credentials.strip()
+    if not raw_token:
+        raise _admin_unauthorized()
+    if _is_admin_token(raw_token):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Supabase user token required")
+    return _supabase_context_from_claims(_decode_supabase_jwt(raw_token))
+
+
+def require_operator_auth(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(ADMIN_BEARER)] = None,
+    db: Session = Depends(get_db),
+) -> AdminAuthContext:
+    if credentials is None:
+        raise _admin_unauthorized("Missing admin credentials")
+
+    raw_token = credentials.credentials.strip()
+    if not raw_token:
+        raise _admin_unauthorized()
+    if _is_admin_token(raw_token):
+        return AdminAuthContext()
+
+    supabase_user = _supabase_context_from_claims(_decode_supabase_jwt(raw_token))
+    operator = db.scalar(select(OperatorUser).where(OperatorUser.email == supabase_user.email))
+    if operator is None or operator.status != "active" or operator.role not in {"admin", "operator", "viewer"}:
+        raise _admin_unauthorized()
+
+    operator.supabase_user_id = operator.supabase_user_id or supabase_user.supabase_user_id
+    operator.last_login_at = utc_now()
+    operator.updated_at = utc_now()
+    db.commit()
+
+    return AdminAuthContext(
+        auth_type="supabase_user",
+        email=operator.email,
+        role=operator.role,
+        status=operator.status,
+    )
+
+
+def require_admin_or_admin_token_auth(
+    auth: AdminAuthContext = Depends(require_operator_auth),
+) -> AdminAuthContext:
+    if auth.auth_type == "admin_token" or auth.role == "admin":
+        return auth
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+
+
+def require_job_operator_auth(
+    auth: AdminAuthContext = Depends(require_operator_auth),
+) -> AdminAuthContext:
+    if auth.auth_type == "admin_token" or auth.role in {"admin", "operator"}:
+        return auth
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operator role required")

@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     )
     gateway_auth_pepper: str = Field(min_length=1, validation_alias="GATEWAY_AUTH_PEPPER")
     admin_api_token: str = Field(min_length=1, validation_alias="IOT_ADMIN_API_TOKEN")
+    supabase_jwt_secret: str | None = Field(default=None, validation_alias="SUPABASE_JWT_SECRET")
+    supabase_jwt_audience: str = Field(default="authenticated", validation_alias="SUPABASE_JWT_AUDIENCE")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),

@@ -21,6 +21,8 @@ MVP-006 adds gateway API credentials for edge-facing FastAPI endpoints. Edge gat
 
 MVP-012 protects operator/admin FastAPI endpoints with `IOT_ADMIN_API_TOKEN` and adds a cloud-side gateway provisioning endpoint so office provisioning can create/update the gateway identity and issue a gateway token without using database shell snippets.
 
+MVP-013 adds the backend foundation for friendly operator login. Supabase Auth owns email/password signup and email confirmation, while FastAPI verifies Supabase user JWTs and stores app roles in `operator_users`. The admin automation token remains available for scripts and emergency access. A lightweight admin page is available at `/admin/users` for assigning roles through the protected API.
+
 ## Local Setup
 
 Use Python 3.10 or newer. For local development, create one virtual environment per service or reuse a single development environment.
@@ -63,6 +65,15 @@ The `supabase/` folder contains reviewable SQL migrations for the future Supabas
 These files are applied with the Supabase CLI when developing against a Supabase project. They prepare the schema direction for current cloud records, future portal users and permissions, audit events, report files, trend upload placeholders, point samples, and BACnet device summaries.
 
 FastAPI remains the active cloud API adapter. Edge gateways continue to call `cloud_url` only and must not connect directly to Supabase Postgres. Selected endpoints may later move to Supabase Edge Functions without changing the edge agent's outbound API contract.
+
+For Supabase Auth-backed operator login, configure email confirmation in Supabase Auth and set these FastAPI environment variables on the cloud service:
+
+```text
+SUPABASE_JWT_SECRET=<supabase-project-jwt-secret>
+SUPABASE_JWT_AUDIENCE=authenticated
+```
+
+Do not configure these values on edge gateways.
 
 For MVP-005 development:
 

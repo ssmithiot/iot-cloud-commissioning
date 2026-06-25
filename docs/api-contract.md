@@ -12,13 +12,63 @@ Gateway-facing endpoints require a gateway API token:
 Authorization: Bearer iotcc_gw_<token_prefix>_<secret>
 ```
 
-Operator/admin endpoints require the server-side admin API token:
+Operator/admin endpoints accept either the server-side admin API token or a verified Supabase Auth user JWT with an active app role:
 
 ```text
 Authorization: Bearer <IOT_ADMIN_API_TOKEN>
 ```
 
-`IOT_ADMIN_API_TOKEN`, `GATEWAY_AUTH_PEPPER`, database URLs, Supabase keys, Postgres credentials, and service-role keys are cloud/server-side only. They must not be installed on edge gateways.
+```text
+Authorization: Bearer <supabase_user_access_token>
+```
+
+Supabase Auth owns email/password signup and email confirmation. FastAPI verifies the Supabase JWT with the server-side `SUPABASE_JWT_SECRET`, then checks local `operator_users` role and status. New confirmed users register as `pending` until an admin assigns an active role.
+
+`IOT_ADMIN_API_TOKEN`, `SUPABASE_JWT_SECRET`, `GATEWAY_AUTH_PEPPER`, database URLs, Supabase keys, Postgres credentials, and service-role keys are cloud/server-side only. They must not be installed on edge gateways.
+
+## POST /api/auth/register
+
+Purpose: create or refresh a pending local operator profile for a confirmed Supabase Auth user.
+
+Authentication: requires `Authorization: Bearer <supabase_user_access_token>`. The automation admin token is rejected for this endpoint.
+
+Request: no body.
+
+Response:
+
+```json
+{
+  "email": "operator@example.com",
+  "display_name": null,
+  "role": "pending",
+  "status": "pending",
+  "supabase_user_id": "supabase-user-uuid",
+  "last_login_at": null,
+  "created_at": "2026-06-25T00:00:00Z",
+  "updated_at": "2026-06-25T00:00:00Z"
+}
+```
+
+Success behavior: creates a pending user row if missing. Admin approval is still required before the user can access operator routes.
+
+## GET /api/auth/me
+
+Purpose: return the current authenticated operator context.
+
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or `Authorization: Bearer <supabase_user_access_token>`.
+
+Response:
+
+```json
+{
+  "email": "operator@example.com",
+  "role": "operator",
+  "status": "active",
+  "auth_type": "supabase_user"
+}
+```
+
+The automation token returns `role: admin`, `status: active`, and `auth_type: admin_token`.
 
 ## GET /health
 
@@ -171,7 +221,7 @@ Future compatibility notes: keep status values stable: `queued`, `claimed`, `com
 
 Purpose: create a job for a gateway. This is an operator/admin workflow endpoint.
 
-Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>`.
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin` or `operator` role.
 
 Request:
 
@@ -180,7 +230,7 @@ Request:
   "gateway_id": "GW001",
   "job_type": "bacnet_discover",
   "request": {
-    "port": 47814,
+    "bacnet_port": 47814,
     "timeout_sec": 10
   }
 }
@@ -190,7 +240,7 @@ Response: full job record with status `queued`.
 
 Success behavior: creates a queued job for the target gateway.
 
-Failure behavior: missing or invalid admin credentials return HTTP 401. Invalid payloads return validation errors.
+Failure behavior: missing or invalid operator credentials return HTTP 401. A read-only viewer token returns HTTP 403. Invalid payloads return validation errors.
 
 Future compatibility notes: this endpoint may become a portal API or an Edge Function. It should remain server-side and should not expose privileged database credentials to browsers or gateways.
 
@@ -198,7 +248,7 @@ Future compatibility notes: this endpoint may become a portal API or an Edge Fun
 
 Purpose: list recent jobs for debugging and verification.
 
-Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>`.
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin`, `operator`, or `viewer` role.
 
 Request: optional `limit` query parameter, default `50`, maximum `200`.
 
@@ -235,7 +285,7 @@ Future compatibility notes: this debug endpoint may later split into portal-faci
 
 Purpose: list known gateways and latest status.
 
-Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>`.
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin`, `operator`, or `viewer` role.
 
 Request: no body.
 
@@ -270,7 +320,7 @@ Future compatibility notes: when Supabase Auth and RLS are active, this can be s
 
 Purpose: create or update the cloud-side site and gateway identity, then issue a gateway API token for office provisioning.
 
-Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>`.
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin` role.
 
 Request:
 
@@ -309,3 +359,50 @@ Success behavior: creates the site if missing, creates or updates the gateway id
 Failure behavior: missing or invalid admin credentials return HTTP 401. Invalid payloads return validation errors. Database failures return server errors.
 
 Security notes: the response does not expose `GATEWAY_AUTH_PEPPER`, database credentials, Supabase keys, Postgres credentials, or service-role keys. Save the returned gateway token directly into the gateway provisioning flow; the raw token cannot be recovered later from the database.
+
+## GET /api/admin/users
+
+Purpose: list app operator users for the admin user-management page.
+
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin` role.
+
+Response:
+
+```json
+[
+  {
+    "email": "operator@example.com",
+    "display_name": "Office Operator",
+    "role": "operator",
+    "status": "active",
+    "supabase_user_id": "supabase-user-uuid",
+    "last_login_at": "2026-06-25T00:00:00Z",
+    "created_at": "2026-06-25T00:00:00Z",
+    "updated_at": "2026-06-25T00:00:00Z"
+  }
+]
+```
+
+## PUT /api/admin/users/{email}
+
+Purpose: create or update a local app role for a Supabase Auth user.
+
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin` role.
+
+Request:
+
+```json
+{
+  "email": "operator@example.com",
+  "role": "operator",
+  "status": "active",
+  "display_name": "Office Operator",
+  "supabase_user_id": "supabase-user-uuid"
+}
+```
+
+Allowed roles: `admin`, `operator`, `viewer`, `pending`.
+
+Allowed statuses: `active`, `pending`, `disabled`.
+
+Success behavior: creates or updates the local role record. It does not create the Supabase Auth account or send confirmation email; Supabase owns signup and confirmation.

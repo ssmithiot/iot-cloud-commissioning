@@ -8,9 +8,9 @@ This document captures security boundaries for the current MVP and the Supabase-
 - Edge gateways call the FastAPI API through `cloud_url`.
 - Edge gateways store local state in SQLite.
 - Edge-facing FastAPI endpoints require gateway API tokens.
-- Operator/admin FastAPI endpoints require `IOT_ADMIN_API_TOKEN`.
+- Operator/admin FastAPI endpoints accept either `IOT_ADMIN_API_TOKEN` for automation or a verified Supabase Auth user JWT with an active local app role.
 - No live Supabase credentials are committed.
-- No user login or portal access is implemented yet.
+- Supabase Auth owns email/password signup, password storage, and email confirmation.
 
 ## Credential Rules
 
@@ -30,33 +30,48 @@ This document captures security boundaries for the current MVP and the Supabase-
 
 Gateway API tokens use a server-generated `iotcc_gw_` token. The raw token is returned once during cloud-side provisioning and installed on the gateway. FastAPI stores only the token prefix and a server-side HMAC-SHA256 hash using `GATEWAY_AUTH_PEPPER`.
 
-The admin/operator token is configured with `IOT_ADMIN_API_TOKEN` in the FastAPI environment. It protects cloud/operator routes such as gateway listing, job creation, job listing, and cloud-side gateway provisioning. This token is not a gateway credential and must never be copied to edge gateways.
+The admin/operator automation token is configured with `IOT_ADMIN_API_TOKEN` in the FastAPI environment. It remains available for smoke tests, scripts, and emergency administration. This token is not a gateway credential and must never be copied to edge gateways.
+
+Human users authenticate through Supabase Auth. The operator username is the user's email address. Supabase sends and verifies the confirmation email. FastAPI verifies the Supabase JWT using the server-side `SUPABASE_JWT_SECRET`, then checks the local `operator_users` row for app role and status. Email confirmation proves email ownership; local role approval decides what the user can do.
+
+Operator role behavior:
+
+- `pending`: registered but not approved; cannot use operator routes.
+- `viewer`: can view gateway and job state.
+- `operator`: can view state and queue commissioning jobs.
+- `admin`: can manage users and perform admin-only gateway provisioning.
+- `disabled`: blocked.
 
 Current protected route groups:
 
 - Gateway token: `POST /api/edge/heartbeat`
 - Gateway token: `GET /api/edge/{gateway_id}/jobs/next`
 - Gateway token: `POST /api/edge/jobs/{job_id}/result`
-- Admin token: `GET /api/edge/gateways`
-- Admin token: `POST /api/edge/jobs`
-- Admin token: `GET /api/edge/jobs`
-- Admin token: `POST /api/admin/gateways/provision`
+- Admin token or active user: `GET /api/edge/gateways`
+- Admin token or active admin/operator user: `POST /api/edge/jobs`
+- Admin token or active user: `GET /api/edge/jobs`
+- Admin token or active admin user: `POST /api/admin/gateways/provision`
+- Admin token or active admin user: `GET /api/admin/users`
+- Admin token or active admin user: `PUT /api/admin/users/{email}`
+- Supabase user token: `POST /api/auth/register`
+- Admin token or active user: `GET /api/auth/me`
 
 The cloud-side provisioning endpoint can create or update the site and gateway identity and issue a new gateway token. The response includes the raw gateway token once; the server cannot recover the raw token later.
 
-## Future Supabase Auth And RLS
+## Supabase Auth And Future RLS
 
-Supabase Auth will represent human users for the future web portal. Portal-facing tables should use Row Level Security. MVP migrations enable RLS where appropriate but do not add broad public policies.
+Supabase Auth represents human users for the future web portal. FastAPI currently verifies Supabase JWTs and enforces local app roles server-side. Portal-facing tables should later use Row Level Security where browser clients read directly from Supabase. MVP migrations enable RLS where appropriate but do not add broad public policies.
 
 Expected future model:
 
-- `profiles` maps authenticated users to app-level profile records.
+- `operator_users` maps authenticated email users to app-level roles for the current FastAPI portal API.
+- `profiles` may later map authenticated users to broader app-level profile records.
 - `organization_memberships` defines organization access.
 - `site_permissions` scopes access to sites.
 - `edge_node_permissions` scopes access to individual gateways where needed.
 - `audit_events` records security-relevant actions.
 
-Until auth is implemented, server-side API access remains the only supported path.
+Until browser RLS policies are complete, server-side FastAPI access remains the supported path for privileged commissioning workflows.
 
 ## Edge Gateway Boundary
 
@@ -94,9 +109,10 @@ Future server-side code should write audit events for:
 
 ## Open Items
 
-- User roles and permission levels.
 - Portal session handling.
-- Replacement of the shared admin token with user-scoped portal auth.
+- Signup/login page that uses Supabase Auth and then calls FastAPI with the Supabase JWT.
+- Admin page that calls the user-management endpoints.
+- Replacement of the shared admin token as the normal human workflow.
 - RLS policy test harness.
 - Storage bucket layout.
 - Realtime channel authorization.

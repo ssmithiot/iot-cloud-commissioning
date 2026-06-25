@@ -1,6 +1,8 @@
 import os
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
+import jwt
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -9,12 +11,13 @@ os.environ["DATABASE_URL"] = "sqlite:///./test-cloud-api.db"
 os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["GATEWAY_AUTH_PEPPER"] = "test-pepper"
 os.environ["IOT_ADMIN_API_TOKEN"] = "test-admin-token"
+os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-jwt-secret"
 
 from app.auth import hash_gateway_token
 from app.config import Settings
 from app.database import Base, SessionLocal, engine
 from app.main import app
-from app.models import EdgeNode, GatewayCredential, Site
+from app.models import EdgeNode, GatewayCredential, OperatorUser, Site
 from scripts.create_gateway_credential import DEFAULT_SCOPES, create_gateway_credential
 
 
@@ -100,6 +103,46 @@ def admin_headers(token: str = "test-admin-token") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def supabase_user_token(email: str = "operator@example.com", user_id: str | None = None) -> str:
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "aud": "authenticated",
+            "exp": now + timedelta(minutes=15),
+            "iat": now,
+            "sub": user_id or str(uuid4()),
+            "email": email,
+            "role": "authenticated",
+        },
+        "test-supabase-jwt-secret",
+        algorithm="HS256",
+    )
+
+
+def user_headers(email: str = "operator@example.com", user_id: str | None = None) -> dict[str, str]:
+    return {"Authorization": f"Bearer {supabase_user_token(email=email, user_id=user_id)}"}
+
+
+def create_operator_user(
+    email: str = "operator@example.com",
+    role: str = "operator",
+    status: str = "active",
+    user_id: str | None = None,
+) -> str:
+    user_id = user_id or str(uuid4())
+    with SessionLocal() as db:
+        db.add(
+            OperatorUser(
+                supabase_user_id=user_id,
+                email=email.lower(),
+                role=role,
+                status=status,
+            )
+        )
+        db.commit()
+    return user_id
+
+
 def admin_route_cases() -> list[tuple[str, str, dict[str, object] | None]]:
     return [
         ("GET", "/api/edge/gateways", None),
@@ -138,6 +181,12 @@ def test_settings_load_admin_api_token_from_env(monkeypatch: pytest.MonkeyPatch)
     assert Settings().admin_api_token == "admin-secret"
 
 
+def test_settings_load_supabase_jwt_secret_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", "jwt-secret")
+
+    assert Settings().supabase_jwt_secret == "jwt-secret"
+
+
 def test_openapi_documents_admin_bearer_auth() -> None:
     schema = client.get("/openapi.json").json()
 
@@ -147,6 +196,8 @@ def test_openapi_documents_admin_bearer_auth() -> None:
     assert schema["paths"]["/api/edge/jobs"]["post"]["security"] == [{"AdminBearer": []}]
     assert schema["paths"]["/api/edge/jobs"]["get"]["security"] == [{"AdminBearer": []}]
     assert schema["paths"]["/api/admin/gateways/provision"]["post"]["security"] == [{"AdminBearer": []}]
+    assert schema["paths"]["/api/admin/users"]["get"]["security"] == [{"AdminBearer": []}]
+    assert schema["paths"]["/api/auth/register"]["post"]["security"] == [{"AdminBearer": []}]
 
 
 def test_database_health() -> None:
@@ -154,6 +205,14 @@ def test_database_health() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_admin_users_page_loads() -> None:
+    response = client.get("/admin/users")
+
+    assert response.status_code == 200
+    assert "IOT Cloud Commissioning Admin" in response.text
+    assert "/api/admin/users" in response.text
 
 
 def test_heartbeat_without_token_returns_401() -> None:
@@ -213,6 +272,114 @@ def test_admin_gateways_accept_valid_admin_token() -> None:
 
     assert response.status_code == 200
     assert response.json()[0]["gateway_id"] == "GW001"
+
+
+def test_register_operator_profile_requires_supabase_user_token() -> None:
+    missing_response = client.post("/api/auth/register")
+    admin_response = client.post("/api/auth/register", headers=admin_headers())
+
+    assert missing_response.status_code == 401
+    assert admin_response.status_code == 403
+
+
+def test_register_operator_profile_creates_pending_user() -> None:
+    user_id = str(uuid4())
+    response = client.post("/api/auth/register", headers=user_headers("NewUser@Example.com", user_id))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["email"] == "newuser@example.com"
+    assert body["role"] == "pending"
+    assert body["status"] == "pending"
+    assert body["supabase_user_id"] == user_id
+
+
+def test_pending_operator_profile_cannot_call_operator_routes() -> None:
+    user_id = create_operator_user("pending@example.com", role="pending", status="pending")
+
+    response = client.get("/api/edge/gateways", headers=user_headers("pending@example.com", user_id))
+
+    assert response.status_code == 401
+
+
+def test_admin_user_management_upserts_and_lists_operator_users() -> None:
+    response = client.put(
+        "/api/admin/users/operator@example.com",
+        headers=admin_headers(),
+        json={
+            "email": "operator@example.com",
+            "role": "operator",
+            "status": "active",
+            "display_name": "Office Operator",
+        },
+    )
+    listing = client.get("/api/admin/users", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json()["email"] == "operator@example.com"
+    assert response.json()["role"] == "operator"
+    assert response.json()["status"] == "active"
+    assert listing.status_code == 200
+    assert listing.json()[0]["email"] == "operator@example.com"
+
+
+def test_admin_user_management_rejects_non_admin_user() -> None:
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    response = client.get("/api/admin/users", headers=user_headers("operator@example.com", user_id))
+
+    assert response.status_code == 403
+
+
+def test_active_operator_user_can_call_operator_routes() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    response = client.get("/api/edge/gateways", headers=user_headers("operator@example.com", user_id))
+
+    assert response.status_code == 200
+    assert response.json()[0]["gateway_id"] == "GW001"
+
+
+def test_active_operator_user_can_create_jobs() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    response = client.post(
+        "/api/edge/jobs",
+        headers=user_headers("operator@example.com", user_id),
+        json={"gateway_id": "GW001", "job_type": "echo", "request": {}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+
+
+def test_viewer_user_is_read_only_for_job_creation() -> None:
+    user_id = create_operator_user("viewer@example.com", role="viewer", status="active")
+
+    gateway_response = client.get("/api/edge/gateways", headers=user_headers("viewer@example.com", user_id))
+    job_response = client.post(
+        "/api/edge/jobs",
+        headers=user_headers("viewer@example.com", user_id),
+        json={"gateway_id": "GW001", "job_type": "echo", "request": {}},
+    )
+
+    assert gateway_response.status_code == 200
+    assert job_response.status_code == 403
+
+
+def test_active_admin_user_can_manage_users() -> None:
+    user_id = create_operator_user("admin@example.com", role="admin", status="active")
+
+    response = client.put(
+        "/api/admin/users/operator@example.com",
+        headers=user_headers("admin@example.com", user_id),
+        json={"email": "operator@example.com", "role": "operator", "status": "active"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["email"] == "operator@example.com"
 
 
 def test_admin_gateways_accept_admin_token_with_incidental_whitespace() -> None:

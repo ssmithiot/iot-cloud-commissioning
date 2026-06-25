@@ -11,6 +11,7 @@ The scope includes:
 - edge gateway agent
 - clone-safe gateway provisioning
 - operator/admin API security
+- Supabase email login and admin user roles
 - BACnet runtime checks and read jobs
 - future operator UI
 - future reports and evidence
@@ -224,39 +225,42 @@ Ensure:
 
 ## 6. Future Scope by Milestone
 
-### 6.1 MVP-013 Operator UI Foundation
+### 6.1 MVP-013 Supabase Email Login And Admin User Roles
 
 Purpose:
 
-Provide a minimal operator UI for viewing gateway status and job results.
+Move human access away from a shared pasted admin token by adding Supabase email identity and local app roles.
 
 Features:
 
-- Gateway list
-- Gateway detail page
-- Latest heartbeat display
-- BACnet port display
-- Job list
-- Job detail view
-- Safe runtime-check button for a selected gateway
-- Admin/operator auth strategy
-- Clear warnings around UDP `47814`
+- Supabase email/password signup.
+- Email confirmation handled by Supabase.
+- Email address is the username.
+- FastAPI verifies Supabase user JWTs using server-side `SUPABASE_JWT_SECRET`.
+- Local `operator_users` records store role and status.
+- New users are `pending` until approved.
+- Roles: `admin`, `operator`, `viewer`, `pending`.
+- Statuses: `active`, `pending`, `disabled`.
+- Admin user-management API for assigning roles.
+- Existing `IOT_ADMIN_API_TOKEN` remains for scripts, smoke tests, and emergency automation.
 
 Not included:
 
+- Full browser portal build.
+- Direct browser access to privileged database tables.
 - BACnet writes
-- User roles
 - Report generation
 - Gateway token rotation
 
 Acceptance criteria:
 
-- Operator can view `GW777`
-- Operator can see latest heartbeat
-- Operator can queue `bacnet_runtime_check`
-- Operator can view job result
-- UI never exposes secrets
-- UI never defaults to UDP `47808`
+- Confirmed Supabase user can register a pending app profile.
+- Pending user cannot call operator routes.
+- Admin can assign user roles and statuses.
+- Active operator can view gateways and queue jobs.
+- Viewer is read-only.
+- Admin-only endpoints reject non-admin users.
+- No edge gateway receives user, admin, or Supabase credentials.
 
 ### 6.2 MVP-014 Commissioning Job Workflows
 

@@ -17,7 +17,8 @@ The cloud database stores:
 - heartbeat-derived gateway status
 - cloud-to-edge jobs
 - job results
-- future operator users, audit trails, commissioning records, templates, and reports
+- operator users
+- future audit trails, commissioning records, templates, and reports
 
 ### Edge Gateway Local State
 
@@ -41,6 +42,7 @@ Current known cloud tables/entities:
 - `edge_nodes`
 - `gateway_credentials`
 - `edge_jobs`
+- `operator_users`
 
 The schema below separates current core entities from recommended target entities.
 
@@ -88,6 +90,18 @@ erDiagram
         timestamptz created_at
         timestamptz claimed_at
         timestamptz completed_at
+    }
+
+    OPERATOR_USERS {
+        uuid id PK
+        text supabase_user_id
+        text email
+        text display_name
+        text role
+        text status
+        timestamptz last_login_at
+        timestamptz created_at
+        timestamptz updated_at
     }
 ```
 
@@ -187,6 +201,31 @@ Status values:
 | `completed` | Gateway completed successfully |
 | `failed` | Gateway attempted and failed |
 | `deferred` | Gateway could not safely run it now |
+
+### 5.4 `operator_users`
+
+Stores local app authorization for Supabase Auth users.
+
+Recommended fields:
+
+| Field | Type | Required | Notes |
+|---|---:|---:|---|
+| `id` | uuid | Yes | Internal row ID |
+| `supabase_user_id` | text | No | Supabase Auth user ID |
+| `email` | text | Yes | Username and unique lookup key |
+| `display_name` | text | No | Admin-facing display name |
+| `role` | text | Yes | `admin`, `operator`, `viewer`, or `pending` |
+| `status` | text | Yes | `active`, `pending`, or `disabled` |
+| `last_login_at` | timestamptz | No | Last accepted user JWT |
+| `created_at` | timestamptz | Yes | Record creation timestamp |
+| `updated_at` | timestamptz | Yes | Last role/status update |
+
+Notes:
+
+- Supabase Auth owns signup, passwords, and email confirmation.
+- FastAPI owns app authorization.
+- New users register as `pending`.
+- Email confirmation does not grant app privileges until an admin assigns an active role.
 
 ## 6. Recommended Target ERD
 
@@ -340,9 +379,9 @@ Groups gateways and commissioning projects by site.
 
 ### 7.2 `operator_users`
 
-Represents future authenticated users.
+Represents authenticated users.
 
-This can be tied to Supabase Auth or another identity provider later.
+Current FastAPI code ties this table to Supabase Auth JWTs. Future RLS policies may expand this into broader profile, organization, and site permission records.
 
 ### 7.3 `audit_events`
 
@@ -511,7 +550,7 @@ Common filters:
 ## 12. Open Questions
 
 1. Should `sites` become a first-class table before the first operator UI?
-2. Should operator auth remain admin-token based for another MVP or move to user auth now?
+2. Should site-specific permissions be added before the first customer-facing portal?
 3. Should job events be added before UI progress indicators?
 4. Should commissioning evidence store raw job JSON only, generated files only, or both?
 5. Should gateway token rotation be its own milestone before full lifecycle UI?

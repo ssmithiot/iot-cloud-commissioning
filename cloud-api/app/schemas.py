@@ -142,3 +142,31 @@ class EdgeJobClaimOut(BaseModel):
     gateway_id: str
     job_type: str
     request: dict[str, object]
+
+
+class OperatorUserOut(BaseModel):
+    email: str
+    display_name: str | None
+    role: str
+    status: str
+    supabase_user_id: str | None
+    last_login_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class OperatorUserUpsertIn(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    role: str = Field(pattern="^(admin|operator|viewer|pending)$")
+    status: str = Field(pattern="^(active|pending|disabled)$")
+    display_name: str | None = Field(default=None, max_length=200)
+    supabase_user_id: str | None = Field(default=None, max_length=120)
+
+
+class CurrentOperatorOut(BaseModel):
+    email: str | None
+    role: str
+    status: str
+    auth_type: str
