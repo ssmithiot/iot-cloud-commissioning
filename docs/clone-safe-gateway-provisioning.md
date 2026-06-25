@@ -52,14 +52,24 @@ The unprovisioned agent is safe if booted before provisioning. It initializes lo
 
 ## Office Provisioning
 
-Provisioning happens before shipping. Create the gateway identity and token in the cloud API from an office machine or trusted server-side environment:
+Provisioning happens before shipping. Create or update the gateway identity and issue the gateway token from an office machine or trusted server-side environment:
 
 ```bash
-cd cloud-api
-python scripts/create_gateway_credential.py GW007 --label "GW007 edge agent"
+curl -X POST https://api.example.com/api/admin/gateways/provision \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gateway_id": "GW007",
+    "site_id": "customer-site",
+    "hostname": "GW007",
+    "lan_ip": "192.168.1.50",
+    "bacnet_port": 47814,
+    "agent_version": "0.1.0",
+    "ui_version": "0.1.0"
+  }'
 ```
 
-Save the printed token once into a temporary root-readable file on the gateway:
+The response includes `gateway_api_token` once. Save that token directly into a temporary root-readable file on the gateway:
 
 ```bash
 sudo install -m 600 /dev/null /root/GW007.edge-agent.env
@@ -71,6 +81,8 @@ The file must contain:
 ```text
 GATEWAY_API_TOKEN=iotcc_gw_<token_prefix>_<secret>
 ```
+
+The admin token, cloud pepper, database URL, Supabase keys, Postgres credentials, and service-role keys must stay in the cloud/server environment. Do not copy them to the gateway.
 
 Then provision the cloned gateway:
 
@@ -114,13 +126,15 @@ journalctl -u iot-cx-agent.service -n 100 --no-pager
 Confirm heartbeat in the cloud API:
 
 ```bash
-curl https://api.example.com/api/edge/gateways
+curl https://api.example.com/api/edge/gateways \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN"
 ```
 
 Queue a BACnet runtime check from the cloud side:
 
 ```bash
 curl -X POST https://api.example.com/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"gateway_id":"GW007","job_type":"bacnet_runtime_check","request":{"port":47814}}'
 ```
@@ -128,13 +142,15 @@ curl -X POST https://api.example.com/api/edge/jobs \
 Then confirm the job result:
 
 ```bash
-curl https://api.example.com/api/edge/jobs
+curl https://api.example.com/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN"
 ```
 
 When a known BACnet device is available on the office bench, queue a smoke read:
 
 ```bash
 curl -X POST https://api.example.com/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"gateway_id":"GW007","job_type":"bacnet_read","request":{"device_instance":1234,"object_type":"analog-value","object_instance":1,"property":"present-value"}}'
 ```

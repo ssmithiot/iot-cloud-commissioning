@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import re
+import secrets
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
@@ -15,6 +16,7 @@ from app.models import GatewayCredential, utc_now
 
 
 TOKEN_PATTERN = re.compile(r"^iotcc_gw_([A-Za-z0-9-]{6,64})_([A-Za-z0-9_-]{16,})$")
+DEFAULT_GATEWAY_SCOPES = ["edge:heartbeat", "edge:jobs"]
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,11 @@ class GatewayAuthContext:
     gateway_id: str
     credential_id: str
     scopes: list[str]
+
+
+@dataclass(frozen=True)
+class AdminAuthContext:
+    authenticated: bool = True
 
 
 def parse_gateway_token(raw_token: str) -> str:
@@ -39,10 +46,24 @@ def hash_gateway_token(raw_token: str) -> str:
     ).hexdigest()
 
 
+def generate_gateway_token() -> tuple[str, str]:
+    token_prefix = secrets.token_hex(6)
+    secret = secrets.token_urlsafe(32)
+    return token_prefix, f"iotcc_gw_{token_prefix}_{secret}"
+
+
 def _unauthorized() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid gateway credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _admin_unauthorized() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid admin credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
@@ -88,3 +109,17 @@ def require_gateway_auth(
         credential_id=str(credential.id),
         scopes=list(credential.scopes or []),
     )
+
+
+def require_admin_auth(authorization: Annotated[str | None, Header()] = None) -> AdminAuthContext:
+    if authorization is None:
+        raise _admin_unauthorized()
+
+    scheme, separator, raw_token = authorization.partition(" ")
+    if separator == "" or scheme.lower() != "bearer" or not raw_token:
+        raise _admin_unauthorized()
+
+    if not hmac.compare_digest(raw_token, settings.admin_api_token):
+        raise _admin_unauthorized()
+
+    return AdminAuthContext()

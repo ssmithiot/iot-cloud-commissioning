@@ -4,6 +4,22 @@ This contract documents the current FastAPI cloud-edge API. FastAPI is the activ
 
 All timestamps are UTC ISO 8601 strings. JSON bodies use `application/json`.
 
+## Authentication
+
+Gateway-facing endpoints require a gateway API token:
+
+```text
+Authorization: Bearer iotcc_gw_<token_prefix>_<secret>
+```
+
+Operator/admin endpoints require the server-side admin API token:
+
+```text
+Authorization: Bearer <IOT_ADMIN_API_TOKEN>
+```
+
+`IOT_ADMIN_API_TOKEN`, `GATEWAY_AUTH_PEPPER`, database URLs, Supabase keys, Postgres credentials, and service-role keys are cloud/server-side only. They must not be installed on edge gateways.
+
 ## GET /health
 
 Purpose: report API process health.
@@ -27,6 +43,8 @@ Future compatibility notes: this endpoint can remain a simple unauthenticated he
 ## POST /api/edge/heartbeat
 
 Purpose: receive current gateway status and create heartbeat history.
+
+Authentication: requires `Authorization: Bearer iotcc_gw_<token_prefix>_<secret>`.
 
 Request:
 
@@ -57,13 +75,15 @@ Response:
 
 Success behavior: creates the site if missing, creates or updates the edge node, records heartbeat history, and stores latest status.
 
-Failure behavior: invalid payloads return validation errors. Database failures return server errors. Future gateway authentication failures should return HTTP 401 or 403.
+Failure behavior: invalid payloads return validation errors. Missing, invalid, expired, or revoked gateway tokens return HTTP 401. A valid gateway token for a different gateway returns HTTP 403. Database failures return server errors.
 
 Future compatibility notes: keep the payload stable for Edge Functions. Server-side code should write to Postgres; gateways should never write directly to Supabase tables.
 
 ## GET /api/edge/{gateway_id}/jobs/next
 
 Purpose: allow an edge gateway to poll outbound for the next queued job.
+
+Authentication: requires `Authorization: Bearer iotcc_gw_<token_prefix>_<secret>`.
 
 Request: path parameter `gateway_id`.
 
@@ -88,13 +108,15 @@ null
 
 Success behavior: returns the oldest queued job for the gateway and marks it `claimed`.
 
-Failure behavior: database failures return server errors. Future gateway authentication should prevent one gateway from claiming another gateway's jobs.
+Failure behavior: missing, invalid, expired, or revoked gateway tokens return HTTP 401. A valid gateway token for a different gateway returns HTTP 403. Database failures return server errors.
 
 Future compatibility notes: this endpoint needs an atomic claim operation when scaled. Supabase RPC or an Edge Function backed by a transaction is a good future fit.
 
 ## POST /api/edge/jobs/{job_id}/result
 
 Purpose: receive a job completion or failure result from the edge gateway.
+
+Authentication: requires `Authorization: Bearer iotcc_gw_<token_prefix>_<secret>`.
 
 Request:
 
@@ -141,13 +163,15 @@ Response:
 
 Success behavior: marks the job `completed` or `failed`, stores result JSON, error message, and completion timestamp.
 
-Failure behavior: unknown jobs return HTTP 404. Invalid status values return validation errors. Future gateway authentication should verify the reporting gateway owns the job.
+Failure behavior: missing, invalid, expired, or revoked gateway tokens return HTTP 401. A valid gateway token for a gateway that does not own the job returns HTTP 403. Unknown jobs return HTTP 404. Invalid status values return validation errors.
 
 Future compatibility notes: keep status values stable: `queued`, `claimed`, `completed`, `failed`.
 
 ## POST /api/edge/jobs
 
-Purpose: create a job for a gateway. This is a debugging and server-side workflow endpoint today.
+Purpose: create a job for a gateway. This is an operator/admin workflow endpoint.
+
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>`.
 
 Request:
 
@@ -166,13 +190,15 @@ Response: full job record with status `queued`.
 
 Success behavior: creates a queued job for the target gateway.
 
-Failure behavior: invalid payloads return validation errors. Future authorization should limit who can create jobs for an organization or site.
+Failure behavior: missing or invalid admin credentials return HTTP 401. Invalid payloads return validation errors.
 
-Future compatibility notes: this endpoint may become a portal API, an admin API, or an Edge Function. It should remain server-side and should not expose privileged database credentials to browsers or gateways.
+Future compatibility notes: this endpoint may become a portal API or an Edge Function. It should remain server-side and should not expose privileged database credentials to browsers or gateways.
 
 ## GET /api/edge/jobs
 
 Purpose: list recent jobs for debugging and verification.
+
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>`.
 
 Request: optional `limit` query parameter, default `50`, maximum `200`.
 
@@ -201,13 +227,15 @@ Response:
 
 Success behavior: returns recent jobs ordered newest first.
 
-Failure behavior: database failures return server errors. Future portal access should require user authentication and RLS-compatible filtering.
+Failure behavior: missing or invalid admin credentials return HTTP 401. Database failures return server errors. Future portal access should require user authentication and RLS-compatible filtering.
 
 Future compatibility notes: this debug endpoint may later split into portal-facing job history and internal gateway APIs.
 
 ## GET /api/edge/gateways
 
 Purpose: list known gateways and latest status.
+
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>`.
 
 Request: no body.
 
@@ -234,6 +262,50 @@ Response:
 
 Success behavior: returns all known gateways and latest status.
 
-Failure behavior: database failures return server errors. Future portal access should filter by organization, site, and user permissions.
+Failure behavior: missing or invalid admin credentials return HTTP 401. Database failures return server errors. Future portal access should filter by organization, site, and user permissions.
 
 Future compatibility notes: when Supabase Auth and RLS are active, this can be served through a portal API using user-scoped access. Gateway-facing endpoints should remain gateway-authenticated.
+
+## POST /api/admin/gateways/provision
+
+Purpose: create or update the cloud-side site and gateway identity, then issue a gateway API token for office provisioning.
+
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>`.
+
+Request:
+
+```json
+{
+  "gateway_id": "GW007",
+  "site_id": "customer-site",
+  "hostname": "GW007",
+  "lan_ip": "192.168.1.50",
+  "bacnet_port": 47814,
+  "agent_version": "0.1.0",
+  "ui_version": "0.1.0"
+}
+```
+
+`bacnet_port` defaults to `47814`. `agent_version` and `ui_version` default to `0.1.0`.
+
+Response:
+
+```json
+{
+  "gateway_id": "GW007",
+  "site_id": "customer-site",
+  "hostname": "GW007",
+  "lan_ip": "192.168.1.50",
+  "bacnet_port": 47814,
+  "agent_version": "0.1.0",
+  "ui_version": "0.1.0",
+  "gateway_api_token": "iotcc_gw_<token_prefix>_<secret>",
+  "token_prefix": "<token_prefix>"
+}
+```
+
+Success behavior: creates the site if missing, creates or updates the gateway identity, stores only the token prefix and server-side HMAC token hash, and returns the raw gateway token once in the response.
+
+Failure behavior: missing or invalid admin credentials return HTTP 401. Invalid payloads return validation errors. Database failures return server errors.
+
+Security notes: the response does not expose `GATEWAY_AUTH_PEPPER`, database credentials, Supabase keys, Postgres credentials, or service-role keys. Save the returned gateway token directly into the gateway provisioning flow; the raw token cannot be recovered later from the database.
