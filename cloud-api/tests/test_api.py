@@ -355,6 +355,23 @@ def test_create_claim_and_complete_job() -> None:
     assert completed["completed_at"] is not None
 
 
+def test_job_creation_rejects_payload_field() -> None:
+    response = client.post(
+        "/api/edge/jobs",
+        headers=admin_headers(),
+        json={
+            "gateway_id": "GW001",
+            "job_type": "bacnet_runtime_check",
+            "payload": {"bacnet_port": 47814},
+        },
+    )
+
+    assert response.status_code == 422
+    error = response.json()["detail"][0]
+    assert error["loc"] == ["body", "payload"]
+    assert error["type"] == "extra_forbidden"
+
+
 def test_job_poll_without_token_returns_401() -> None:
     response = client.get("/api/edge/GW001/jobs/next")
 

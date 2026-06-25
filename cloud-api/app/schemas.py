@@ -107,6 +107,8 @@ class JobCreateIn(BaseModel):
     job_type: str = Field(min_length=1, max_length=80)
     request: dict[str, object] = Field(default_factory=dict)
 
+    model_config = ConfigDict(extra="forbid")
+
     @model_validator(mode="after")
     def validate_known_job_payloads(self) -> "JobCreateIn":
         if self.job_type == "bacnet_read":
