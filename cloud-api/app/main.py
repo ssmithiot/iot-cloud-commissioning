@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -57,6 +57,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lifespan)
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/login", status_code=307)
 
 
 @app.get("/health")

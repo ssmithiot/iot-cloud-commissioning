@@ -217,6 +217,13 @@ def test_database_health() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_root_redirects_to_login() -> None:
+    response = client.get("/", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/login"
+
+
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
