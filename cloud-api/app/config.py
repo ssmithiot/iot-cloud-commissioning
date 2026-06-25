@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     supabase_jwt_audience: str = Field(default="authenticated", validation_alias="SUPABASE_JWT_AUDIENCE")
     supabase_url: str | None = Field(default=None, validation_alias="SUPABASE_URL")
     supabase_anon_key: str | None = Field(default=None, validation_alias="SUPABASE_ANON_KEY")
+    supabase_jwks_url: str | None = Field(default=None, validation_alias="SUPABASE_JWKS_URL")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),

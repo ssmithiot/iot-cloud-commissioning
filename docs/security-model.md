@@ -32,7 +32,12 @@ Gateway API tokens use a server-generated `iotcc_gw_` token. The raw token is re
 
 The admin/operator automation token is configured with `IOT_ADMIN_API_TOKEN` in the FastAPI environment. It remains available for smoke tests, scripts, and emergency administration. This token is not a gateway credential and must never be copied to edge gateways.
 
-Human users authenticate through Supabase Auth. The operator username is the user's email address. Supabase sends and verifies the confirmation email. FastAPI verifies the Supabase JWT using the server-side `SUPABASE_JWT_SECRET`, then checks the local `operator_users` row for app role and status. Email confirmation proves email ownership; local role approval decides what the user can do.
+Human users authenticate through Supabase Auth. The operator username is the user's email address. Supabase sends and verifies the confirmation email. FastAPI verifies the Supabase JWT, then checks the local `operator_users` row for app role and status. Email confirmation proves email ownership; local role approval decides what the user can do.
+
+JWT verification supports both Supabase signing models:
+
+- Legacy `HS256` tokens verify with server-side `SUPABASE_JWT_SECRET`.
+- Newer `RS256` or `ES256` signing-key tokens verify through the Supabase JWKS endpoint derived from `SUPABASE_URL`, or from explicit `SUPABASE_JWKS_URL`.
 
 The browser UI may receive only public Supabase browser configuration:
 

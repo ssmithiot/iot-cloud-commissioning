@@ -22,7 +22,12 @@ Authorization: Bearer <IOT_ADMIN_API_TOKEN>
 Authorization: Bearer <supabase_user_access_token>
 ```
 
-Supabase Auth owns email/password signup and email confirmation. FastAPI verifies the Supabase JWT with the server-side `SUPABASE_JWT_SECRET`, then checks local `operator_users` role and status. New confirmed users register as `pending` until an admin assigns an active role.
+Supabase Auth owns email/password signup and email confirmation. FastAPI verifies the Supabase JWT, then checks local `operator_users` role and status. New confirmed users register as `pending` until an admin assigns an active role.
+
+JWT verification supports:
+
+- `HS256` with server-side `SUPABASE_JWT_SECRET`.
+- `RS256` and `ES256` with the Supabase JWKS endpoint at `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`, or an explicit `SUPABASE_JWKS_URL` override.
 
 `IOT_ADMIN_API_TOKEN`, `SUPABASE_JWT_SECRET`, `GATEWAY_AUTH_PEPPER`, database URLs, Supabase keys, Postgres credentials, and service-role keys are cloud/server-side only. They must not be installed on edge gateways.
 

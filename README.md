@@ -73,9 +73,10 @@ SUPABASE_JWT_SECRET=<supabase-project-jwt-secret>
 SUPABASE_JWT_AUDIENCE=authenticated
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_ANON_KEY=<supabase-anon-public-key>
+SUPABASE_JWKS_URL=
 ```
 
-`SUPABASE_URL` and `SUPABASE_ANON_KEY` are public browser values. `SUPABASE_JWT_SECRET` is server-side only. Do not configure any of these values on edge gateways.
+`SUPABASE_URL` and `SUPABASE_ANON_KEY` are public browser values. `SUPABASE_JWT_SECRET` is server-side only and is used for legacy `HS256` projects. For newer Supabase JWT signing keys, FastAPI verifies `RS256` and `ES256` user JWTs from `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`; set `SUPABASE_JWKS_URL` only when an explicit override is needed. Do not configure any of these values on edge gateways.
 
 For MVP-005 development:
 

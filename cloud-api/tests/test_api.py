@@ -5,6 +5,7 @@ from uuid import uuid4
 import jwt
 import pytest
 from fastapi.testclient import TestClient
+from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import select
 
 os.environ["DATABASE_URL"] = "sqlite:///./test-cloud-api.db"
@@ -103,11 +104,15 @@ def admin_headers(token: str = "test-admin-token") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def supabase_user_token(email: str = "operator@example.com", user_id: str | None = None) -> str:
+def supabase_user_token(
+    email: str = "operator@example.com",
+    user_id: str | None = None,
+    audience: str = "authenticated",
+) -> str:
     now = datetime.now(timezone.utc)
     return jwt.encode(
         {
-            "aud": "authenticated",
+            "aud": audience,
             "exp": now + timedelta(minutes=15),
             "iat": now,
             "sub": user_id or str(uuid4()),
@@ -116,6 +121,28 @@ def supabase_user_token(email: str = "operator@example.com", user_id: str | None
         },
         "test-supabase-jwt-secret",
         algorithm="HS256",
+    )
+
+
+def supabase_rs256_user_token(
+    private_key,
+    email: str = "operator@example.com",
+    user_id: str | None = None,
+    audience: str = "authenticated",
+) -> str:
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "aud": audience,
+            "exp": now + timedelta(minutes=15),
+            "iat": now,
+            "sub": user_id or str(uuid4()),
+            "email": email,
+            "role": "authenticated",
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "test-rs256-key"},
     )
 
 
@@ -195,6 +222,12 @@ def test_settings_load_public_supabase_browser_config(monkeypatch: pytest.Monkey
 
     assert loaded.supabase_url == "https://example.supabase.co"
     assert loaded.supabase_anon_key == "anon-public-key"
+
+
+def test_settings_load_supabase_jwks_url_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SUPABASE_JWKS_URL", "https://example.supabase.co/auth/v1/.well-known/jwks.json")
+
+    assert Settings().supabase_jwks_url == "https://example.supabase.co/auth/v1/.well-known/jwks.json"
 
 
 def test_openapi_documents_admin_bearer_auth() -> None:
@@ -351,6 +384,22 @@ def test_register_operator_profile_requires_supabase_user_token() -> None:
     assert admin_response.status_code == 403
 
 
+def test_register_operator_profile_rejects_invalid_jwt() -> None:
+    response = client.post("/api/auth/register", headers={"Authorization": "Bearer not-a-jwt"})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid admin credentials"
+
+
+def test_register_operator_profile_rejects_wrong_audience() -> None:
+    token = supabase_user_token("operator@example.com", audience="wrong-audience")
+
+    response = client.post("/api/auth/register", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid admin credentials"
+
+
 def test_register_operator_profile_creates_pending_user() -> None:
     user_id = str(uuid4())
     response = client.post("/api/auth/register", headers=user_headers("NewUser@Example.com", user_id))
@@ -361,6 +410,47 @@ def test_register_operator_profile_creates_pending_user() -> None:
     assert body["role"] == "pending"
     assert body["status"] == "pending"
     assert body["supabase_user_id"] == user_id
+
+
+def test_register_operator_profile_accepts_rs256_jwks_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.auth as auth_module
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    expected_jwks_url = "https://project-ref.supabase.co/auth/v1/.well-known/jwks.json"
+
+    class FakeSigningKey:
+        key = public_key
+
+    class FakeJWKClient:
+        def __init__(self, url: str) -> None:
+            assert url == expected_jwks_url
+
+        def get_signing_key_from_jwt(self, token: str) -> FakeSigningKey:
+            header = jwt.get_unverified_header(token)
+            assert header["alg"] == "RS256"
+            assert header["kid"] == "test-rs256-key"
+            return FakeSigningKey()
+
+    monkeypatch.setattr(auth_module.settings, "supabase_url", "https://project-ref.supabase.co")
+    monkeypatch.setattr(auth_module.settings, "supabase_jwks_url", None)
+    monkeypatch.setattr(auth_module, "PyJWKClient", FakeJWKClient)
+
+    user_id = str(uuid4())
+    token = supabase_rs256_user_token(private_key, email="rs256@example.com", user_id=user_id)
+
+    response = client.post("/api/auth/register", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    assert response.json()["email"] == "rs256@example.com"
+    assert response.json()["supabase_user_id"] == user_id
+
+
+def test_operator_route_rejects_valid_jwt_without_role_lookup() -> None:
+    response = client.get("/api/edge/gateways", headers=user_headers("unknown@example.com"))
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid admin credentials"
 
 
 def test_pending_operator_profile_cannot_call_operator_routes() -> None:

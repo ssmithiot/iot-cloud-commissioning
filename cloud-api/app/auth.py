@@ -9,7 +9,7 @@ from typing import Annotated
 from fastapi import Depends, Header, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
-from jwt import InvalidTokenError
+from jwt import InvalidTokenError, PyJWKClient, PyJWKClientError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -151,18 +151,52 @@ def _is_admin_token(raw_token: str) -> bool:
     return bool(raw_token and expected_token and hmac.compare_digest(raw_token, expected_token))
 
 
-def _decode_supabase_jwt(raw_token: str) -> dict[str, object]:
+def _supabase_jwks_url() -> str | None:
+    configured_url = (settings.supabase_jwks_url or "").strip()
+    if configured_url:
+        return configured_url
+    supabase_url = (settings.supabase_url or "").strip().rstrip("/")
+    if not supabase_url:
+        return None
+    return f"{supabase_url}/auth/v1/.well-known/jwks.json"
+
+
+def _decode_supabase_hs256_jwt(raw_token: str) -> dict[str, object]:
     secret = (settings.supabase_jwt_secret or "").strip()
     if not secret:
         raise _admin_unauthorized()
+    return jwt.decode(
+        raw_token,
+        secret,
+        algorithms=["HS256"],
+        audience=settings.supabase_jwt_audience,
+    )
+
+
+def _decode_supabase_jwks_jwt(raw_token: str, algorithm: str) -> dict[str, object]:
+    jwks_url = _supabase_jwks_url()
+    if not jwks_url:
+        raise _admin_unauthorized()
+    signing_key = PyJWKClient(jwks_url).get_signing_key_from_jwt(raw_token)
+    return jwt.decode(
+        raw_token,
+        signing_key.key,
+        algorithms=[algorithm],
+        audience=settings.supabase_jwt_audience,
+    )
+
+
+def _decode_supabase_jwt(raw_token: str) -> dict[str, object]:
     try:
-        claims = jwt.decode(
-            raw_token,
-            secret,
-            algorithms=["HS256"],
-            audience=settings.supabase_jwt_audience,
-        )
-    except InvalidTokenError:
+        header = jwt.get_unverified_header(raw_token)
+        algorithm = header.get("alg")
+        if algorithm == "HS256":
+            claims = _decode_supabase_hs256_jwt(raw_token)
+        elif algorithm in {"RS256", "ES256"}:
+            claims = _decode_supabase_jwks_jwt(raw_token, algorithm)
+        else:
+            raise _admin_unauthorized()
+    except (InvalidTokenError, PyJWKClientError, ValueError):
         raise _admin_unauthorized() from None
     if not isinstance(claims, dict):
         raise _admin_unauthorized()

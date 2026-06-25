@@ -236,7 +236,7 @@ Features:
 - Supabase email/password signup.
 - Email confirmation handled by Supabase.
 - Email address is the username.
-- FastAPI verifies Supabase user JWTs using server-side `SUPABASE_JWT_SECRET`.
+- FastAPI verifies Supabase user JWTs using `SUPABASE_JWT_SECRET` for legacy `HS256` or Supabase JWKS for `RS256`/`ES256`.
 - Local `operator_users` records store role and status.
 - New users are `pending` until approved.
 - Roles: `admin`, `operator`, `viewer`, `pending`.
