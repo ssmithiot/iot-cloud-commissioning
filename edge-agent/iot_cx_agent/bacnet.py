@@ -85,7 +85,7 @@ def _deferred_result(base_result: dict[str, object], config: AgentConfig) -> dic
 
 def run_bacnet_runtime_check(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[str, object], str | None]:
     try:
-        port = int(request.get("port", config.bacnet_default_port))
+        port = int(request.get("bacnet_port", request.get("port", config.bacnet_default_port)))
         timeout_sec = int(request.get("timeout_sec", config.bacnet_timeout_sec))
     except (TypeError, ValueError):
         port = config.bacnet_default_port

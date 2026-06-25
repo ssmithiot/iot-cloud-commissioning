@@ -38,7 +38,7 @@ Queue a runtime check from the cloud API:
 ```powershell
 Invoke-RestMethod -Method Post http://localhost:8000/api/edge/jobs `
   -ContentType "application/json" `
-  -Body '{"gateway_id":"GW006","job_type":"bacnet_runtime_check","request":{"port":47814}}'
+  -Body '{"gateway_id":"GW006","job_type":"bacnet_runtime_check","request":{"bacnet_port":47814}}'
 ```
 
 The edge result reports the BACnet port, timeout, lock path, whether the lock is held, and whether `bacwi` and `bacrp` paths exist and are executable.

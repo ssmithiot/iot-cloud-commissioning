@@ -100,6 +100,23 @@ def admin_headers(token: str = "test-admin-token") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def admin_route_cases() -> list[tuple[str, str, dict[str, object] | None]]:
+    return [
+        ("GET", "/api/edge/gateways", None),
+        ("POST", "/api/edge/jobs", {"gateway_id": "GW001", "job_type": "echo", "request": {}}),
+        ("GET", "/api/edge/jobs", None),
+        ("POST", "/api/admin/gateways/provision", {"gateway_id": "GW777", "site_id": "test-bench", "hostname": "GW777"}),
+    ]
+
+
+def request_admin_route(method: str, path: str, headers: dict[str, str] | None, json: dict[str, object] | None):
+    if method == "GET":
+        return client.get(path, headers=headers)
+    if method == "POST":
+        return client.post(path, headers=headers, json=json)
+    raise AssertionError(f"Unsupported test method: {method}")
+
+
 def test_health() -> None:
     response = client.get("/health")
 
@@ -119,6 +136,17 @@ def test_settings_load_admin_api_token_from_env(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("IOT_ADMIN_API_TOKEN", "admin-secret")
 
     assert Settings().admin_api_token == "admin-secret"
+
+
+def test_openapi_documents_admin_bearer_auth() -> None:
+    schema = client.get("/openapi.json").json()
+
+    assert schema["components"]["securitySchemes"]["AdminBearer"]["type"] == "http"
+    assert schema["components"]["securitySchemes"]["AdminBearer"]["scheme"] == "bearer"
+    assert schema["paths"]["/api/edge/gateways"]["get"]["security"] == [{"AdminBearer": []}]
+    assert schema["paths"]["/api/edge/jobs"]["post"]["security"] == [{"AdminBearer": []}]
+    assert schema["paths"]["/api/edge/jobs"]["get"]["security"] == [{"AdminBearer": []}]
+    assert schema["paths"]["/api/admin/gateways/provision"]["post"]["security"] == [{"AdminBearer": []}]
 
 
 def test_database_health() -> None:
@@ -162,10 +190,18 @@ def test_admin_gateways_reject_missing_auth() -> None:
     response = client.get("/api/edge/gateways")
 
     assert response.status_code == 401
+    assert response.json()["detail"] == "Missing admin credentials"
 
 
 def test_admin_gateways_reject_bad_auth() -> None:
     response = client.get("/api/edge/gateways", headers=admin_headers("not-the-admin-token"))
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid admin credentials"
+
+
+def test_admin_gateways_reject_raw_token_without_bearer() -> None:
+    response = client.get("/api/edge/gateways", headers={"Authorization": "test-admin-token"})
 
     assert response.status_code == 401
 
@@ -177,6 +213,38 @@ def test_admin_gateways_accept_valid_admin_token() -> None:
 
     assert response.status_code == 200
     assert response.json()[0]["gateway_id"] == "GW001"
+
+
+def test_admin_gateways_accept_admin_token_with_incidental_whitespace() -> None:
+    create_gateway_token("GW001")
+
+    response = client.get("/api/edge/gateways", headers=admin_headers("  test-admin-token  "))
+
+    assert response.status_code == 200
+    assert response.json()[0]["gateway_id"] == "GW001"
+
+
+@pytest.mark.parametrize(("method", "path", "body"), admin_route_cases())
+def test_admin_routes_reject_missing_auth(method: str, path: str, body: dict[str, object] | None) -> None:
+    response = request_admin_route(method, path, headers=None, json=body)
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(("method", "path", "body"), admin_route_cases())
+def test_admin_routes_reject_bad_auth(method: str, path: str, body: dict[str, object] | None) -> None:
+    response = request_admin_route(method, path, headers=admin_headers("bad-admin-token"), json=body)
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize(("method", "path", "body"), admin_route_cases())
+def test_admin_routes_reject_raw_token_without_bearer(
+    method: str, path: str, body: dict[str, object] | None
+) -> None:
+    response = request_admin_route(method, path, headers={"Authorization": "test-admin-token"}, json=body)
+
+    assert response.status_code == 401
 
 
 def test_gateway_token_cannot_call_admin_routes() -> None:

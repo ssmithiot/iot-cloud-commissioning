@@ -58,7 +58,7 @@ Queue a `bacnet_runtime_check` from the cloud API:
 curl -X POST https://api.example.com/api/edge/jobs \
   -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"gateway_id":"GW007","job_type":"bacnet_runtime_check","request":{"port":47814}}'
+  -d '{"gateway_id":"GW007","job_type":"bacnet_runtime_check","request":{"bacnet_port":47814}}'
 ```
 
 Confirm heartbeat and job completion:

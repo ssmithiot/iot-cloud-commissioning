@@ -6,7 +6,8 @@ import re
 import secrets
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Security, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,7 @@ from app.models import GatewayCredential, utc_now
 
 TOKEN_PATTERN = re.compile(r"^iotcc_gw_([A-Za-z0-9-]{6,64})_([A-Za-z0-9_-]{16,})$")
 DEFAULT_GATEWAY_SCOPES = ["edge:heartbeat", "edge:jobs"]
+ADMIN_BEARER = HTTPBearer(auto_error=False, scheme_name="AdminBearer")
 
 
 @dataclass(frozen=True)
@@ -60,10 +62,10 @@ def _unauthorized() -> HTTPException:
     )
 
 
-def _admin_unauthorized() -> HTTPException:
+def _admin_unauthorized(detail: str = "Invalid admin credentials") -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid admin credentials",
+        detail=detail,
         headers={"WWW-Authenticate": "Bearer"},
     )
 
@@ -111,15 +113,18 @@ def require_gateway_auth(
     )
 
 
-def require_admin_auth(authorization: Annotated[str | None, Header()] = None) -> AdminAuthContext:
-    if authorization is None:
+def require_admin_auth(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(ADMIN_BEARER)] = None,
+) -> AdminAuthContext:
+    if credentials is None:
+        raise _admin_unauthorized("Missing admin credentials")
+
+    raw_token = credentials.credentials.strip()
+    expected_token = settings.admin_api_token.strip()
+    if not raw_token or not expected_token:
         raise _admin_unauthorized()
 
-    scheme, separator, raw_token = authorization.partition(" ")
-    if separator == "" or scheme.lower() != "bearer" or not raw_token:
-        raise _admin_unauthorized()
-
-    if not hmac.compare_digest(raw_token, settings.admin_api_token):
+    if not hmac.compare_digest(raw_token, expected_token):
         raise _admin_unauthorized()
 
     return AdminAuthContext()

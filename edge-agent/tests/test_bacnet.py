@@ -163,6 +163,20 @@ def test_bacnet_runtime_check_success(tmp_path: Path) -> None:
     assert result["bacrp_exists"] is True
 
 
+def test_bacnet_runtime_check_accepts_bacnet_port_request_field(tmp_path: Path) -> None:
+    bacwi_path = tmp_path / "bacwi"
+    bacrp_path = tmp_path / "bacrp"
+    bacwi_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    bacrp_path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    agent_config = config(tmp_path, bacwi_path=str(bacwi_path), bacrp_path=str(bacrp_path))
+    result, error = run_bacnet_runtime_check(agent_config, {"bacnet_port": 47814})
+
+    assert error is None
+    assert result["status"] == "ok"
+    assert result["bacnet_port"] == 47814
+
+
 def test_bacnet_runtime_check_failure_when_port_is_47808(tmp_path: Path) -> None:
     result, error = run_bacnet_runtime_check(config(tmp_path, bacnet_default_port=47808), {})
 
