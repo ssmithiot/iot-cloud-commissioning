@@ -8,10 +8,11 @@ from sqlalchemy import select
 os.environ["DATABASE_URL"] = "sqlite:///./test-cloud-api.db"
 os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["GATEWAY_AUTH_PEPPER"] = "test-pepper"
+os.environ["IOT_ADMIN_API_TOKEN"] = "test-admin-token"
 
 from app.auth import hash_gateway_token
 from app.config import Settings
-from app.database import Base, engine
+from app.database import Base, SessionLocal, engine
 from app.main import app
 from app.models import EdgeNode, GatewayCredential, Site
 from scripts.create_gateway_credential import DEFAULT_SCOPES, create_gateway_credential
@@ -95,6 +96,10 @@ def auth_headers(raw_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {raw_token}"}
 
 
+def admin_headers(token: str = "test-admin-token") -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_health() -> None:
     response = client.get("/health")
 
@@ -108,6 +113,12 @@ def test_settings_load_database_url_from_env(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("DATABASE_URL", database_url)
 
     assert Settings().database_url == database_url
+
+
+def test_settings_load_admin_api_token_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("IOT_ADMIN_API_TOKEN", "admin-secret")
+
+    assert Settings().admin_api_token == "admin-secret"
 
 
 def test_database_health() -> None:
@@ -137,7 +148,7 @@ def test_heartbeat_creates_gateway_and_history() -> None:
     raw_token = create_gateway_token("GW001")
 
     heartbeat = client.post("/api/edge/heartbeat", headers=auth_headers(raw_token), json=heartbeat_payload("GW001"))
-    gateways = client.get("/api/edge/gateways")
+    gateways = client.get("/api/edge/gateways", headers=admin_headers())
 
     assert heartbeat.status_code == 200
     assert heartbeat.json()["gateway_id"] == "GW001"
@@ -145,6 +156,35 @@ def test_heartbeat_creates_gateway_and_history() -> None:
     assert gateways.status_code == 200
     assert gateways.json()[0]["gateway_id"] == "GW001"
     assert gateways.json()[0]["site_id"] == "demo-site"
+
+
+def test_admin_gateways_reject_missing_auth() -> None:
+    response = client.get("/api/edge/gateways")
+
+    assert response.status_code == 401
+
+
+def test_admin_gateways_reject_bad_auth() -> None:
+    response = client.get("/api/edge/gateways", headers=admin_headers("not-the-admin-token"))
+
+    assert response.status_code == 401
+
+
+def test_admin_gateways_accept_valid_admin_token() -> None:
+    create_gateway_token("GW001")
+
+    response = client.get("/api/edge/gateways", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json()[0]["gateway_id"] == "GW001"
+
+
+def test_gateway_token_cannot_call_admin_routes() -> None:
+    raw_token = create_gateway_token("GW001")
+
+    response = client.get("/api/edge/gateways", headers=auth_headers(raw_token))
+
+    assert response.status_code == 401
 
 
 def test_heartbeat_with_mismatched_gateway_id_returns_403() -> None:
@@ -213,6 +253,7 @@ def test_create_claim_and_complete_job() -> None:
     raw_token = create_gateway_token("GW001")
     create_response = client.post(
         "/api/edge/jobs",
+        headers=admin_headers(),
         json={"gateway_id": "GW001", "job_type": "echo", "request": {"message": "hello edge"}},
     )
 
@@ -270,6 +311,7 @@ def test_job_result_can_mark_failed() -> None:
     raw_token = create_gateway_token("GW001")
     create_response = client.post(
         "/api/edge/jobs",
+        headers=admin_headers(),
         json={"gateway_id": "GW001", "job_type": "unknown", "request": {}},
     )
     job_id = create_response.json()["job_id"]
@@ -279,7 +321,7 @@ def test_job_result_can_mark_failed() -> None:
         headers=auth_headers(raw_token),
         json={"status": "failed", "result": None, "error_message": "Unknown job_type: unknown"},
     )
-    jobs_response = client.get("/api/edge/jobs")
+    jobs_response = client.get("/api/edge/jobs", headers=admin_headers())
 
     assert result_response.status_code == 200
     assert result_response.json()["status"] == "failed"
@@ -292,6 +334,7 @@ def test_job_result_can_mark_deferred() -> None:
     raw_token = create_gateway_token("GW001")
     create_response = client.post(
         "/api/edge/jobs",
+        headers=admin_headers(),
         json={
             "gateway_id": "GW001",
             "job_type": "bacnet_read",
@@ -326,6 +369,7 @@ def test_job_result_can_mark_deferred() -> None:
 def test_job_result_without_token_returns_401() -> None:
     create_response = client.post(
         "/api/edge/jobs",
+        headers=admin_headers(),
         json={"gateway_id": "GW001", "job_type": "echo", "request": {}},
     )
 
@@ -340,6 +384,7 @@ def test_job_result_without_token_returns_401() -> None:
 def test_job_result_with_bad_token_returns_401() -> None:
     create_response = client.post(
         "/api/edge/jobs",
+        headers=admin_headers(),
         json={"gateway_id": "GW001", "job_type": "echo", "request": {}},
     )
 
@@ -356,6 +401,7 @@ def test_job_result_with_other_gateway_token_returns_403() -> None:
     raw_token = create_gateway_token("GW002", token_prefix="gw00201")
     create_response = client.post(
         "/api/edge/jobs",
+        headers=admin_headers(),
         json={"gateway_id": "GW001", "job_type": "echo", "request": {}},
     )
 
@@ -366,3 +412,135 @@ def test_job_result_with_other_gateway_token_returns_403() -> None:
     )
 
     assert response.status_code == 403
+
+
+def test_job_creation_requires_admin_auth() -> None:
+    response = client.post(
+        "/api/edge/jobs",
+        json={"gateway_id": "GW001", "job_type": "echo", "request": {}},
+    )
+
+    assert response.status_code == 401
+
+
+def test_job_creation_rejects_bad_admin_auth() -> None:
+    response = client.post(
+        "/api/edge/jobs",
+        headers=admin_headers("bad-admin-token"),
+        json={"gateway_id": "GW001", "job_type": "echo", "request": {}},
+    )
+
+    assert response.status_code == 401
+
+
+def test_job_creation_rejects_gateway_token() -> None:
+    raw_token = create_gateway_token("GW001")
+
+    response = client.post(
+        "/api/edge/jobs",
+        headers=auth_headers(raw_token),
+        json={"gateway_id": "GW001", "job_type": "echo", "request": {}},
+    )
+
+    assert response.status_code == 401
+
+
+def test_job_listing_requires_admin_auth() -> None:
+    response = client.get("/api/edge/jobs")
+
+    assert response.status_code == 401
+
+
+def test_job_listing_accepts_admin_auth() -> None:
+    create_gateway_token("GW001")
+    client.post(
+        "/api/edge/jobs",
+        headers=admin_headers(),
+        json={"gateway_id": "GW001", "job_type": "echo", "request": {}},
+    )
+
+    response = client.get("/api/edge/jobs", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json()[0]["gateway_id"] == "GW001"
+
+
+def test_admin_provision_gateway_creates_identity_and_token() -> None:
+    response = client.post(
+        "/api/admin/gateways/provision",
+        headers=admin_headers(),
+        json={
+            "gateway_id": "GW777",
+            "site_id": "test-bench",
+            "hostname": "GW777",
+            "lan_ip": "192.168.1.200",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["gateway_id"] == "GW777"
+    assert body["site_id"] == "test-bench"
+    assert body["hostname"] == "GW777"
+    assert body["lan_ip"] == "192.168.1.200"
+    assert body["bacnet_port"] == 47814
+    assert body["agent_version"] == "0.1.0"
+    assert body["ui_version"] == "0.1.0"
+    assert body["gateway_api_token"].startswith(f"iotcc_gw_{body['token_prefix']}_")
+    assert "pepper" not in body
+    assert "token_hash" not in body
+
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW777"))
+        credential = db.scalar(select(GatewayCredential).where(GatewayCredential.token_prefix == body["token_prefix"]))
+
+    assert edge_node is not None
+    assert edge_node.site_id == "test-bench"
+    assert credential is not None
+    assert credential.gateway_id == "GW777"
+    assert credential.token_hash == hash_gateway_token(body["gateway_api_token"])
+
+
+def test_admin_provision_gateway_requires_admin_auth() -> None:
+    response = client.post(
+        "/api/admin/gateways/provision",
+        json={"gateway_id": "GW777", "site_id": "test-bench", "hostname": "GW777"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_admin_provision_gateway_updates_existing_identity_and_issues_new_token() -> None:
+    client.post(
+        "/api/admin/gateways/provision",
+        headers=admin_headers(),
+        json={"gateway_id": "GW777", "site_id": "old-site", "hostname": "old-host"},
+    )
+
+    response = client.post(
+        "/api/admin/gateways/provision",
+        headers=admin_headers(),
+        json={
+            "gateway_id": "GW777",
+            "site_id": "test-bench",
+            "hostname": "GW777",
+            "lan_ip": "192.168.1.201",
+            "bacnet_port": 47814,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["site_id"] == "test-bench"
+    assert body["hostname"] == "GW777"
+    assert body["lan_ip"] == "192.168.1.201"
+
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW777"))
+        credentials = list(
+            db.scalars(select(GatewayCredential).where(GatewayCredential.gateway_id == "GW777")).all()
+        )
+
+    assert edge_node is not None
+    assert edge_node.site_id == "test-bench"
+    assert len(credentials) == 2

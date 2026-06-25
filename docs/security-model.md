@@ -7,6 +7,8 @@ This document captures security boundaries for the current MVP and the Supabase-
 - FastAPI is the only cloud API adapter.
 - Edge gateways call the FastAPI API through `cloud_url`.
 - Edge gateways store local state in SQLite.
+- Edge-facing FastAPI endpoints require gateway API tokens.
+- Operator/admin FastAPI endpoints require `IOT_ADMIN_API_TOKEN`.
 - No live Supabase credentials are committed.
 - No user login or portal access is implemented yet.
 
@@ -16,9 +18,31 @@ This document captures security boundaries for the current MVP and the Supabase-
 - Do not commit Supabase anon keys.
 - Do not commit real database URLs.
 - Do not commit customer, site, or gateway secrets.
+- Do not commit `IOT_ADMIN_API_TOKEN`.
 - Edge gateways must not hold Supabase service-role keys.
 - Edge gateways must not connect directly to Postgres.
-- Edge gateways should authenticate to a cloud API endpoint in a future MVP.
+- Edge gateways must not hold `IOT_ADMIN_API_TOKEN`.
+- Edge gateways must not hold `GATEWAY_AUTH_PEPPER`.
+- Edge gateways authenticate to the cloud API with only their gateway API token.
+- Gateway tokens are installed only in `/etc/iot-cx-agent/edge-agent.env`.
+
+## Admin And Gateway API Auth
+
+Gateway API tokens use a server-generated `iotcc_gw_` token. The raw token is returned once during cloud-side provisioning and installed on the gateway. FastAPI stores only the token prefix and a server-side HMAC-SHA256 hash using `GATEWAY_AUTH_PEPPER`.
+
+The admin/operator token is configured with `IOT_ADMIN_API_TOKEN` in the FastAPI environment. It protects cloud/operator routes such as gateway listing, job creation, job listing, and cloud-side gateway provisioning. This token is not a gateway credential and must never be copied to edge gateways.
+
+Current protected route groups:
+
+- Gateway token: `POST /api/edge/heartbeat`
+- Gateway token: `GET /api/edge/{gateway_id}/jobs/next`
+- Gateway token: `POST /api/edge/jobs/{job_id}/result`
+- Admin token: `GET /api/edge/gateways`
+- Admin token: `POST /api/edge/jobs`
+- Admin token: `GET /api/edge/jobs`
+- Admin token: `POST /api/admin/gateways/provision`
+
+The cloud-side provisioning endpoint can create or update the site and gateway identity and issue a new gateway token. The response includes the raw gateway token once; the server cannot recover the raw token later.
 
 ## Future Supabase Auth And RLS
 
@@ -70,9 +94,9 @@ Future server-side code should write audit events for:
 
 ## Open Items
 
-- Gateway authentication strategy.
 - User roles and permission levels.
 - Portal session handling.
+- Replacement of the shared admin token with user-scoped portal auth.
 - RLS policy test harness.
 - Storage bucket layout.
 - Realtime channel authorization.

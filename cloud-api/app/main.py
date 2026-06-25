@@ -6,11 +6,28 @@ from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from app.auth import GatewayAuthContext, require_gateway_auth
+from app.auth import (
+    DEFAULT_GATEWAY_SCOPES,
+    GatewayAuthContext,
+    generate_gateway_token,
+    hash_gateway_token,
+    require_admin_auth,
+    require_gateway_auth,
+)
 from app.config import settings
 from app.database import Base, engine, get_db
-from app.models import EdgeHeartbeat, EdgeJob, EdgeNode, Site, utc_now
-from app.schemas import EdgeJobClaimOut, GatewayOut, HeartbeatAccepted, HeartbeatIn, JobCreateIn, JobOut, JobResultIn
+from app.models import EdgeHeartbeat, EdgeJob, EdgeNode, GatewayCredential, Site, utc_now
+from app.schemas import (
+    EdgeJobClaimOut,
+    GatewayOut,
+    GatewayProvisionIn,
+    GatewayProvisionOut,
+    HeartbeatAccepted,
+    HeartbeatIn,
+    JobCreateIn,
+    JobOut,
+    JobResultIn,
+)
 
 
 @asynccontextmanager
@@ -95,12 +112,19 @@ def receive_heartbeat(
 
 
 @app.get("/api/edge/gateways", response_model=list[GatewayOut])
-def list_gateways(db: Session = Depends(get_db)) -> list[EdgeNode]:
+def list_gateways(
+    _: object = Depends(require_admin_auth),
+    db: Session = Depends(get_db),
+) -> list[EdgeNode]:
     return list(db.scalars(select(EdgeNode).order_by(EdgeNode.gateway_id)).all())
 
 
 @app.post("/api/edge/jobs", response_model=JobOut)
-def create_job(payload: JobCreateIn, db: Session = Depends(get_db)) -> EdgeJob:
+def create_job(
+    payload: JobCreateIn,
+    _: object = Depends(require_admin_auth),
+    db: Session = Depends(get_db),
+) -> EdgeJob:
     job = EdgeJob(
         job_id=f"job-{uuid4().hex}",
         gateway_id=payload.gateway_id,
@@ -112,6 +136,69 @@ def create_job(payload: JobCreateIn, db: Session = Depends(get_db)) -> EdgeJob:
     db.commit()
     db.refresh(job)
     return job
+
+
+@app.post("/api/admin/gateways/provision", response_model=GatewayProvisionOut)
+def provision_gateway(
+    payload: GatewayProvisionIn,
+    _: object = Depends(require_admin_auth),
+    db: Session = Depends(get_db),
+) -> GatewayProvisionOut:
+    site = db.scalar(select(Site).where(Site.site_id == payload.site_id))
+    if site is None:
+        site = Site(site_id=payload.site_id, name=payload.site_id)
+        db.add(site)
+        db.flush()
+
+    edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == payload.gateway_id))
+    now = utc_now()
+    if edge_node is None:
+        edge_node = EdgeNode(
+            gateway_id=payload.gateway_id,
+            site_id=payload.site_id,
+            hostname=payload.hostname,
+            lan_ip=payload.lan_ip,
+            bacnet_port=payload.bacnet_port,
+            agent_version=payload.agent_version,
+            ui_version=payload.ui_version,
+            sqlite_db_ok=False,
+            queued_upload_count=0,
+            latest_status="preprovisioned",
+            updated_at=now,
+        )
+        db.add(edge_node)
+    else:
+        edge_node.site_id = payload.site_id
+        edge_node.hostname = payload.hostname
+        edge_node.lan_ip = payload.lan_ip
+        edge_node.bacnet_port = payload.bacnet_port
+        edge_node.agent_version = payload.agent_version
+        edge_node.ui_version = payload.ui_version
+        edge_node.updated_at = now
+
+    token_prefix, raw_token = generate_gateway_token()
+    db.add(
+        GatewayCredential(
+            gateway_id=payload.gateway_id,
+            token_prefix=token_prefix,
+            token_hash=hash_gateway_token(raw_token),
+            name=f"{payload.gateway_id} office provisioning token",
+            scopes=DEFAULT_GATEWAY_SCOPES,
+        )
+    )
+    db.commit()
+
+    return GatewayProvisionOut(
+        gateway_id=payload.gateway_id,
+        site_id=payload.site_id,
+        hostname=payload.hostname,
+        lan_ip=payload.lan_ip,
+        bacnet_port=payload.bacnet_port,
+        agent_version=payload.agent_version,
+        ui_version=payload.ui_version,
+        gateway_api_token=raw_token,
+        token_prefix=token_prefix,
+    )
 
 
 @app.get("/api/edge/{gateway_id}/jobs/next", response_model=EdgeJobClaimOut | None)
@@ -167,6 +254,10 @@ def receive_job_result(
 
 
 @app.get("/api/edge/jobs", response_model=list[JobOut])
-def list_jobs(db: Session = Depends(get_db), limit: int = 50) -> list[EdgeJob]:
+def list_jobs(
+    _: object = Depends(require_admin_auth),
+    db: Session = Depends(get_db),
+    limit: int = 50,
+) -> list[EdgeJob]:
     limit = max(1, min(limit, 200))
     return list(db.scalars(select(EdgeJob).order_by(EdgeJob.created_at.desc(), EdgeJob.id.desc()).limit(limit)).all())

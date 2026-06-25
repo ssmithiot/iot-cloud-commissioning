@@ -8,6 +8,7 @@ from sqlalchemy import select
 os.environ["DATABASE_URL"] = "sqlite:///./test-cloud-api-bacnet-read.db"
 os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["GATEWAY_AUTH_PEPPER"] = "test-pepper"
+os.environ["IOT_ADMIN_API_TOKEN"] = "test-admin-token"
 
 from app.auth import hash_gateway_token
 from app.database import Base, SessionLocal, engine
@@ -82,10 +83,15 @@ def auth_headers(raw_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {raw_token}"}
 
 
+def admin_headers() -> dict[str, str]:
+    return {"Authorization": "Bearer test-admin-token"}
+
+
 def test_create_claim_and_complete_bacnet_read_job() -> None:
     raw_token = create_gateway_token("GW001")
     create_response = client.post(
         "/api/edge/jobs",
+        headers=admin_headers(),
         json={"gateway_id": "GW001", "job_type": "bacnet_read", "request": bacnet_read_request(include_property=False)},
     )
 
@@ -139,6 +145,7 @@ def test_create_claim_and_complete_bacnet_read_job() -> None:
 def test_invalid_bacnet_read_job_payload_returns_422() -> None:
     response = client.post(
         "/api/edge/jobs",
+        headers=admin_headers(),
         json={
             "gateway_id": "GW001",
             "job_type": "bacnet_read",
@@ -156,6 +163,7 @@ def test_invalid_bacnet_read_job_payload_returns_422() -> None:
 def test_bacnet_read_job_poll_without_token_returns_401() -> None:
     client.post(
         "/api/edge/jobs",
+        headers=admin_headers(),
         json={"gateway_id": "GW001", "job_type": "bacnet_read", "request": bacnet_read_request()},
     )
 
@@ -168,6 +176,7 @@ def test_bacnet_read_job_poll_with_other_gateway_token_returns_403() -> None:
     raw_token = create_gateway_token("GW002", token_prefix="gw00201")
     client.post(
         "/api/edge/jobs",
+        headers=admin_headers(),
         json={"gateway_id": "GW001", "job_type": "bacnet_read", "request": bacnet_read_request()},
     )
 

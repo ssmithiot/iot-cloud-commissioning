@@ -56,6 +56,7 @@ Queue a `bacnet_runtime_check` from the cloud API:
 
 ```bash
 curl -X POST https://api.example.com/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"gateway_id":"GW007","job_type":"bacnet_runtime_check","request":{"port":47814}}'
 ```
@@ -63,8 +64,10 @@ curl -X POST https://api.example.com/api/edge/jobs \
 Confirm heartbeat and job completion:
 
 ```bash
-curl https://api.example.com/api/edge/gateways
-curl https://api.example.com/api/edge/jobs
+curl https://api.example.com/api/edge/gateways \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN"
+curl https://api.example.com/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN"
 ```
 
 ## Rollback
@@ -80,6 +83,7 @@ Then repeat service, heartbeat, and `bacnet_runtime_check` verification.
 ## Notes
 
 - Do not copy `DATABASE_URL`, `GATEWAY_AUTH_PEPPER`, Supabase/Postgres credentials, or service-role keys to the gateway.
+- Do not copy `IOT_ADMIN_API_TOKEN` to the gateway.
 - Do not rotate or replace `/etc/iot-cx-agent/edge-agent.env` during a normal field update.
 - Token replacement is an office-controlled provisioning/security operation, not part of the field update script.
 - Cloud-triggered self-update and `agent_update` jobs are future work after signed versions, approvals, rollback rules, and stronger guardrails exist.

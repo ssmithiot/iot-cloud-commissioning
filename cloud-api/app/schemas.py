@@ -80,6 +80,28 @@ class GatewayOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class GatewayProvisionIn(BaseModel):
+    gateway_id: str = Field(min_length=1, max_length=120)
+    site_id: str = Field(min_length=1, max_length=120)
+    hostname: str = Field(min_length=1, max_length=255)
+    lan_ip: str | None = Field(default=None, max_length=64)
+    bacnet_port: int = Field(default=47814, ge=1, le=65535)
+    agent_version: str = Field(default="0.1.0", min_length=1, max_length=80)
+    ui_version: str = Field(default="0.1.0", min_length=1, max_length=80)
+
+
+class GatewayProvisionOut(BaseModel):
+    gateway_id: str
+    site_id: str
+    hostname: str
+    lan_ip: str | None
+    bacnet_port: int
+    agent_version: str
+    ui_version: str
+    gateway_api_token: str
+    token_prefix: str
+
+
 class JobCreateIn(BaseModel):
     gateway_id: str = Field(min_length=1, max_length=120)
     job_type: str = Field(min_length=1, max_length=80)

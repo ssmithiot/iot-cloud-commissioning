@@ -19,6 +19,8 @@ MVP-005 connects the FastAPI cloud adapter to Supabase Postgres through `DATABAS
 
 MVP-006 adds gateway API credentials for edge-facing FastAPI endpoints. Edge gateways still receive only a gateway API token and continue to call HTTPS API endpoints; they never receive Supabase, Postgres, or privileged database credentials.
 
+MVP-012 protects operator/admin FastAPI endpoints with `IOT_ADMIN_API_TOKEN` and adds a cloud-side gateway provisioning endpoint so office provisioning can create/update the gateway identity and issue a gateway token without using database shell snippets.
+
 ## Local Setup
 
 Use Python 3.10 or newer. For local development, create one virtual environment per service or reuse a single development environment.
@@ -98,6 +100,23 @@ python scripts/create_gateway_credential.py GW001 --label "GW001 edge agent"
 
 The script prints the full token once. Store it securely, then configure the edge agent with `GATEWAY_API_TOKEN` in the service environment. A local YAML `gateway_api_token` value is supported for development, but environment configuration is preferred.
 
+For normal office provisioning, use the admin provisioning endpoint instead:
+
+```bash
+curl -X POST http://localhost:8000/api/admin/gateways/provision \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gateway_id": "GW001",
+    "site_id": "demo-site",
+    "hostname": "GW001",
+    "lan_ip": "192.168.1.10",
+    "bacnet_port": 47814
+  }'
+```
+
+This endpoint creates or updates the site and gateway identity, stores only the gateway token prefix and server-side HMAC hash, and returns the raw gateway token once.
+
 Authenticated endpoints:
 
 - `POST /api/edge/heartbeat`
@@ -105,6 +124,23 @@ Authenticated endpoints:
 - `POST /api/edge/jobs/{job_id}/result`
 
 Credential revocation is handled by setting `public.gateway_credentials.revoked_at`. Expiration is handled by setting `expires_at`; expired or revoked credentials receive HTTP 401.
+
+## Admin Operator Authentication
+
+Cloud/operator routes require:
+
+```text
+Authorization: Bearer <IOT_ADMIN_API_TOKEN>
+```
+
+Protected operator endpoints:
+
+- `GET /api/edge/gateways`
+- `POST /api/edge/jobs`
+- `GET /api/edge/jobs`
+- `POST /api/admin/gateways/provision`
+
+`IOT_ADMIN_API_TOKEN` is a server-side cloud API secret. Do not install it on edge gateways.
 
 Related docs:
 
@@ -166,16 +202,18 @@ The agent sends a heartbeat first, then polls for one queued job each loop.
 - `GET /health`
 - `GET /health/db`
 - `POST /api/edge/heartbeat`
-- `GET /api/edge/gateways`
-- `POST /api/edge/jobs`
+- `GET /api/edge/gateways` (admin token)
+- `POST /api/edge/jobs` (admin token)
 - `GET /api/edge/{gateway_id}/jobs/next`
 - `POST /api/edge/jobs/{job_id}/result`
-- `GET /api/edge/jobs`
+- `GET /api/edge/jobs` (admin token)
+- `POST /api/admin/gateways/provision` (admin token)
 
 Example heartbeat:
 
 ```bash
 curl -X POST http://localhost:8000/api/edge/heartbeat \
+  -H "Authorization: Bearer $GATEWAY_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "gateway_id": "GW001",
@@ -194,13 +232,15 @@ curl -X POST http://localhost:8000/api/edge/heartbeat \
 List gateways:
 
 ```bash
-curl http://localhost:8000/api/edge/gateways
+curl http://localhost:8000/api/edge/gateways \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN"
 ```
 
 Create an echo job:
 
 ```bash
 curl -X POST http://localhost:8000/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "gateway_id": "GW001",
@@ -215,6 +255,7 @@ Create a BACnet discovery job:
 
 ```bash
 curl -X POST http://localhost:8000/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "gateway_id": "GW001",
@@ -231,7 +272,8 @@ For real BACnet discovery, install `bacwi` on the gateway or set `bacnet.bacwi_p
 List recent jobs:
 
 ```bash
-curl http://localhost:8000/api/edge/jobs
+curl http://localhost:8000/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN"
 ```
 
 ## Verify Echo Job Flow
@@ -252,6 +294,7 @@ Create the echo job:
 
 ```bash
 curl -X POST http://localhost:8000/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"gateway_id":"GW001","job_type":"echo","request":{"message":"hello edge"}}'
 ```
@@ -259,7 +302,8 @@ curl -X POST http://localhost:8000/api/edge/jobs \
 After the next agent polling loop, confirm the cloud has the completed result:
 
 ```bash
-curl http://localhost:8000/api/edge/jobs
+curl http://localhost:8000/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN"
 ```
 
 The completed `echo` job includes `result_json` with the original request, `gateway_id`, and `agent_version`.
@@ -270,6 +314,7 @@ Start the cloud API and run the edge agent as above. Then create a discovery job
 
 ```bash
 curl -X POST http://localhost:8000/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"gateway_id":"GW001","job_type":"bacnet_discover","request":{"port":47814,"timeout_sec":10}}'
 ```
@@ -277,7 +322,8 @@ curl -X POST http://localhost:8000/api/edge/jobs \
 After the next agent polling loop, list jobs:
 
 ```bash
-curl http://localhost:8000/api/edge/jobs
+curl http://localhost:8000/api/edge/jobs \
+  -H "Authorization: Bearer $IOT_ADMIN_API_TOKEN"
 ```
 
 If `bacwi` is installed and reachable from the edge agent, the completed job includes discovered devices in `result_json`. If `bacwi` is missing, exits with an error, or times out, the job is marked `failed` with a clear `error_message`.

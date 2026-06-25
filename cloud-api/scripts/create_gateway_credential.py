@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import secrets
 import sys
 
 from sqlalchemy import select
@@ -11,18 +10,16 @@ from sqlalchemy.orm import Session
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.auth import hash_gateway_token
+from app.auth import DEFAULT_GATEWAY_SCOPES, generate_gateway_token, hash_gateway_token
 from app.database import SessionLocal
 from app.models import EdgeNode, GatewayCredential
 
 
-DEFAULT_SCOPES = ["edge:heartbeat", "edge:jobs"]
+DEFAULT_SCOPES = DEFAULT_GATEWAY_SCOPES
 
 
 def generate_token() -> tuple[str, str]:
-    token_prefix = secrets.token_hex(6)
-    secret = secrets.token_urlsafe(32)
-    return token_prefix, f"iotcc_gw_{token_prefix}_{secret}"
+    return generate_gateway_token()
 
 
 def create_gateway_credential(db: Session, gateway_id: str, name: str | None = None) -> str:
@@ -38,7 +35,7 @@ def create_gateway_credential(db: Session, gateway_id: str, name: str | None = N
         token_prefix=token_prefix,
         token_hash=token_hash,
         name=name,
-        scopes=DEFAULT_SCOPES,
+        scopes=DEFAULT_GATEWAY_SCOPES,
     )
     db.add(credential)
     try:
