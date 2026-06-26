@@ -297,13 +297,17 @@ MVP-014A foundation:
 - Completed discovery results display as device rows that can be saved into groups.
 - Saved point object types render as friendly object folders such as Input Objects, Output Objects, and Analog Value Objects.
 - Device and point removal is a soft-disable so history is preserved and removed items disappear from the default tree.
+- Saved devices can queue a real `bacnet_load_points` job.
+- Point-load jobs read BACnet object-list data on UDP `47814` and return point candidates to the browser.
+- Completed point-load results can be saved as BACnet points under the saved device.
+- Point data must come from edge-agent BACnet job results; point data must not be faked.
 
 Not included in MVP-014A:
 
 - BACnet writes.
 - Direct cloud execution of BACnet.
 - Faked point lists.
-- Automatic point enumeration unless the edge agent has a tested job for it.
+- Automatic writes, subscriptions, or background polling of loaded points.
 - BACnet writes, schedules, program edits, and command writes.
 
 Features:
@@ -547,12 +551,14 @@ BACnet safety tests:
 - job body examples use `request`
 - no test or default uses `47808` for cloud commissioning runtime
 - lock path is correct
+- point-load jobs default to `47814`
+- point-load jobs are queued only for online saved devices
+- point-load results are saved as points only after a completed edge job
 
 ### 10.2 Future Tests
 
 - UI route and role tests
 - stale/offline effective status tests
-- gateway group/device/point tree tests
 - provisioning lifecycle tests
 - token rotation tests
 - report generation tests

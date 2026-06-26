@@ -14,6 +14,26 @@ BACNET_READ_OBJECT_TYPES = {
     "multi-state-output",
     "multi-state-value",
 }
+BACNET_LOAD_POINT_OBJECT_TYPES = {
+    "analog-input",
+    "analog-output",
+    "analog-value",
+    "binary-input",
+    "binary-output",
+    "binary-value",
+    "calendar",
+    "command",
+    "event-enrollment",
+    "file",
+    "loop",
+    "multi-state-input",
+    "multi-state-output",
+    "multi-state-value",
+    "notification-class",
+    "program",
+    "schedule",
+    "trend-log",
+}
 
 
 def _read_required_int(request: dict[str, object], field_name: str) -> int:
@@ -42,6 +62,40 @@ def normalize_bacnet_read_request(request: dict[str, object]) -> dict[str, objec
         "object_instance": object_instance,
         "property": "present-value",
     }
+
+
+def normalize_bacnet_load_points_request(request: dict[str, object]) -> dict[str, object]:
+    device_instance = _read_required_int(request, "device_instance")
+    normalized: dict[str, object] = {
+        "device_instance": device_instance,
+        "bacnet_port": 47814,
+        "limit": 250,
+        "include_object_names": True,
+    }
+
+    if "limit" in request:
+        limit = request["limit"]
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 1000:
+            raise ValueError("limit must be an integer between 1 and 1000")
+        normalized["limit"] = limit
+
+    if "include_object_names" in request:
+        include_object_names = request["include_object_names"]
+        if not isinstance(include_object_names, bool):
+            raise ValueError("include_object_names must be a boolean")
+        normalized["include_object_names"] = include_object_names
+
+    if "object_types" in request:
+        object_types = request["object_types"]
+        if not isinstance(object_types, list) or not all(isinstance(item, str) for item in object_types):
+            raise ValueError("object_types must be a list of strings")
+        invalid = [item for item in object_types if item not in BACNET_LOAD_POINT_OBJECT_TYPES]
+        if invalid:
+            allowed = ", ".join(sorted(BACNET_LOAD_POINT_OBJECT_TYPES))
+            raise ValueError(f"object_types must contain only: {allowed}")
+        normalized["object_types"] = object_types
+
+    return normalized
 
 
 class HeartbeatIn(BaseModel):
@@ -117,6 +171,8 @@ class JobCreateIn(BaseModel):
     def validate_known_job_payloads(self) -> "JobCreateIn":
         if self.job_type == "bacnet_read":
             self.request = normalize_bacnet_read_request(self.request)
+        if self.job_type == "bacnet_load_points":
+            self.request = normalize_bacnet_load_points_request(self.request)
         return self
 
 

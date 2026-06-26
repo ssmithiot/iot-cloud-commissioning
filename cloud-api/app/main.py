@@ -535,6 +535,36 @@ def ui_remove_device(
     return _device_out(device)
 
 
+@app.post("/api/ui/devices/{device_id}/load-points", response_model=JobOut)
+def ui_load_device_points(
+    device_id: str,
+    _: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> EdgeJob:
+    device = db.get(SavedBacnetDevice, _tree_id(device_id))
+    if device is None or not device.enabled:
+        raise HTTPException(status_code=404, detail="Device not found")
+    edge_node = _get_gateway_or_404(db, device.gateway_id)
+    _require_online_gateway(edge_node)
+    job = EdgeJob(
+        job_id=f"job-{uuid4().hex}",
+        gateway_id=device.gateway_id,
+        job_type="bacnet_load_points",
+        status="queued",
+        request_json={
+            "device_instance": device.device_instance,
+            "saved_device_id": str(device.id),
+            "bacnet_port": 47814,
+            "limit": 250,
+            "include_object_names": True,
+        },
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 @app.post("/api/ui/devices/{device_id}/points", response_model=SavedPointOut)
 def ui_save_point(
     device_id: str,

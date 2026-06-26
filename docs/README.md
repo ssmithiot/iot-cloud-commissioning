@@ -29,7 +29,7 @@ JWT verification: HS256 secret or Supabase JWKS signing keys
 confirmation redirect: ${window.location.origin}/login
 ```
 
-Current MVP-014A direction:
+Current MVP-014 direction:
 
 ```text
 operator dashboard: /app
@@ -41,10 +41,11 @@ safe discovery action: queues bacnet_discover with { "bacnet_port": 47814 }
 discovery results: render as saveable devices
 object folders: generated from saved point object_type
 remove behavior: soft-disable saved devices/points; preserve history
+point loading: saved devices queue bacnet_load_points on UDP 47814 and save returned object-list points
 viewer role: read-only UI state
 operator/admin roles: can queue safe jobs and edit saved tree metadata
 BACnet writes: out of scope
-point loading: future edge-agent enumeration job; no fake point data
+fake point data: out of scope
 ```
 
 Current live smoke handoff:

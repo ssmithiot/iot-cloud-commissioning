@@ -437,15 +437,16 @@ The live admin smoke test passes only when:
 - Completed discovery results can be saved as devices into the gateway tree.
 - Saved devices render under groups with BACnet object-type folders generated from saved point `object_type`.
 - Operator/admin users can remove saved devices and points from the default tree by soft-disabling them.
+- Saved devices can queue a real edge-agent `bacnet_load_points` job that reads BACnet object-list data through `bacrp` on UDP `47814`.
+- Completed point-load results can be saved into the gateway tree as BACnet points.
 - Discovery jobs use `request.bacnet_port = 47814`.
 - Viewers can read gateway UI state but cannot create groups, save devices/points, or queue jobs.
 - No BACnet write workflow is included.
-- Full point enumeration/loading remains the next edge-agent job milestone; point data must not be faked.
+- Point data must come from completed edge-agent BACnet jobs; point data must not be faked.
 
 ### MVP-014 Later: Commissioning Job Workflows
 
 - BACnet runtime check
-- BACnet device discovery
 - BACnet read
 - Job result viewer
 - Safe job templates

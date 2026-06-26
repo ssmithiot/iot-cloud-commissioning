@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from iot_cx_agent.bacnet import run_bacnet_runtime_check, parse_bacwi_output
+from iot_cx_agent.bacnet import parse_bacnet_object_list, parse_bacwi_output, run_bacnet_runtime_check
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.jobs import execute_job
 
@@ -13,6 +13,14 @@ SAMPLE_BACWI_OUTPUT = """
 46      C0:A8:01:66:BA:C6    1     C0:A8:01:67:BA:C0    1476
 1       C0:A8:01:66:BA:C6    2001  01                   480
 50      C0:A8:01:66:BA:C6    2001  03                   480
+"""
+
+SAMPLE_OBJECT_LIST_OUTPUT = """
+object-list: (device, 1)
+object-list: (binary-input, 3)
+object-list: (binary-output, 1)
+object-list: (analog-value, 2)
+object-list: (binary-input, 3)
 """
 
 
@@ -72,6 +80,40 @@ def test_parse_bacwi_output() -> None:
     ]
 
 
+def test_parse_bacnet_object_list_skips_device_and_duplicates() -> None:
+    points = parse_bacnet_object_list(SAMPLE_OBJECT_LIST_OUTPUT)
+
+    assert points == [
+        {
+            "object_type": "binary-input",
+            "object_instance": 3,
+            "property_name": "present-value",
+            "object_name": None,
+            "present_value": None,
+            "units": None,
+            "writable": None,
+        },
+        {
+            "object_type": "binary-output",
+            "object_instance": 1,
+            "property_name": "present-value",
+            "object_name": None,
+            "present_value": None,
+            "units": None,
+            "writable": None,
+        },
+        {
+            "object_type": "analog-value",
+            "object_instance": 2,
+            "property_name": "present-value",
+            "object_name": None,
+            "present_value": None,
+            "units": None,
+            "writable": None,
+        },
+    ]
+
+
 def test_bacnet_discover_success_with_mocked_command(tmp_path: Path, monkeypatch) -> None:
     def fake_run(*args, **kwargs):
         assert args[0] == ["bacwi"]
@@ -92,6 +134,58 @@ def test_bacnet_discover_success_with_mocked_command(tmp_path: Path, monkeypatch
     assert result["port"] == 47814
     assert result["device_count"] == 4
     assert result["devices"][2]["device_id"] == 1
+
+
+def test_bacnet_load_points_success_with_mocked_command(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args[0])
+        assert kwargs["env"]["BACNET_IP_PORT"] == "47814"
+        if args[0] == ["bacrp", "1", "device", "1", "76", "-2"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout=SAMPLE_OBJECT_LIST_OUTPUT, stderr="")
+        object_type = args[0][2]
+        object_instance = args[0][3]
+        return subprocess.CompletedProcess(args[0], 0, stdout=f"object-name: {object_type} {object_instance}\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    status, result, error = execute_job(
+        config(tmp_path),
+        {"job_id": "job-load-1", "job_type": "bacnet_load_points", "request": {"device_instance": 1, "limit": 10}},
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert result is not None
+    assert result["job_type"] == "bacnet_load_points"
+    assert result["bacnet_port"] == 47814
+    assert result["point_count"] == 3
+    assert result["points"][0]["object_name"] == "binary-input 3"
+    assert ["bacrp", "1", "device", "1", "76", "-2"] in calls
+    assert ["bacrp", "1", "binary-input", "3", "77"] in calls
+
+
+def test_bacnet_load_points_deferred_when_lock_is_held(tmp_path: Path, monkeypatch) -> None:
+    agent_config = config(tmp_path)
+    agent_config.bacnet_lock_path.write_text("ui-active", encoding="utf-8")
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("subprocess.run should not be called while BACnet runtime lock is held")
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+
+    status, result, error = execute_job(
+        agent_config,
+        {"job_id": "job-load-2", "job_type": "bacnet_load_points", "request": {"device_instance": 1}},
+    )
+
+    assert status == "deferred"
+    assert error == "bacnet_runtime_busy"
+    assert result is not None
+    assert result["status"] == "deferred"
+    assert result["error"] == "bacnet_runtime_busy"
+    assert result["bacnet_port"] == 47814
 
 
 def test_bacnet_discover_missing_command_fails_gracefully(tmp_path: Path) -> None:

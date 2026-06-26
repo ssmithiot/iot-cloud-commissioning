@@ -325,7 +325,8 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'id="tree-details"' in response.text
     assert "renderDiscoveredDevices" in response.text
     assert "Load points" in response.text
-    assert "No point data was faked" in response.text
+    assert "Save device" in response.text
+    assert "/load-points" in response.text
     assert "Remove device" in response.text
     assert "Input Objects" in response.text
     assert "pollDiscoveryJob" in response.text
@@ -886,6 +887,81 @@ def test_ui_discover_devices_rejects_offline_gateway() -> None:
     )
 
     assert response.status_code == 409
+
+
+def test_ui_operator_can_queue_point_load_for_saved_device() -> None:
+    create_gateway_token("GW001")
+    set_gateway_heartbeat("GW001", seconds_ago=15)
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    device_response = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=headers,
+        json={"device_instance": 1001, "device_name": "AHU-1"},
+    )
+
+    response = client.post(f"/api/ui/devices/{device_response.json()['id']}/load-points", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["gateway_id"] == "GW001"
+    assert body["job_type"] == "bacnet_load_points"
+    assert body["status"] == "queued"
+    assert body["request_json"]["device_instance"] == 1001
+    assert body["request_json"]["bacnet_port"] == 47814
+    assert body["request_json"]["include_object_names"] is True
+    assert "47808" not in response.text
+
+
+def test_ui_point_load_rejects_offline_gateway() -> None:
+    create_gateway_token("GW001")
+    set_gateway_heartbeat("GW001", seconds_ago=3600)
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    device_response = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=headers,
+        json={"device_instance": 1001, "device_name": "AHU-1"},
+    )
+
+    response = client.post(f"/api/ui/devices/{device_response.json()['id']}/load-points", headers=headers)
+
+    assert response.status_code == 409
+
+
+def test_ui_viewer_cannot_queue_point_load() -> None:
+    create_gateway_token("GW001")
+    set_gateway_heartbeat("GW001", seconds_ago=15)
+    operator_id = create_operator_user("operator@example.com", role="operator", status="active")
+    viewer_id = create_operator_user("viewer@example.com", role="viewer", status="active")
+    device_response = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=user_headers("operator@example.com", operator_id),
+        json={"device_instance": 1001, "device_name": "AHU-1"},
+    )
+
+    response = client.post(
+        f"/api/ui/devices/{device_response.json()['id']}/load-points",
+        headers=user_headers("viewer@example.com", viewer_id),
+    )
+
+    assert response.status_code == 403
+
+
+def test_job_creation_normalizes_bacnet_load_points_to_47814() -> None:
+    response = client.post(
+        "/api/edge/jobs",
+        headers=admin_headers(),
+        json={"gateway_id": "GW001", "job_type": "bacnet_load_points", "request": {"device_instance": 1001}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["request_json"] == {
+        "device_instance": 1001,
+        "bacnet_port": 47814,
+        "limit": 250,
+        "include_object_names": True,
+    }
 
 
 def test_active_admin_user_can_manage_users() -> None:

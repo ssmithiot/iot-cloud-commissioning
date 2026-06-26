@@ -355,6 +355,7 @@ APP_SCRIPT = r"""
     if (!panel) {
       return;
     }
+    const actions = Array.isArray(action) ? action : (action ? [action] : []);
     panel.hidden = false;
     panel.innerHTML = `
       <h2>${escapeHtml(title)}</h2>
@@ -364,11 +365,63 @@ APP_SCRIPT = r"""
           <dd>${escapeHtml(value ?? "")}</dd>
         `).join("")}
       </dl>
-      ${action && canEditTree() ? `<button id="tree-action" class="secondary" type="button">${escapeHtml(action.label)}</button>` : ""}
+      ${actions.length && canEditTree() ? `<div class="button-row">${actions.map((item, index) => (
+        `<button class="secondary" type="button" data-tree-action="${index}">${escapeHtml(item.label)}</button>`
+      )).join("")}</div>` : ""}
     `;
-    if (action && canEditTree()) {
-      byId("tree-action").addEventListener("click", action.handler);
+    if (actions.length && canEditTree()) {
+      panel.querySelectorAll("[data-tree-action]").forEach((button) => {
+        button.addEventListener("click", () => actions[Number(button.dataset.treeAction)].handler());
+      });
     }
+  }
+
+  async function saveLoadedPoints(device, points) {
+    let saved = 0;
+    let duplicates = 0;
+    for (const point of points) {
+      try {
+        await api(`/api/ui/devices/${encodeURIComponent(device.id)}/points`, {
+          method: "POST",
+          body: JSON.stringify({
+            object_type: point.object_type,
+            object_instance: point.object_instance,
+            object_name: point.object_name || null,
+            property: point.property_name || point.property || "present-value",
+            present_value: point.present_value == null ? null : String(point.present_value),
+            units: point.units || null,
+            writable: point.writable ?? null
+          })
+        });
+        saved += 1;
+      } catch (error) {
+        if (error.message.includes("already exists")) {
+          duplicates += 1;
+          continue;
+        }
+        throw error;
+      }
+    }
+    return { saved, duplicates };
+  }
+
+  async function loadPointsForDevice(device) {
+    if (!canEditTree()) {
+      setText("status", "Your role is read-only.", true);
+      return;
+    }
+    setDiscoveryProgress(5, `Queueing point load for device ${device.device_instance}...`);
+    const job = await api(`/api/ui/devices/${encodeURIComponent(device.id)}/load-points`, { method: "POST" });
+    setDiscoveryProgress(25, `Queued ${job.job_id} on BACnet 47814.`);
+    const completedJob = await pollDiscoveryJob(job.job_id, "Point load");
+    if (completedJob.status !== "completed") {
+      setText("status", `Point load ${completedJob.status}: ${completedJob.job_id}.`, true);
+      return;
+    }
+    const points = completedJob.result_json?.points || [];
+    const counts = await saveLoadedPoints(device, points);
+    await loadGatewayWorkspace();
+    setText("status", `Loaded ${points.length} point(s); saved ${counts.saved}, skipped ${counts.duplicates} duplicate(s).`);
   }
 
   function addCollapsible(parent, row, children, onSelect = null) {
@@ -418,10 +471,16 @@ APP_SCRIPT = r"""
         vendor_name: device.vendor_name,
         latest_discovered_at: device.latest_discovered_at,
         points: points.length
-      }, {
-        label: "Remove device",
-        handler: () => removeTreeItem("device", device.id, deviceLabel)
-      });
+      }, [
+        {
+          label: "Load points",
+          handler: () => loadPointsForDevice(device)
+        },
+        {
+          label: "Remove device",
+          handler: () => removeTreeItem("device", device.id, deviceLabel)
+        }
+      ]);
       const container = document.createElement("div");
       addCollapsible(container, row, [], showDeviceDetails);
       for (const [folderLabel, folderPoints] of pointGroups.entries()) {
@@ -533,7 +592,7 @@ APP_SCRIPT = r"""
         }
       });
       row.querySelector('[data-role="load-points"]').addEventListener("click", () => {
-        setText("status", `Point loading for device ${deviceInstance} needs the next edge-agent point enumeration job. No point data was faked.`);
+        setText("status", `Save device ${deviceInstance}, then use Load points from the saved tree.`);
       });
       body.appendChild(row);
     }
@@ -574,7 +633,7 @@ APP_SCRIPT = r"""
     return { percent: 40, label: `${job.status} ${job.job_id}` };
   }
 
-  async function pollDiscoveryJob(jobId) {
+  async function pollDiscoveryJob(jobId, label = "Discovery") {
     const startedAt = Date.now();
     while (Date.now() - startedAt < 120000) {
       const jobs = await api("/api/edge/jobs?limit=50");
@@ -587,7 +646,7 @@ APP_SCRIPT = r"""
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     setDiscoveryProgress(100, `Timed out waiting for ${jobId}`, true);
-    throw new Error("Discovery job did not finish before timeout.");
+    throw new Error(`${label} job did not finish before timeout.`);
   }
 
   async function loadGatewayWorkspace() {

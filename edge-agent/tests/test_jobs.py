@@ -66,6 +66,24 @@ def test_bacnet_read_job_dispatches_to_handler(tmp_path: Path, monkeypatch) -> N
     assert result == {"job_type": "bacnet_read", "status": "ok", "value": 72.4}
 
 
+def test_bacnet_load_points_job_dispatches_to_handler(tmp_path: Path, monkeypatch) -> None:
+    def fake_run_bacnet_load_points(agent_config, request):
+        assert agent_config.gateway_id == "GW001"
+        assert request == {"device_instance": 1, "limit": 10}
+        return {"job_type": "bacnet_load_points", "status": "ok", "point_count": 2}, None
+
+    monkeypatch.setattr("iot_cx_agent.jobs.run_bacnet_load_points", fake_run_bacnet_load_points)
+
+    status, result, error = execute_job(
+        config(tmp_path),
+        {"job_id": "job-load-1", "job_type": "bacnet_load_points", "request": {"device_instance": 1, "limit": 10}},
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert result == {"job_type": "bacnet_load_points", "status": "ok", "point_count": 2}
+
+
 def test_bacnet_read_deferred_when_lock_is_held(tmp_path: Path, monkeypatch) -> None:
     agent_config = config(tmp_path)
     agent_config.bacnet_lock_path.write_text("ui-active", encoding="utf-8")

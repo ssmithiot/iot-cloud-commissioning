@@ -560,6 +560,7 @@ Storage may be Supabase Storage or another controlled storage provider.
 - Legacy UDP `47808` must not be touched by cloud commissioning jobs.
 - Job requests should explicitly or implicitly use `47814`.
 - Operator UI discovery actions should queue jobs with `request.bacnet_port = 47814`.
+- Operator UI point-load actions should queue `bacnet_load_points` jobs with `request.bacnet_port = 47814`.
 
 ### 8.3 Secrets
 
@@ -586,6 +587,7 @@ Never place these on an edge gateway:
 - Gateway claim response may expose request as `request`.
 - Gateway result is stored as `result_json`.
 - Error details must not leak secrets.
+- `bacnet_load_points` results may include BACnet object-list point candidates; saved point rows are created only after an operator/admin action in the browser UI.
 
 ## 9. Suggested Constraints
 
