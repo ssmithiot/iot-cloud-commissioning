@@ -135,6 +135,10 @@ class SiteOut(BaseModel):
     name: str
     external_ip: str | None
     address: str | None
+    address_street: str | None = None
+    address_city: str | None = None
+    address_state: str | None = None
+    address_postal_code: str | None = None
     store_hours_mf: str | None
     store_hours_sat: str | None
     store_hours_sun: str | None
@@ -154,6 +158,10 @@ class SiteUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     external_ip: str | None = Field(default=None, max_length=64)
     address: str | None = Field(default=None, max_length=500)
+    address_street: str | None = Field(default=None, max_length=255)
+    address_city: str | None = Field(default=None, max_length=120)
+    address_state: str | None = Field(default=None, max_length=80)
+    address_postal_code: str | None = Field(default=None, max_length=40)
     store_hours_mf: str | None = Field(default=None, max_length=120)
     store_hours_sat: str | None = Field(default=None, max_length=120)
     store_hours_sun: str | None = Field(default=None, max_length=120)
@@ -200,6 +208,11 @@ class GatewayOut(BaseModel):
     is_stale: bool | None = None
     site_name: str | None = None
     site_address: str | None = None
+    site_address_street: str | None = None
+    site_address_city: str | None = None
+    site_address_state: str | None = None
+    site_address_postal_code: str | None = None
+    site_compact_address: str | None = None
     store_hours_monday_friday: str | None = None
     store_hours_saturday: str | None = None
     store_hours_sunday: str | None = None

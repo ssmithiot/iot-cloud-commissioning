@@ -40,7 +40,7 @@ cloud role: fleet, users, jobs, templates, reports, future graphics/trends
 edge UI role: BACnet commissioning workstation for discovery, point selection, validation
 remote console bridge: future controlled launcher for cloud-authenticated edge UI access
 direct connect: optional new-tab link to configured Cradlepoint/cellular host on port 5002
-site info: name, address, direct-connect host/ports, M-F/Sat/Sun store hours, network status notes
+site info: name, split address (street/city/state/ZIP), direct-connect host/ports, M-F/Sat/Sun store hours, network status notes
 network status note: rest of the boxes on the two known networks are online as well
 template flow: edge builds approved devices/groups/points, cloud imports the template
 imported commissioning model: cloud stores imported gateway groups, BACnet devices, BACnet points

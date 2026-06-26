@@ -153,6 +153,11 @@ def _gateway_out(edge_node: EdgeNode, now: datetime | None = None) -> dict[str, 
         "updated_at": edge_node.updated_at,
         "site_name": site.name if site else None,
         "site_address": site.address if site else None,
+        "site_address_street": site.address_street if site else None,
+        "site_address_city": site.address_city if site else None,
+        "site_address_state": site.address_state if site else None,
+        "site_address_postal_code": site.address_postal_code if site else None,
+        "site_compact_address": _site_compact_address(site),
         "store_hours_monday_friday": store_hours_mf,
         "store_hours_saturday": store_hours_sat,
         "store_hours_sunday": store_hours_sun,
@@ -183,6 +188,19 @@ def _clean_optional_text(value: str | None) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+def _site_compact_address(site: Site | None) -> str | None:
+    if site is None:
+        return None
+    street = _clean_optional_text(site.address_street)
+    city = _clean_optional_text(site.address_city)
+    state = _clean_optional_text(site.address_state)
+    postal_code = _clean_optional_text(site.address_postal_code)
+    city_state_zip = " ".join(part for part in [state, postal_code] if part)
+    locality = ", ".join(part for part in [city, city_state_zip] if part)
+    compact = ", ".join(part for part in [street, locality] if part)
+    return compact or _clean_optional_text(site.address)
 
 
 def _validate_direct_connect_host(host: str | None) -> str | None:

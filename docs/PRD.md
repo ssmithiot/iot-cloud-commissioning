@@ -463,7 +463,7 @@ The live admin smoke test passes only when:
 - Direct Connect opens in a new browser tab and is not a cloud proxy.
 - Direct Connect does not store gateway UI passwords in the cloud.
 - Direct Connect host/port values are validated server-side; user-controlled schemes and `javascript:` URLs are rejected.
-- Site information includes site name, site address, Cradlepoint/direct-connect host, Direct Connect external port, gateway UI internal port, Monday-Friday/Saturday/Sunday store hours, and network status notes.
+- Site information includes site name, split site address fields (street, city, state, ZIP/postal code), Cradlepoint/direct-connect host, Direct Connect external port, gateway UI internal port, Monday-Friday/Saturday/Sunday store hours, and network status notes.
 - Site information currently records that the rest of the boxes on the two known networks are online as well.
 - Admin users can edit site information; operator/viewer users are read-only by default.
 - Sessions are audited and expire automatically.

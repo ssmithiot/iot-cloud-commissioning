@@ -347,13 +347,13 @@ Purpose: list customer site metadata for operator UI workflows.
 
 Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin`, `operator`, or `viewer` role.
 
-Response fields include `site_id`, `name`, `external_ip`, `address`, `store_hours_mf`, `store_hours_sat`, and `store_hours_sun`.
+Response fields include `site_id`, `name`, `external_ip`, legacy `address`, `address_street`, `address_city`, `address_state`, `address_postal_code`, `store_hours_mf`, `store_hours_sat`, and `store_hours_sun`.
 
 MVP-014 fields also include `cradlepoint_ip`, `direct_connect_host`, `direct_connect_port`, `gateway_ui_port`, `store_hours_monday_friday`, `store_hours_saturday`, `store_hours_sunday`, and `network_status_notes`.
 
 ## PATCH /api/ui/sites/{site_id}
 
-Purpose: create or update operator-facing site metadata such as site name, external IP, address, and store hours.
+Purpose: create or update operator-facing site metadata such as site name, external IP, split address fields, and store hours.
 
 Authentication: requires an active Supabase user with `admin` role, or the server-side admin token for automation. Operators and viewers are read-only by default.
 

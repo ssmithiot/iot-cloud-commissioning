@@ -502,7 +502,11 @@ Current site information fields include:
 |---|---:|---:|---|
 | `site_id` | text | Yes | Stable site identifier |
 | `name` | text | Yes | Operator-facing site name |
-| `address` | text | No | Operator-facing site address |
+| `address` | text | No | Legacy/free-form site address retained for compatibility |
+| `address_street` | text | No | Site street address |
+| `address_city` | text | No | Site city |
+| `address_state` | text | No | Site state or province |
+| `address_postal_code` | text | No | Site ZIP or postal code |
 | `cradlepoint_ip` | text | No | Cradlepoint/cellular host metadata |
 | `direct_connect_host` | text | No | Validated host used for Direct Connect URL generation |
 | `direct_connect_port` | integer | No | External Direct Connect port, default `5002` |

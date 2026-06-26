@@ -208,7 +208,11 @@ http://<direct_connect_host>:5002
 It is not a cloud proxy and does not store gateway UI passwords. Admin users can edit site information; operators and viewers are read-only by default. Direct Connect metadata is stored on `sites`:
 
 - `name`
-- `address`
+- `address` legacy/free-form compatibility field
+- `address_street`
+- `address_city`
+- `address_state`
+- `address_postal_code`
 - `cradlepoint_ip`
 - `direct_connect_host`
 - `direct_connect_port` default `5002`
@@ -218,7 +222,7 @@ It is not a cloud proxy and does not store gateway UI passwords. Admin users can
 - `store_hours_sunday`
 - `network_status_notes`
 
-Live Supabase changes should be applied with the SQL Editor script in `supabase/migrations/0008_site_direct_connect.sql`.
+Live Supabase changes should be applied with the SQL Editor scripts in `supabase/migrations/0008_site_direct_connect.sql` and `supabase/migrations/0009_site_split_address.sql`.
 
 Related docs:
 

@@ -323,7 +323,7 @@ MVP-014C direction:
 - Direct Connect defaults are external port `5002` and informational gateway UI port `5000`.
 - Direct Connect must open in a new tab and must not store gateway UI passwords in the cloud.
 - Direct Connect host/port must be validated server-side to prevent arbitrary schemes, open redirects, or `javascript:` URLs.
-- Site information includes site name, site address, Cradlepoint/direct-connect host, Direct Connect port, gateway UI port, store hours for Monday-Friday/Saturday/Sunday, and network status notes.
+- Site information includes site name, split site address fields (street, city, state, ZIP/postal code), Cradlepoint/direct-connect host, Direct Connect port, gateway UI port, store hours for Monday-Friday/Saturday/Sunday, and network status notes.
 - Current network status note: the rest of the boxes on the two known networks are online as well.
 - Admin users can edit site information; operators and viewers are read-only unless explicitly changed later.
 - Remote console sessions must be audited and expire automatically.
