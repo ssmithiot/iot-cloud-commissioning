@@ -330,6 +330,7 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'id="selected-points-list"' in response.text
     assert "Remove selected points" in response.text
     assert "saved-point-select" in response.text
+    assert "/api/ui/points/bulk-remove" in response.text
     assert 'id="point-candidates-panel"' in response.text
     assert 'id="point-candidates"' in response.text
     assert "Save selected points" in response.text
@@ -802,6 +803,39 @@ def test_ui_operator_can_soft_remove_point_from_tree() -> None:
     assert tree_response.json()["points"] == []
 
 
+def test_ui_operator_can_bulk_remove_points_from_tree() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    device_response = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=headers,
+        json={"device_instance": 1001, "device_name": "AHU-1"},
+    )
+    first_point = client.post(
+        f"/api/ui/devices/{device_response.json()['id']}/points",
+        headers=headers,
+        json={"object_type": "binary-input", "object_instance": 3, "object_name": "Bypass Open"},
+    )
+    second_point = client.post(
+        f"/api/ui/devices/{device_response.json()['id']}/points",
+        headers=headers,
+        json={"object_type": "analog-value", "object_instance": 10, "object_name": "Setpoint"},
+    )
+
+    remove_response = client.post(
+        "/api/ui/points/bulk-remove",
+        headers=headers,
+        json={"point_ids": [first_point.json()["id"], second_point.json()["id"]]},
+    )
+    tree_response = client.get("/api/ui/gateways/GW001/tree", headers=headers)
+
+    assert remove_response.status_code == 200
+    assert remove_response.json() == {"requested_count": 2, "removed_count": 2, "missing_ids": []}
+    assert tree_response.status_code == 200
+    assert tree_response.json()["points"] == []
+
+
 def test_ui_operator_can_soft_remove_device_from_tree() -> None:
     create_gateway_token("GW001")
     user_id = create_operator_user("operator@example.com", role="operator", status="active")
@@ -846,9 +880,15 @@ def test_ui_viewer_cannot_remove_tree_items() -> None:
 
     device_remove = client.delete(f"/api/ui/devices/{device_response.json()['id']}", headers=viewer_headers)
     point_remove = client.delete(f"/api/ui/points/{point_response.json()['id']}", headers=viewer_headers)
+    bulk_remove = client.post(
+        "/api/ui/points/bulk-remove",
+        headers=viewer_headers,
+        json={"point_ids": [point_response.json()["id"]]},
+    )
 
     assert device_remove.status_code == 403
     assert point_remove.status_code == 403
+    assert bulk_remove.status_code == 403
 
 
 def test_ui_device_group_must_belong_to_same_gateway() -> None:

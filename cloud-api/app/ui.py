@@ -393,14 +393,16 @@ APP_SCRIPT = r"""
     }
     const removeButton = byId("remove-selected-points");
     removeButton.disabled = true;
+    setText("status", `Removing ${selected.length} selected saved point(s)...`);
     try {
-      for (const point of selected) {
-        await api(`/api/ui/points/${encodeURIComponent(point.id)}`, { method: "DELETE" });
-      }
-      const removedCount = selected.length;
+      const result = await api("/api/ui/points/bulk-remove", {
+        method: "POST",
+        body: JSON.stringify({ point_ids: selected.map((point) => point.id) })
+      });
       selectedSavedPointIds = new Set();
       await loadGatewayWorkspace();
-      setText("status", `Removed ${removedCount} selected saved point(s).`);
+      const missing = result.missing_ids?.length ? ` ${result.missing_ids.length} were already gone.` : "";
+      setText("status", `Removed ${result.removed_count} selected saved point(s).${missing}`);
     } catch (error) {
       setText("status", error.message, true);
       renderSelectedSavedPoints();
@@ -445,6 +447,13 @@ APP_SCRIPT = r"""
   }
 
   function pointSelectionRow(point, label, meta = "", depth = 0) {
+    const showPointDetails = () => setTreeDetails(label, {
+      property: point.property,
+      value: point.present_value,
+      units: point.units,
+      writable: point.writable,
+      latest_read_at: point.latest_read_at
+    });
     const row = document.createElement("div");
     row.className = "tree-row point-select-row";
     row.dataset.kind = "point";
@@ -460,18 +469,13 @@ APP_SCRIPT = r"""
     checkbox.addEventListener("change", (event) => {
       event.stopPropagation();
       setSavedPointSelected(point, checkbox.checked);
+      showPointDetails();
     });
     row.addEventListener("click", (event) => {
       if (event.target === checkbox) {
         return;
       }
-      setTreeDetails(label, {
-        property: point.property,
-        value: point.present_value,
-        units: point.units,
-        writable: point.writable,
-        latest_read_at: point.latest_read_at
-      });
+      showPointDetails();
     });
     return row;
   }

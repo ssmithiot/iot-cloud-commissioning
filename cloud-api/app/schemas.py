@@ -321,6 +321,16 @@ class SavedPointPatchIn(BaseModel):
     enabled: bool | None = None
 
 
+class SavedPointsBulkRemoveIn(BaseModel):
+    point_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class SavedPointsBulkRemoveOut(BaseModel):
+    requested_count: int
+    removed_count: int
+    missing_ids: list[str]
+
+
 class SavedPointOut(BaseModel):
     id: str
     gateway_id: str

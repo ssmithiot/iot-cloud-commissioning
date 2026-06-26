@@ -61,6 +61,8 @@ from app.schemas import (
     SavedPointIn,
     SavedPointOut,
     SavedPointPatchIn,
+    SavedPointsBulkRemoveIn,
+    SavedPointsBulkRemoveOut,
 )
 from app.ui import (
     admin_users_html,
@@ -614,6 +616,33 @@ def ui_remove_point(
     db.commit()
     db.refresh(point)
     return _point_out(point)
+
+
+@app.post("/api/ui/points/bulk-remove", response_model=SavedPointsBulkRemoveOut)
+def ui_bulk_remove_points(
+    payload: SavedPointsBulkRemoveIn,
+    _: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> SavedPointsBulkRemoveOut:
+    point_ids: list[str] = []
+    for point_id in payload.point_ids:
+        point_ids.append(_tree_id(point_id))
+    points = list(db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.id.in_(point_ids))).all())
+    points_by_id = {str(point.id): point for point in points}
+    now = utc_now()
+    removed_count = 0
+    for point in points:
+        if point.enabled:
+            point.enabled = False
+            point.updated_at = now
+            removed_count += 1
+    db.commit()
+    missing_ids = [point_id for point_id in payload.point_ids if _tree_id(point_id) not in points_by_id]
+    return SavedPointsBulkRemoveOut(
+        requested_count=len(payload.point_ids),
+        removed_count=removed_count,
+        missing_ids=missing_ids,
+    )
 
 
 @app.patch("/api/ui/points/{point_id}", response_model=SavedPointOut)
