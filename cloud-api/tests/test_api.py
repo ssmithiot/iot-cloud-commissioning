@@ -331,6 +331,10 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert "Use the edge commissioning UI for BACnet discovery and point selection" in response.text
     assert "Site Information" in response.text
     assert 'id="site-info-form"' in response.text
+    assert 'id="site-address-street"' in response.text
+    assert 'id="site-address-city"' in response.text
+    assert 'id="site-address-state"' in response.text
+    assert 'id="site-address-postal-code"' in response.text
     assert 'id="direct-connect-link"' in response.text
     assert 'id="tunnel-status"' in response.text
     assert "Direct Connect" in response.text
@@ -434,6 +438,10 @@ def test_admin_can_update_site_metadata_and_direct_connect() -> None:
             "direct_connect_port": 5002,
             "gateway_ui_port": 5000,
             "address": "123 Main St, Springfield, IL",
+            "address_street": "123 Main St",
+            "address_city": "Springfield",
+            "address_state": "IL",
+            "address_postal_code": "62701",
             "store_hours_monday_friday": "8:00 AM - 6:00 PM",
             "store_hours_saturday": "9:00 AM - 5:00 PM",
             "store_hours_sunday": "10:00 AM - 4:00 PM",
@@ -449,6 +457,10 @@ def test_admin_can_update_site_metadata_and_direct_connect() -> None:
     assert response.json()["direct_connect_port"] == 5002
     assert response.json()["gateway_ui_port"] == 5000
     assert response.json()["address"] == "123 Main St, Springfield, IL"
+    assert response.json()["address_street"] == "123 Main St"
+    assert response.json()["address_city"] == "Springfield"
+    assert response.json()["address_state"] == "IL"
+    assert response.json()["address_postal_code"] == "62701"
     assert response.json()["store_hours_monday_friday"] == "8:00 AM - 6:00 PM"
     assert response.json()["store_hours_saturday"] == "9:00 AM - 5:00 PM"
     assert response.json()["store_hours_sunday"] == "10:00 AM - 4:00 PM"
@@ -493,7 +505,10 @@ def test_gateway_list_includes_site_info_and_direct_connect_availability() -> No
         headers=admin_headers(),
         json={
             "name": "Demo Store",
-            "address": "123 Main St",
+            "address_street": "123 Main St",
+            "address_city": "Springfield",
+            "address_state": "IL",
+            "address_postal_code": "62701",
             "direct_connect_host": "10.20.30.40",
             "network_status_notes": "The rest of the boxes on these two networks are online as well.",
         },
@@ -504,7 +519,11 @@ def test_gateway_list_includes_site_info_and_direct_connect_availability() -> No
 
     assert response.status_code == 200
     assert gateway["site_name"] == "Demo Store"
-    assert gateway["site_address"] == "123 Main St"
+    assert gateway["site_address_street"] == "123 Main St"
+    assert gateway["site_address_city"] == "Springfield"
+    assert gateway["site_address_state"] == "IL"
+    assert gateway["site_address_postal_code"] == "62701"
+    assert gateway["site_compact_address"] == "123 Main St, Springfield, IL 62701"
     assert gateway["direct_connect_available"] is True
     assert gateway["direct_connect_host"] == "10.20.30.40"
     assert gateway["direct_connect_port"] == 5002
@@ -516,14 +535,25 @@ def test_gateway_detail_site_endpoint_includes_site_info() -> None:
     client.patch(
         "/api/ui/gateways/GW001/site",
         headers=admin_headers(),
-        json={"name": "Demo Store", "address": "123 Main St"},
+        json={
+            "name": "Demo Store",
+            "address": "Legacy full address",
+            "address_street": "123 Main St",
+            "address_city": "Springfield",
+            "address_state": "IL",
+            "address_postal_code": "62701",
+        },
     )
 
     response = client.get("/api/ui/gateways/GW001/site", headers=admin_headers())
 
     assert response.status_code == 200
     assert response.json()["name"] == "Demo Store"
-    assert response.json()["address"] == "123 Main St"
+    assert response.json()["address"] == "Legacy full address"
+    assert response.json()["address_street"] == "123 Main St"
+    assert response.json()["address_city"] == "Springfield"
+    assert response.json()["address_state"] == "IL"
+    assert response.json()["address_postal_code"] == "62701"
 
 
 def test_direct_connect_hidden_when_not_configured() -> None:

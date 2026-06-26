@@ -314,7 +314,7 @@ APP_SCRIPT = r"""
       row.innerHTML = `
         <td><a href="/gateways/${encodeURIComponent(gateway.gateway_id)}">${gateway.gateway_id}</a></td>
         <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
-        <td>${escapeHtml(gateway.site_address || "")}</td>
+        <td>${escapeHtml(gateway.site_compact_address || gateway.site_address || "")}</td>
         <td>${escapeHtml(gateway.hostname)}</td>
         <td>${statusLabel(gateway)}</td>
         <td>${escapeHtml(gateway.network_status_notes || "")}</td>
@@ -859,7 +859,10 @@ APP_SCRIPT = r"""
 
   function renderSiteInfo(site, directConnect, tunnelStatus) {
     setFieldValue("site-name", site.name);
-    setFieldValue("site-address", site.address);
+    setFieldValue("site-address-street", site.address_street || site.address);
+    setFieldValue("site-address-city", site.address_city);
+    setFieldValue("site-address-state", site.address_state);
+    setFieldValue("site-address-postal-code", site.address_postal_code);
     setFieldValue("direct-connect-host", site.direct_connect_host || site.cradlepoint_ip || site.external_ip);
     setFieldValue("direct-connect-port", site.direct_connect_port || 5002);
     setFieldValue("gateway-ui-port", site.gateway_ui_port || 5000);
@@ -923,7 +926,10 @@ APP_SCRIPT = r"""
           method: "PATCH",
           body: JSON.stringify({
             name: byId("site-name").value.trim(),
-            address: byId("site-address").value.trim(),
+            address_street: byId("site-address-street").value.trim(),
+            address_city: byId("site-address-city").value.trim(),
+            address_state: byId("site-address-state").value.trim(),
+            address_postal_code: byId("site-address-postal-code").value.trim(),
             direct_connect_host: byId("direct-connect-host").value.trim() || null,
             direct_connect_port: Number(byId("direct-connect-port").value || 5002),
             gateway_ui_port: Number(byId("gateway-ui-port").value || 5000),
@@ -1563,8 +1569,20 @@ def gateway_workspace_html(gateway_id: str) -> str:
           <input id="site-name" type="text" maxlength="200">
         </div>
         <div class="span-6">
-          <label for="site-address">Site address</label>
-          <input id="site-address" type="text" maxlength="500">
+          <label for="site-address-street">Street address</label>
+          <input id="site-address-street" type="text" maxlength="255">
+        </div>
+        <div class="span-3">
+          <label for="site-address-city">City</label>
+          <input id="site-address-city" type="text" maxlength="120">
+        </div>
+        <div class="span-2">
+          <label for="site-address-state">State</label>
+          <input id="site-address-state" type="text" maxlength="80">
+        </div>
+        <div class="span-2">
+          <label for="site-address-postal-code">ZIP</label>
+          <input id="site-address-postal-code" type="text" maxlength="40">
         </div>
         <div class="span-4">
           <label for="direct-connect-host">Cradlepoint/direct-connect host</label>
