@@ -1,6 +1,9 @@
 import os
+import base64
 import logging
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import jwt
@@ -9,6 +12,10 @@ from fastapi.testclient import TestClient
 from cryptography.hazmat.primitives.asymmetric import rsa
 from starlette.websockets import WebSocketDisconnect
 from sqlalchemy import select
+
+EDGE_AGENT_PATH = Path(__file__).resolve().parents[2] / "edge-agent"
+if str(EDGE_AGENT_PATH) not in sys.path:
+    sys.path.append(str(EDGE_AGENT_PATH))
 
 os.environ["DATABASE_URL"] = "sqlite:///./test-cloud-api.db"
 os.environ["AUTO_CREATE_TABLES"] = "true"
@@ -1029,6 +1036,133 @@ def test_tunnel_session_login_redirect_rewrite_keeps_session_slash(caplog) -> No
     assert response.headers["location"] == f"/gateways/GW001/tunnel/session/{session_id}/login?next=%2Fdevices"
     assert "upstream_location_shape=relative:/login" in caplog.text
     assert "response_location_session_slash=True" in caplog.text
+
+
+def test_tunnel_session_login_chain_through_edge_agent_handler(monkeypatch, caplog) -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+    import requests
+    from iot_cx_agent.config import AgentConfig
+    from iot_cx_agent.tunnel import handle_tunnel_message
+
+    create_gateway_token("GW777", token_prefix="gw77701")
+    valid_gateway_session = "flask-session-value"
+    observed_requests: list[dict[str, object]] = []
+
+    def fake_gateway_ui_request(*args: object, **kwargs: object) -> requests.Response:
+        method = str(args[0])
+        url = str(args[1])
+        headers = {str(key).lower(): str(value) for key, value in (kwargs.get("headers") or {}).items()}
+        body = kwargs.get("data") or b""
+        observed_requests.append({"method": method, "url": url, "headers": headers, "body": body})
+        response = requests.Response()
+        response.url = url
+
+        if method == "GET" and url == "http://127.0.0.1:5000/devices":
+            if headers.get("cookie") == f"session={valid_gateway_session}":
+                response.status_code = 200
+                response._content = b"devices ok"
+                response.headers["content-type"] = "text/html"
+            else:
+                response.status_code = 302
+                response._content = b""
+                response.headers["Location"] = "/login?next=%2Fdevices"
+            return response
+
+        if method == "POST" and url == "http://127.0.0.1:5000/login?next=%2Fdevices":
+            assert body == b"username=admin&password=correct"
+            response.status_code = 302
+            response._content = b""
+            response.headers["Location"] = "/devices"
+            response.headers["Set-Cookie"] = f"session={valid_gateway_session}; Path=/; SameSite=Lax; HttpOnly"
+            return response
+
+        response.status_code = 404
+        response._content = b"not found"
+        return response
+
+    monkeypatch.setattr(requests, "request", fake_gateway_ui_request)
+    edge_config = AgentConfig(
+        gateway_id="GW777",
+        site_id="test-site",
+        cloud_url="http://testserver",
+        local_ui_url="http://127.0.0.1:5000",
+        sqlite_path=Path("edge.db"),
+    )
+
+    class FakeEdgeTunnel:
+        async def request(self, **kwargs):
+            message = {
+                "type": "request",
+                "request_id": uuid4().hex,
+                "method": kwargs["method"],
+                "path": kwargs["path"],
+                "query_string": kwargs["query_string"],
+                "headers": kwargs["headers"],
+                "body_b64": base64.b64encode(kwargs["body"]).decode("ascii"),
+            }
+            edge_response = handle_tunnel_message(edge_config, message)
+            assert edge_response["type"] == "response"
+            return TunnelResponse(
+                status_code=int(edge_response["status_code"]),
+                headers={str(key): str(value) for key, value in dict(edge_response["headers"]).items()},
+                body=base64.b64decode(str(edge_response["body_b64"])),
+            )
+
+    caplog.set_level(logging.WARNING, logger="iot-cloud-api.tunnel")
+    tunnel_manager._tunnels["GW777"] = FakeEdgeTunnel()
+    session_id = ""
+    try:
+        created = client.post("/api/ui/gateways/GW777/tunnel-session", headers=admin_headers())
+        assert created.status_code == 200
+        session_url = created.json()["url"]
+        session_id = session_url.rstrip("/").split("/")[-1]
+
+        first_devices = client.get(f"{session_url}devices", follow_redirects=False)
+        assert first_devices.status_code == 302
+        assert first_devices.headers["location"] == f"/gateways/GW777/tunnel/session/{session_id}/login?next=%2Fdevices"
+
+        login = client.post(
+            f"{session_url}login?next=%2Fdevices",
+            content=b"username=admin&password=correct",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+        assert login.status_code == 302
+        assert login.headers["location"] == f"/gateways/GW777/tunnel/session/{session_id}/devices"
+        assert login.headers["set-cookie"] == (
+            f"session={valid_gateway_session}; Path=/gateways/GW777/tunnel/session/{session_id}/; "
+            "SameSite=Lax; HttpOnly"
+        )
+
+        redirected_devices = client.get(
+            login.headers["location"],
+            headers={"Cookie": f"session={valid_gateway_session}"},
+            follow_redirects=False,
+        )
+        assert redirected_devices.status_code == 200
+        assert redirected_devices.text == "devices ok"
+    finally:
+        tunnel_manager._tunnels.pop("GW777", None)
+        if session_id:
+            tunnel_session_manager._sessions.pop(session_id, None)
+
+    assert observed_requests[0]["method"] == "GET"
+    assert observed_requests[0]["url"] == "http://127.0.0.1:5000/devices"
+    assert observed_requests[1]["method"] == "POST"
+    assert observed_requests[1]["url"] == "http://127.0.0.1:5000/login?next=%2Fdevices"
+    assert observed_requests[2]["method"] == "GET"
+    assert observed_requests[2]["url"] == "http://127.0.0.1:5000/devices"
+    assert observed_requests[2]["headers"]["cookie"] == f"session={valid_gateway_session}"
+
+    log_text = caplog.text
+    assert "TUNNEL_PROXY_DEBUG request" in log_text
+    assert "TUNNEL_PROXY_DEBUG response" in log_text
+    assert "inbound_path=/gateways/GW777/tunnel/session/" in log_text
+    assert "upstream_path=/devices" in log_text
+    assert "upstream_path=/login" in log_text
+    assert "forwarded_cookie_names=session" in log_text
+    assert "flask-session-value" not in log_text
+    assert "password=correct" not in log_text
 
 
 def test_tunnel_session_rewrites_html_root_relative_and_gateway_local_urls() -> None:

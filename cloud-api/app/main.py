@@ -863,8 +863,8 @@ async def _proxy_gateway_tunnel_request(
     incoming_headers = {key.lower(): value for key, value in request.headers.items()}
     inbound_cookie_names, inbound_cookie_count = _safe_cookie_summary(incoming_cookie_header)
     forwarded_cookie_names, forwarded_cookie_count = _safe_cookie_summary(forward_headers.get("cookie"))
-    logger.info(
-        "Tunnel proxy request gateway=%s inbound_method=%s inbound_path=%s upstream_method=%s upstream_path=%s "
+    logger.warning(
+        "TUNNEL_PROXY_DEBUG request gateway=%s inbound_method=%s inbound_path=%s upstream_method=%s upstream_path=%s "
         "query_keys=%s body_bytes=%s content_type=%s inbound_cookie_names=%s inbound_cookie_count=%s "
         "forwarded_cookie_names=%s forwarded_cookie_count=%s html_rewrite_enabled=%s",
         gateway_id,
@@ -912,8 +912,8 @@ async def _proxy_gateway_tunnel_request(
     response_header_names = {key.lower() for key in response_headers}
     upstream_location = next((value for key, value in tunnel_response.headers.items() if key.lower() == "location"), None)
     response_location = next((value for key, value in response_headers.items() if key.lower() == "location"), None)
-    logger.info(
-        "Tunnel proxy response gateway=%s method=%s path=%s status=%s content_type=%s body_bytes=%s "
+    logger.warning(
+        "TUNNEL_PROXY_DEBUG response gateway=%s method=%s path=%s status=%s content_type=%s body_bytes=%s "
         "upstream_location_shape=%s response_location_shape=%s response_location_session_slash=%s "
         "set_cookie_received=%s set_cookie_forwarded=%s html_rewritten=%s",
         gateway_id,
