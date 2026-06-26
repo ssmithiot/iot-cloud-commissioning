@@ -150,6 +150,7 @@ Authenticated endpoints:
 - `POST /api/edge/heartbeat`
 - `GET /api/edge/{gateway_id}/jobs/next`
 - `POST /api/edge/jobs/{job_id}/result`
+- `WEBSOCKET /api/edge/tunnels/{gateway_id}`
 
 Credential revocation is handled by setting `public.gateway_credentials.revoked_at`. Expiration is handled by setting `expires_at`; expired or revoked credentials receive HTTP 401.
 
@@ -164,11 +165,34 @@ Authorization: Bearer <IOT_ADMIN_API_TOKEN>
 Protected operator endpoints:
 
 - `GET /api/edge/gateways`
+- `GET /api/ui/sites`
+- `PATCH /api/ui/sites/{site_id}`
 - `POST /api/edge/jobs`
 - `GET /api/edge/jobs`
 - `POST /api/admin/gateways/provision`
 
 `IOT_ADMIN_API_TOKEN` is a server-side cloud API secret. Do not install it on edge gateways.
+
+## Gateway UI Tunnel
+
+Gateway configuration uses an outbound tunnel, not Cradlepoint port forwarding. A provisioned edge agent opens a gateway-authenticated WebSocket to:
+
+```text
+/api/edge/tunnels/{gateway_id}
+```
+
+The operator dashboard Configure link routes browser traffic through:
+
+```text
+/gateways/{gateway_id}/tunnel/
+```
+
+The edge agent then proxies that traffic to its local gateway UI, configured with:
+
+```yaml
+tunnel_enabled: true
+local_ui_url: http://127.0.0.1:5000
+```
 
 Related docs:
 

@@ -148,6 +148,23 @@ def test_load_config_reads_gateway_api_token_from_env(tmp_path: Path, monkeypatc
     assert agent_config.gateway_api_token == "iotcc_gw_prefix_secret"
 
 
+def test_load_config_reads_tunnel_settings(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW001\n"
+        "site_id: demo-site\n"
+        "cloud_url: http://localhost:8000\n"
+        "tunnel_enabled: false\n"
+        "local_ui_url: http://127.0.0.1:5100\n",
+        encoding="utf-8",
+    )
+
+    agent_config = load_config(config_path)
+
+    assert agent_config.tunnel_enabled is False
+    assert agent_config.local_ui_url == "http://127.0.0.1:5100"
+
+
 def test_load_config_defaults_missing_versions(tmp_path: Path) -> None:
     config_path = tmp_path / "agent.yaml"
     config_path.write_text(
