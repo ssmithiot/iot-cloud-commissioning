@@ -962,6 +962,7 @@ def test_job_creation_normalizes_bacnet_load_points_to_47814() -> None:
         "device_instance": 1001,
         "bacnet_port": 47814,
         "limit": 250,
+        "name_limit": 40,
         "include_object_names": True,
     }
 

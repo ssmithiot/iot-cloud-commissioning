@@ -70,6 +70,7 @@ def normalize_bacnet_load_points_request(request: dict[str, object]) -> dict[str
         "device_instance": device_instance,
         "bacnet_port": 47814,
         "limit": 250,
+        "name_limit": 40,
         "include_object_names": True,
     }
 
@@ -78,6 +79,7 @@ def normalize_bacnet_load_points_request(request: dict[str, object]) -> dict[str
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 1000:
             raise ValueError("limit must be an integer between 1 and 1000")
         normalized["limit"] = limit
+        normalized["name_limit"] = min(int(normalized["name_limit"]), limit)
 
     if "name_limit" in request:
         name_limit = request["name_limit"]

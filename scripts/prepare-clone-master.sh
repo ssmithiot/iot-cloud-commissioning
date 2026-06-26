@@ -35,6 +35,7 @@ bacnet:
   default_port: 47814
   bacwi_path: bacwi
   bacrp_path: bacrp
+  bacrpm_path: bacrpm
   lock_path: /tmp/iot-cloud-commissioning-bacnet-47814.lock
   timeout_sec: 10
 YAML

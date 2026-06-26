@@ -28,6 +28,7 @@ def config(
     tmp_path: Path,
     bacwi_path: str = "bacwi",
     bacrp_path: str = "bacrp",
+    bacrpm_path: str = "bacrpm",
     bacnet_default_port: int = 47814,
 ) -> AgentConfig:
     return AgentConfig(
@@ -37,6 +38,7 @@ def config(
         bacnet_default_port=bacnet_default_port,
         bacwi_path=bacwi_path,
         bacrp_path=bacrp_path,
+        bacrpm_path=bacrpm_path,
         bacnet_timeout_sec=10,
         agent_version="0.1.0",
         ui_version="0.1.0",
@@ -213,6 +215,56 @@ def test_bacnet_load_points_falls_back_to_indexed_reads(tmp_path: Path, monkeypa
     assert result["point_count"] == 1
     assert ["bacrp", "1", "device", "1", "76", "0"] in calls
     assert ["bacrp", "1", "device", "1", "76", "-2"] not in calls
+
+
+def test_bacnet_load_points_uses_rpm_batch_when_available(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+    bacrpm_path = tmp_path / "bacrpm"
+    bacrpm_path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    def fake_run(*args, **kwargs):
+        calls.append(args[0])
+        assert kwargs["env"]["BACNET_IP_PORT"] == "47814"
+        if args[0] == ["bacrp", "1", "device", "1", "76"]:
+            return subprocess.CompletedProcess(
+                args[0],
+                0,
+                stdout="object-list: (analog-input, 1)\nobject-list: (analog-input, 2)\n",
+                stderr="",
+            )
+        if args[0] == [str(bacrpm_path), "1", "analog-input", "1", "77,85", "analog-input", "2", "77,85"]:
+            return subprocess.CompletedProcess(
+                args[0],
+                0,
+                stdout=(
+                    "object-identifier: analog-input, 1\n"
+                    "object-name: SPACE_SENSOR\n"
+                    "present-value: Real: 72.5\n"
+                    "object-identifier: analog-input, 2\n"
+                    "object-name: REMOTE_SENSOR\n"
+                    "present-value: Real: 70.0\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {args[0]}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    status, result, error = execute_job(
+        config(tmp_path, bacrpm_path=str(bacrpm_path)),
+        {"job_id": "job-load-4", "job_type": "bacnet_load_points", "request": {"device_instance": 1, "limit": 10}},
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert result is not None
+    assert result["enrichment_mode"] == "rpm"
+    assert result["batch_size"] == 40
+    assert result["points"][0]["object_name"] == "SPACE_SENSOR"
+    assert result["points"][0]["present_value"] == 72.5
+    assert result["points"][1]["object_name"] == "REMOTE_SENSOR"
+    assert result["points"][1]["present_value"] == 70.0
+    assert [str(bacrpm_path), "1", "analog-input", "1", "77,85", "analog-input", "2", "77,85"] in calls
 
 
 def test_bacnet_load_points_deferred_when_lock_is_held(tmp_path: Path, monkeypatch) -> None:

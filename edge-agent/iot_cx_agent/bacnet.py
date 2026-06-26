@@ -63,6 +63,7 @@ BACNET_PRESENT_VALUE = "present-value"
 BACNET_PRESENT_VALUE_PROPERTY_ID = 85
 BACNET_OBJECT_LIST_PROPERTY_ID = 76
 BACNET_OBJECT_NAME_PROPERTY_ID = 77
+BACNET_POINT_LOAD_BATCH_SIZE = 40
 CLOUD_BACNET_PORT = 47814
 BACNET_RUNTIME_BUSY = "bacnet_runtime_busy"
 BACNET_RUNTIME_BUSY_MESSAGE = "Local commissioning UI is using BACnet port 47814. Cloud BACnet job yielded."
@@ -135,6 +136,7 @@ def run_bacnet_runtime_check(config: AgentConfig, request: dict[str, Any]) -> tu
 
     bacwi = _command_status(config.bacwi_path)
     bacrp = _command_status(config.bacrp_path)
+    bacrpm = _command_status(config.bacrpm_path)
     result = {
         "job_type": "bacnet_runtime_check",
         "bacnet_port": port,
@@ -149,6 +151,10 @@ def run_bacnet_runtime_check(config: AgentConfig, request: dict[str, Any]) -> tu
         "bacrp_resolved_path": bacrp["resolved_path"],
         "bacrp_exists": bacrp["exists"],
         "bacrp_executable": bacrp["executable"],
+        "bacrpm_configured_path": bacrpm["configured_path"],
+        "bacrpm_resolved_path": bacrpm["resolved_path"],
+        "bacrpm_exists": bacrpm["exists"],
+        "bacrpm_executable": bacrpm["executable"],
     }
 
     if port != CLOUD_BACNET_PORT:
@@ -399,6 +405,37 @@ def build_bacnet_object_name_args(config: AgentConfig, device_instance: int, obj
     ]
 
 
+def build_bacnet_rpm_point_batch_args(
+    config: AgentConfig,
+    device_instance: int,
+    points: list[dict[str, object]],
+) -> list[str]:
+    args = [config.bacrpm_path, str(device_instance)]
+    for point in points:
+        args.extend(
+            [
+                str(point["object_type"]),
+                str(point["object_instance"]),
+                f"{BACNET_OBJECT_NAME_PROPERTY_ID},{BACNET_PRESENT_VALUE_PROPERTY_ID}",
+            ]
+        )
+    return args
+
+
+def build_bacnet_rpm_point_args(
+    config: AgentConfig,
+    device_instance: int,
+    point: dict[str, object],
+) -> list[str]:
+    return [
+        config.bacrpm_path,
+        str(device_instance),
+        str(point["object_type"]),
+        str(point["object_instance"]),
+        f"{BACNET_OBJECT_NAME_PROPERTY_ID},{BACNET_PRESENT_VALUE_PROPERTY_ID}",
+    ]
+
+
 def _clean_candidate(raw_value: str) -> str:
     cleaned = raw_value.strip().strip('"')
     for prefix in ("Real:", "Unsigned:", "Enumerated:", "Boolean:", "CharacterString:"):
@@ -547,6 +584,35 @@ def _parse_object_name(raw_output: str) -> str | None:
     return None
 
 
+def _parse_rpm_point_values(raw_output: str, requested_points: list[dict[str, object]]) -> list[dict[str, object]]:
+    parsed_points = [dict(point) for point in requested_points]
+    current_index = 0
+    for raw_line in raw_output.splitlines():
+        line = raw_line.strip()
+        if not line or "error" in line.lower():
+            continue
+
+        object_match = re.search(r"\(?\b([A-Za-z][A-Za-z0-9_-]+|\d+)\s*[,=: ]\s*(\d+)\)?", line)
+        if object_match is not None:
+            object_type = _normalize_object_type(object_match.group(1))
+            object_instance = int(object_match.group(2))
+            for index, point in enumerate(parsed_points):
+                if point["object_type"] == object_type and int(point["object_instance"]) == object_instance:
+                    current_index = index
+                    break
+
+        name_match = re.search(r"object[-_ ]name\s*(?:\([^)]*\))?\s*[:=]\s*(.+)$", line, flags=re.IGNORECASE)
+        if name_match is not None:
+            parsed_points[current_index]["object_name"] = _clean_candidate(name_match.group(1))
+            continue
+
+        value_match = re.search(r"present[-_ ]value\s*(?:\([^)]*\))?\s*[:=]\s*(.+)$", line, flags=re.IGNORECASE)
+        if value_match is not None:
+            raw_value = _clean_candidate(value_match.group(1))
+            parsed_points[current_index]["present_value"] = _coerce_bacnet_value(raw_value)
+    return parsed_points
+
+
 def _parse_array_length(raw_output: str) -> int | None:
     candidates = re.findall(r"\b\d+\b", raw_output)
     if not candidates:
@@ -582,8 +648,115 @@ def _run_bacrp(
     return completed, None
 
 
+def _run_command(
+    args: list[str],
+    config: AgentConfig,
+    env: dict[str, str],
+    description: str,
+) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    try:
+        completed = subprocess.run(
+            args,
+            capture_output=True,
+            check=False,
+            env=env,
+            text=True,
+            timeout=config.bacnet_timeout_sec,
+        )
+    except FileNotFoundError:
+        return None, f"{description} command not found: {args[0]}"
+    except subprocess.TimeoutExpired:
+        return None, f"{description} timed out after {config.bacnet_timeout_sec} seconds"
+    except OSError as exc:
+        return None, f"{description} failed to start: {exc}"
+
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        return completed, f"{description} failed: {detail}"
+    return completed, None
+
+
 def _combined_output(completed: subprocess.CompletedProcess[str]) -> str:
     return "\n".join(part for part in (completed.stdout.strip(), completed.stderr.strip()) if part)
+
+
+def _chunks(items: list[dict[str, object]], size: int) -> list[list[dict[str, object]]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _point_key(point: dict[str, object]) -> tuple[object, int]:
+    return point["object_type"], int(point["object_instance"])
+
+
+def _point_has_enrichment(point: dict[str, object]) -> bool:
+    return point.get("object_name") is not None or point.get("present_value") is not None
+
+
+def _enrich_points_with_rpm(
+    config: AgentConfig,
+    env: dict[str, str],
+    device_instance: int,
+    points: list[dict[str, object]],
+    max_points: int,
+) -> tuple[list[dict[str, object]], str]:
+    rpm_status = _command_status(config.bacrpm_path)
+    if not rpm_status["executable"]:
+        return points, "bacrp"
+
+    enriched = [dict(point) for point in points]
+    targets = enriched[:max_points]
+    used_rpm = False
+    for chunk in _chunks(targets, BACNET_POINT_LOAD_BATCH_SIZE):
+        batch_args = build_bacnet_rpm_point_batch_args(config, device_instance, chunk)
+        batch_completed, batch_error = _run_command(batch_args, config, env, "BACnet point RPM batch read")
+        if batch_error is None and batch_completed is not None:
+            parsed = _parse_rpm_point_values(batch_completed.stdout, chunk)
+            for parsed_point in parsed:
+                key = _point_key(parsed_point)
+                for point in enriched:
+                    if _point_key(point) == key:
+                        point.update(parsed_point)
+                        break
+            used_rpm = True
+            missing = [point for point in chunk if not _point_has_enrichment(point)]
+        else:
+            missing = chunk
+
+        for rpm_point in missing:
+            rpm_args = build_bacnet_rpm_point_args(config, device_instance, rpm_point)
+            completed, error = _run_command(rpm_args, config, env, "BACnet point RPM read")
+            if error is not None or completed is None:
+                continue
+            parsed = _parse_rpm_point_values(completed.stdout, [rpm_point])
+            key = _point_key(parsed[0])
+            for point in enriched:
+                if _point_key(point) == key:
+                    point.update(parsed[0])
+                    break
+            used_rpm = True
+
+    return enriched, "rpm" if used_rpm else "bacrp"
+
+
+def _enrich_points_with_bacrp_names(
+    config: AgentConfig,
+    env: dict[str, str],
+    device_instance: int,
+    points: list[dict[str, object]],
+    max_points: int,
+) -> list[dict[str, object]]:
+    enriched = [dict(point) for point in points]
+    for point in enriched[:max_points]:
+        name_args = build_bacnet_object_name_args(
+            config,
+            device_instance,
+            str(point["object_type"]),
+            int(point["object_instance"]),
+        )
+        completed, error = _run_bacrp(name_args, config, env, "BACnet object-name read")
+        if error is None and completed is not None:
+            point["object_name"] = _parse_object_name(completed.stdout)
+    return enriched
 
 
 def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[str, object], str | None]:
@@ -647,28 +820,24 @@ def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tupl
             points = [point for point in points if point["object_type"] in allowed]
         points = points[: int(normalized["limit"])]
 
+        enrichment_mode = "none"
         if normalized["include_object_names"]:
             device_instance = int(normalized["device_instance"])
-            for point in points[: int(normalized["name_limit"])]:
-                name_args = build_bacnet_object_name_args(
+            points, enrichment_mode = _enrich_points_with_rpm(
+                config,
+                env,
+                device_instance,
+                points,
+                int(normalized["name_limit"]),
+            )
+            if enrichment_mode == "bacrp":
+                points = _enrich_points_with_bacrp_names(
                     config,
+                    env,
                     device_instance,
-                    str(point["object_type"]),
-                    int(point["object_instance"]),
+                    points,
+                    int(normalized["name_limit"]),
                 )
-                try:
-                    name_completed = subprocess.run(
-                        name_args,
-                        capture_output=True,
-                        check=False,
-                        env=env,
-                        text=True,
-                        timeout=config.bacnet_timeout_sec,
-                    )
-                except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-                    continue
-                if name_completed.returncode == 0:
-                    point["object_name"] = _parse_object_name(name_completed.stdout)
     finally:
         release_bacnet_runtime_lock(config, lock_fd)
 
@@ -681,6 +850,8 @@ def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tupl
             "point_count": len(points),
             "object_count": object_count,
             "read_mode": read_mode,
+            "enrichment_mode": enrichment_mode,
+            "batch_size": BACNET_POINT_LOAD_BATCH_SIZE,
             "raw_output": raw_output,
         }
     )

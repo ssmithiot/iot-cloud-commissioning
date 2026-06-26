@@ -21,6 +21,7 @@ class AgentConfig:
     bacnet_default_port: int = 47814
     bacwi_path: str = "bacwi"
     bacrp_path: str = "bacrp"
+    bacrpm_path: str = "bacrpm"
     bacnet_timeout_sec: int = 10
     bacnet_lock_path: Path = DEFAULT_BACNET_LOCK_PATH
     heartbeat_interval_sec: int = 30
@@ -58,6 +59,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         bacnet_default_port=int(raw.get("bacnet_default_port", bacnet.get("default_port", 47814))),
         bacwi_path=str(bacnet.get("bacwi_path", "bacwi")),
         bacrp_path=str(bacnet.get("bacrp_path", "bacrp")),
+        bacrpm_path=str(bacnet.get("bacrpm_path", "bacrpm")),
         bacnet_timeout_sec=int(bacnet.get("timeout_sec", 10)),
         bacnet_lock_path=Path(bacnet.get("lock_path", DEFAULT_BACNET_LOCK_PATH)),
         heartbeat_interval_sec=int(raw.get("heartbeat_interval_sec", 30)),

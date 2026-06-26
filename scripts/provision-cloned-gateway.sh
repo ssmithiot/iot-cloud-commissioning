@@ -21,6 +21,7 @@ Usage:
     [--hostname GW007] \
     [--bacwi-path /usr/local/bin/bacwi] \
     [--bacrp-path /usr/local/bin/bacrp] \
+    [--bacrpm-path /usr/local/bin/bacrpm] \
     [--no-restart]
 
 The token env file must contain GATEWAY_API_TOKEN=... and is never printed.
@@ -41,6 +42,7 @@ TOKEN_ENV_FILE=""
 HOSTNAME_VALUE=""
 BACWI_PATH="bacwi"
 BACRP_PATH="bacrp"
+BACRPM_PATH="bacrpm"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --hostname) HOSTNAME_VALUE="$2"; shift 2 ;;
     --bacwi-path) BACWI_PATH="$2"; shift 2 ;;
     --bacrp-path) BACRP_PATH="$2"; shift 2 ;;
+    --bacrpm-path) BACRPM_PATH="$2"; shift 2 ;;
     --no-restart) RESTART_SERVICE="false"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
@@ -79,8 +82,8 @@ if [[ "${CLOUD_URL}" =~ [[:space:]#] ]]; then
   exit 1
 fi
 
-if [[ "${BACWI_PATH}" =~ [[:space:]#] || "${BACRP_PATH}" =~ [[:space:]#] ]]; then
-  echo "--bacwi-path and --bacrp-path must not contain whitespace or # characters." >&2
+if [[ "${BACWI_PATH}" =~ [[:space:]#] || "${BACRP_PATH}" =~ [[:space:]#] || "${BACRPM_PATH}" =~ [[:space:]#] ]]; then
+  echo "--bacwi-path, --bacrp-path, and --bacrpm-path must not contain whitespace or # characters." >&2
   exit 1
 fi
 
@@ -110,6 +113,7 @@ bacnet:
   default_port: ${BACNET_PORT}
   bacwi_path: ${BACWI_PATH}
   bacrp_path: ${BACRP_PATH}
+  bacrpm_path: ${BACRPM_PATH}
   lock_path: ${LOCK_PATH}
   timeout_sec: 10
 YAML
