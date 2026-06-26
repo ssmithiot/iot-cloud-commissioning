@@ -326,6 +326,8 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert "renderDiscoveredDevices" in response.text
     assert "Load points" in response.text
     assert "No point data was faked" in response.text
+    assert "Remove device" in response.text
+    assert "Input Objects" in response.text
     assert "pollDiscoveryJob" in response.text
     assert "/api/edge/jobs?limit=50" in response.text
     assert "Unexpected token" not in response.text
@@ -763,6 +765,79 @@ def test_ui_duplicate_device_returns_clean_json_error() -> None:
     assert duplicate_response.headers["content-type"].startswith("application/json")
     assert duplicate_response.json()["detail"] == "Device already exists for this gateway"
     assert "Internal Server Error" not in duplicate_response.text
+
+
+def test_ui_operator_can_soft_remove_point_from_tree() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    device_response = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=headers,
+        json={"device_instance": 1001, "device_name": "AHU-1"},
+    )
+    point_response = client.post(
+        f"/api/ui/devices/{device_response.json()['id']}/points",
+        headers=headers,
+        json={"object_type": "binary-input", "object_instance": 3, "object_name": "Bypass Open"},
+    )
+
+    remove_response = client.delete(f"/api/ui/points/{point_response.json()['id']}", headers=headers)
+    tree_response = client.get("/api/ui/gateways/GW001/tree", headers=headers)
+
+    assert remove_response.status_code == 200
+    assert remove_response.json()["enabled"] is False
+    assert tree_response.status_code == 200
+    assert tree_response.json()["points"] == []
+
+
+def test_ui_operator_can_soft_remove_device_from_tree() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    device_response = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=headers,
+        json={"device_instance": 1001, "device_name": "AHU-1"},
+    )
+    point_response = client.post(
+        f"/api/ui/devices/{device_response.json()['id']}/points",
+        headers=headers,
+        json={"object_type": "binary-input", "object_instance": 3, "object_name": "Bypass Open"},
+    )
+
+    remove_response = client.delete(f"/api/ui/devices/{device_response.json()['id']}", headers=headers)
+    tree_response = client.get("/api/ui/gateways/GW001/tree", headers=headers)
+
+    assert remove_response.status_code == 200
+    assert remove_response.json()["enabled"] is False
+    assert tree_response.status_code == 200
+    assert tree_response.json()["devices"] == []
+    assert tree_response.json()["points"] == []
+
+
+def test_ui_viewer_cannot_remove_tree_items() -> None:
+    create_gateway_token("GW001")
+    operator_id = create_operator_user("operator@example.com", role="operator", status="active")
+    viewer_id = create_operator_user("viewer@example.com", role="viewer", status="active")
+    operator_headers = user_headers("operator@example.com", operator_id)
+    viewer_headers = user_headers("viewer@example.com", viewer_id)
+    device_response = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=operator_headers,
+        json={"device_instance": 1001, "device_name": "AHU-1"},
+    )
+    point_response = client.post(
+        f"/api/ui/devices/{device_response.json()['id']}/points",
+        headers=operator_headers,
+        json={"object_type": "binary-input", "object_instance": 3, "object_name": "Bypass Open"},
+    )
+
+    device_remove = client.delete(f"/api/ui/devices/{device_response.json()['id']}", headers=viewer_headers)
+    point_remove = client.delete(f"/api/ui/points/{point_response.json()['id']}", headers=viewer_headers)
+
+    assert device_remove.status_code == 403
+    assert point_remove.status_code == 403
 
 
 def test_ui_device_group_must_belong_to_same_gateway() -> None:

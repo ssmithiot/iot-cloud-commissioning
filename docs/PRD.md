@@ -434,9 +434,13 @@ The live admin smoke test passes only when:
 - Gateway status uses heartbeat age, so stale or missing heartbeats are not shown as active just because `latest_status` was previously `online`.
 - Gateway workspace shows saved groups, devices, and points.
 - Operators can create groups and queue safe BACnet device discovery from an online gateway.
+- Completed discovery results can be saved as devices into the gateway tree.
+- Saved devices render under groups with BACnet object-type folders generated from saved point `object_type`.
+- Operator/admin users can remove saved devices and points from the default tree by soft-disabling them.
 - Discovery jobs use `request.bacnet_port = 47814`.
 - Viewers can read gateway UI state but cannot create groups, save devices/points, or queue jobs.
 - No BACnet write workflow is included.
+- Full point enumeration/loading remains the next edge-agent job milestone; point data must not be faked.
 
 ### MVP-014 Later: Commissioning Job Workflows
 

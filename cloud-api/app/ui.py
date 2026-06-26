@@ -7,6 +7,7 @@ APP_SCRIPT = r"""
 
   let supabaseClient = null;
   let currentGatewayTree = null;
+  let currentUser = null;
 
   const statePaths = {
     login: "/login",
@@ -290,7 +291,27 @@ APP_SCRIPT = r"""
   }
 
   function objectFolderLabel(objectType) {
-    return `${String(objectType || "unknown").replaceAll("-", " ")} objects`;
+    const labels = {
+      "analog-input": "Analog Input Objects",
+      "analog-output": "Analog Output Objects",
+      "analog-value": "Analog Value Objects",
+      "binary-input": "Input Objects",
+      "binary-output": "Output Objects",
+      "binary-value": "Binary Value Objects",
+      "multi-state-input": "Multistate Input Objects",
+      "multi-state-output": "Multistate Output Objects",
+      "multi-state-value": "Multistate Value Objects",
+      "schedule": "Schedule Objects",
+      "trend-log": "Trend Log Objects",
+      "calendar": "Calendar Objects",
+      "event-enrollment": "Event Enrollment Objects",
+      "file": "File Objects",
+      "loop": "Loop Objects",
+      "notification-class": "Notification Class Objects",
+      "program": "Program Objects",
+      "command": "Command Objects"
+    };
+    return labels[objectType] || `${String(objectType || "unknown").replaceAll("-", " ")} objects`;
   }
 
   function treeRow(kind, label, meta = "", depth = 0, expanded = true) {
@@ -314,7 +335,22 @@ APP_SCRIPT = r"""
     return row;
   }
 
-  function setTreeDetails(title, details) {
+  function canEditTree() {
+    return currentUser && ["admin", "operator"].includes(currentUser.role);
+  }
+
+  async function removeTreeItem(kind, id, label) {
+    if (!canEditTree()) {
+      setText("status", "Your role is read-only.", true);
+      return;
+    }
+    const endpoint = kind === "device" ? `/api/ui/devices/${encodeURIComponent(id)}` : `/api/ui/points/${encodeURIComponent(id)}`;
+    await api(endpoint, { method: "DELETE" });
+    setText("status", `Removed ${label} from the saved tree.`);
+    await loadGatewayWorkspace();
+  }
+
+  function setTreeDetails(title, details, action = null) {
     const panel = byId("tree-details");
     if (!panel) {
       return;
@@ -328,7 +364,11 @@ APP_SCRIPT = r"""
           <dd>${escapeHtml(value ?? "")}</dd>
         `).join("")}
       </dl>
+      ${action && canEditTree() ? `<button id="tree-action" class="secondary" type="button">${escapeHtml(action.label)}</button>` : ""}
     `;
+    if (action && canEditTree()) {
+      byId("tree-action").addEventListener("click", action.handler);
+    }
   }
 
   function addCollapsible(parent, row, children, onSelect = null) {
@@ -378,6 +418,9 @@ APP_SCRIPT = r"""
         vendor_name: device.vendor_name,
         latest_discovered_at: device.latest_discovered_at,
         points: points.length
+      }, {
+        label: "Remove device",
+        handler: () => removeTreeItem("device", device.id, deviceLabel)
       });
       const container = document.createElement("div");
       addCollapsible(container, row, [], showDeviceDetails);
@@ -391,6 +434,9 @@ APP_SCRIPT = r"""
             units: point.units,
             writable: point.writable,
             latest_read_at: point.latest_read_at
+          }, {
+            label: "Remove point",
+            handler: () => removeTreeItem("point", point.id, pointLabel)
           }));
           return pointRow;
         });
@@ -569,6 +615,7 @@ APP_SCRIPT = r"""
     if (!me) {
       return;
     }
+    currentUser = me;
     const groupForm = byId("group-form");
     const discoverButton = byId("discover-devices");
     const gatewayId = document.body.dataset.gatewayId;

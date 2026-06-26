@@ -38,9 +38,13 @@ gateway UI API prefix: /api/ui
 effective gateway status: heartbeat-age derived online/stale/offline
 saved tree: gateway groups, BACnet devices, BACnet points
 safe discovery action: queues bacnet_discover with { "bacnet_port": 47814 }
+discovery results: render as saveable devices
+object folders: generated from saved point object_type
+remove behavior: soft-disable saved devices/points; preserve history
 viewer role: read-only UI state
 operator/admin roles: can queue safe jobs and edit saved tree metadata
 BACnet writes: out of scope
+point loading: future edge-agent enumeration job; no fake point data
 ```
 
 Current live smoke handoff:

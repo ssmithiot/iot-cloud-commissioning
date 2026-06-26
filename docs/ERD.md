@@ -310,7 +310,7 @@ Recommended fields:
 | `network_number` | integer | No | BACnet network number when known |
 | `mac_address` | text | No | BACnet MAC/address text when known |
 | `latest_discovered_at` | timestamptz | No | Last discovery timestamp |
-| `enabled` | boolean | Yes | Whether the saved device is active in UI workflows |
+| `enabled` | boolean | Yes | Whether the saved device appears in default UI workflows; removal soft-disables |
 | `created_at` | timestamptz | Yes | Creation timestamp |
 | `updated_at` | timestamptz | Yes | Last update timestamp |
 
@@ -338,7 +338,7 @@ Recommended fields:
 | `units` | text | No | Unit text when known |
 | `writable` | boolean | No | Metadata only; writes remain out of scope |
 | `latest_read_at` | timestamptz | No | Last read timestamp |
-| `enabled` | boolean | Yes | Whether the saved point is active in UI workflows |
+| `enabled` | boolean | Yes | Whether the saved point appears in default UI workflows; removal soft-disables |
 | `created_at` | timestamptz | Yes | Creation timestamp |
 | `updated_at` | timestamptz | Yes | Last update timestamp |
 

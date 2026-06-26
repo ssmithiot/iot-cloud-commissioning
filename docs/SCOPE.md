@@ -294,6 +294,9 @@ MVP-014A foundation:
 - Discovery jobs use `request.bacnet_port = 47814`.
 - Viewer read-only access to gateway UI state.
 - Operator/admin write access for group/device/point metadata and safe job queueing.
+- Completed discovery results display as device rows that can be saved into groups.
+- Saved point object types render as friendly object folders such as Input Objects, Output Objects, and Analog Value Objects.
+- Device and point removal is a soft-disable so history is preserved and removed items disappear from the default tree.
 
 Not included in MVP-014A:
 
@@ -301,6 +304,7 @@ Not included in MVP-014A:
 - Direct cloud execution of BACnet.
 - Faked point lists.
 - Automatic point enumeration unless the edge agent has a tested job for it.
+- BACnet writes, schedules, program edits, and command writes.
 
 Features:
 

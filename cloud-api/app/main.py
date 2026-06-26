@@ -381,10 +381,18 @@ def ui_get_gateway_tree(
     gateway = _get_gateway_or_404(db, gateway_id)
     groups = list(db.scalars(select(GatewayGroup).where(GatewayGroup.gateway_id == gateway_id).order_by(GatewayGroup.name)).all())
     devices = list(
-        db.scalars(select(SavedBacnetDevice).where(SavedBacnetDevice.gateway_id == gateway_id).order_by(SavedBacnetDevice.device_instance)).all()
+        db.scalars(
+            select(SavedBacnetDevice)
+            .where(SavedBacnetDevice.gateway_id == gateway_id, SavedBacnetDevice.enabled.is_(True))
+            .order_by(SavedBacnetDevice.device_instance)
+        ).all()
     )
     points = list(
-        db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.gateway_id == gateway_id).order_by(SavedBacnetPoint.device_instance, SavedBacnetPoint.object_type, SavedBacnetPoint.object_instance)).all()
+        db.scalars(
+            select(SavedBacnetPoint)
+            .where(SavedBacnetPoint.gateway_id == gateway_id, SavedBacnetPoint.enabled.is_(True))
+            .order_by(SavedBacnetPoint.device_instance, SavedBacnetPoint.object_type, SavedBacnetPoint.object_instance)
+        ).all()
     )
     return GatewayTreeOut(
         gateway=GatewayOut(**_gateway_out(gateway)),
@@ -508,6 +516,25 @@ def ui_patch_device(
     return _device_out(device)
 
 
+@app.delete("/api/ui/devices/{device_id}", response_model=SavedDeviceOut)
+def ui_remove_device(
+    device_id: str,
+    _: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    device = db.get(SavedBacnetDevice, _tree_id(device_id))
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    device.enabled = False
+    device.updated_at = utc_now()
+    for point in db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id)).all():
+        point.enabled = False
+        point.updated_at = utc_now()
+    db.commit()
+    db.refresh(device)
+    return _device_out(device)
+
+
 @app.post("/api/ui/devices/{device_id}/points", response_model=SavedPointOut)
 def ui_save_point(
     device_id: str,
@@ -538,6 +565,22 @@ def ui_save_point(
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Point already exists for this device") from None
+    db.refresh(point)
+    return _point_out(point)
+
+
+@app.delete("/api/ui/points/{point_id}", response_model=SavedPointOut)
+def ui_remove_point(
+    point_id: str,
+    _: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    point = db.get(SavedBacnetPoint, _tree_id(point_id))
+    if point is None:
+        raise HTTPException(status_code=404, detail="Point not found")
+    point.enabled = False
+    point.updated_at = utc_now()
+    db.commit()
     db.refresh(point)
     return _point_out(point)
 
