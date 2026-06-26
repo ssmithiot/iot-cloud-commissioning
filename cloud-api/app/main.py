@@ -635,7 +635,7 @@ async def proxy_gateway_tunnel(
             headers={
                 key: value
                 for key, value in request.headers.items()
-                if key.lower() not in {"host", "content-length", "connection"}
+                if key.lower() not in {"host", "content-length", "connection", "authorization", "cookie"}
             },
             body=await request.body(),
             timeout_sec=settings.tunnel_request_timeout_sec,

@@ -198,14 +198,16 @@ The protected proxy relay path is:
 /gateways/{gateway_id}/tunnel/proxy/{path}
 ```
 
-When a real outbound session exists, the edge agent proxies that traffic to its local gateway UI, configured with:
+When a real outbound session exists, the edge agent proxies that traffic to its allowlisted local gateway UI target:
 
 ```yaml
 tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
 ```
 
-Current state: Cloud Tunnel is future scope for the next remote-console slice unless an actual gateway tunnel client/session is present. When no gateway tunnel session is connected, the protected proxy route must keep returning a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`. Do not fake tunnel connectivity.
+The gateway tunnel client authenticates with the gateway credential from `GATEWAY_API_TOKEN`, not with `IOT_ADMIN_API_TOKEN` or Supabase credentials. The browser tunnel shell authenticates with the logged-in Supabase session for admin/operator users. The protected relay strips browser authorization and cookie headers before forwarding to the local gateway UI.
+
+Current state: Cloud Tunnel code supports gateway-initiated outbound WebSocket sessions and protected browser relay. Live tunnel status remains disconnected until the provisioned gateway service is running tunnel-enabled code and can reach the cloud WebSocket. When no gateway tunnel session is connected, the protected proxy route must keep returning a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`. Do not fake tunnel connectivity.
 
 ## Direct Connect
 

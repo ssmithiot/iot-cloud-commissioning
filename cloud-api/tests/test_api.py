@@ -6,6 +6,7 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 from cryptography.hazmat.primitives.asymmetric import rsa
+from starlette.websockets import WebSocketDisconnect
 from sqlalchemy import select
 
 os.environ["DATABASE_URL"] = "sqlite:///./test-cloud-api.db"
@@ -619,6 +620,56 @@ def test_tunnel_status_remains_friendly_when_disconnected() -> None:
     assert response.json() == {"connected": False, "status": "not_connected"}
 
 
+def test_gateway_tunnel_registration_requires_matching_gateway_token() -> None:
+    raw_token = create_gateway_token("GW002", token_prefix="gw00201")
+
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+            pass
+
+
+def test_gateway_tunnel_registration_updates_status() -> None:
+    raw_token = create_gateway_token("GW001")
+
+    with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+        connected = client.get("/api/ui/gateways/GW001/tunnel-status", headers=admin_headers())
+        assert connected.status_code == 200
+        assert connected.json() == {"connected": True, "status": "connected"}
+
+    disconnected = client.get("/api/ui/gateways/GW001/tunnel-status", headers=admin_headers())
+    assert disconnected.status_code == 200
+    assert disconnected.json() == {"connected": False, "status": "not_connected"}
+
+
+def test_tunnel_proxy_relays_for_operator_without_forwarding_browser_auth() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager
+
+    create_gateway_token("GW001")
+    operator_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            assert kwargs["method"] == "GET"
+            assert kwargs["path"] == "/status"
+            assert kwargs["query_string"] == "tab=network"
+            assert "authorization" not in {key.lower() for key in kwargs["headers"]}
+            assert "cookie" not in {key.lower() for key in kwargs["headers"]}
+            return TunnelResponse(status_code=200, headers={"content-type": "text/html"}, body=b"<html>gateway ui</html>")
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        response = client.get(
+            "/gateways/GW001/tunnel/proxy/status?tab=network",
+            headers=user_headers("operator@example.com", operator_id),
+        )
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+
+    assert response.status_code == 200
+    assert response.text == "<html>gateway ui</html>"
+    assert response.headers["content-type"].startswith("text/html")
+
+
 def test_tunnel_console_direct_navigation_renders_friendly_shell() -> None:
     create_gateway_token("GW001")
 
@@ -632,6 +683,8 @@ def test_tunnel_console_direct_navigation_renders_friendly_shell() -> None:
     assert "Heartbeat and job polling" in response.text
     assert "Missing admin credentials" not in response.text
     assert "initTunnelConsole" in response.text
+    assert "apiText" in response.text
+    assert "/tunnel/proxy/" in response.text
 
 
 def test_tunnel_proxy_requires_operator_auth() -> None:

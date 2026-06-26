@@ -10,6 +10,8 @@ from iot_cx_agent.config import AgentConfig
 
 
 logger = logging.getLogger("iot-cx-agent.tunnel")
+ALLOWED_LOCAL_UI_URL = "http://127.0.0.1:5000"
+STRIPPED_LOCAL_HEADERS = {"host", "content-length", "connection", "authorization", "cookie"}
 
 
 def tunnel_url(config: AgentConfig) -> str:
@@ -51,6 +53,13 @@ def run_tunnel(config: AgentConfig) -> None:
         connection.close()
 
 
+def local_ui_base_url(config: AgentConfig) -> str:
+    configured = config.local_ui_url.rstrip("/")
+    if configured != ALLOWED_LOCAL_UI_URL:
+        raise ValueError("Gateway tunnel target is not allowlisted")
+    return ALLOWED_LOCAL_UI_URL
+
+
 def handle_tunnel_message(config: AgentConfig, message: dict[str, object]) -> dict[str, object]:
     request_id = str(message.get("request_id", ""))
     if message.get("type") != "request":
@@ -65,7 +74,10 @@ def handle_tunnel_message(config: AgentConfig, message: dict[str, object]) -> di
         if not isinstance(headers, dict):
             headers = {}
 
-        url = f"{config.local_ui_url}{path}"
+        if not path.startswith("/") or "://" in path:
+            raise ValueError("Unsupported tunnel path")
+
+        url = f"{local_ui_base_url(config)}{path}"
         if query_string:
             url = f"{url}?{query_string}"
 
@@ -75,7 +87,7 @@ def handle_tunnel_message(config: AgentConfig, message: dict[str, object]) -> di
             headers={
                 str(key): str(value)
                 for key, value in headers.items()
-                if str(key).lower() not in {"host", "content-length", "connection"}
+                if str(key).lower() not in STRIPPED_LOCAL_HEADERS
             },
             data=base64.b64decode(body_b64),
             timeout=30,
@@ -88,6 +100,9 @@ def handle_tunnel_message(config: AgentConfig, message: dict[str, object]) -> di
             "headers": dict(response.headers),
             "body_b64": base64.b64encode(response.content).decode("ascii"),
         }
+    except requests.RequestException:
+        logger.exception("Tunnel request failed")
+        return {"type": "error", "request_id": request_id, "error": "Local gateway UI unavailable"}
     except Exception as exc:
         logger.exception("Tunnel request failed")
         return {"type": "error", "request_id": request_id, "error": str(exc)}

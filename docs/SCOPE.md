@@ -321,9 +321,11 @@ MVP-014C direction:
 - Cloud Tunnel is separate from Direct Connect and remains future scope unless a real gateway tunnel client/session is safely completed.
 - When no gateway tunnel session is connected, the protected proxy route returns a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`.
 - Tunnel connectivity must not be faked.
-- Current tunnel code is partial: cloud session/proxy routes and an edge-agent tunnel client module exist, but live access depends on a provisioned gateway process actively maintaining the outbound WebSocket session.
+- Current tunnel code includes cloud session/proxy routes and an edge-agent tunnel client module wired into the provisioned edge-agent loop. Live access depends on the deployed gateway service running tunnel-enabled code and actively maintaining the outbound WebSocket session.
 - Direct browser navigation to `/gateways/{gateway_id}/tunnel/` renders a friendly shell because logged-in browser sessions do not attach Supabase bearer tokens to address-bar proxy requests.
 - Tunnel proxy access is for AdminBearer or active Supabase admin/operator users; viewer users can see status but cannot open the tunnel console unless explicitly approved later.
+- Tunnel target is allowlisted to the gateway-local UI at `http://127.0.0.1:5000`; arbitrary host/port proxying and LAN scanning are out of scope.
+- Browser authorization and cookie headers are stripped before tunnel relay to the gateway-local UI.
 - Direct Connect is an optional browser link, not a cloud proxy, to `http://<direct_connect_host>:<direct_connect_port>` when site metadata is configured.
 - Direct Connect defaults are external port `5002` and informational gateway UI port `5000`.
 - Direct Connect must open in a new tab and must not store gateway UI passwords in the cloud.
@@ -338,7 +340,7 @@ MVP-014C direction:
 Cloud Tunnel future split:
 
 - MVP-Tunnel-A: harden status-only behavior, friendly disconnected UI/API, gateway session registration tests, and docs.
-- MVP-Tunnel-B: complete gateway-initiated WebSocket tunnel rollout, cloud relay/session manager, browser proxy, local target allowlist initially limited to `127.0.0.1:5000`, timeouts, and tests.
+- MVP-Tunnel-B: complete gateway-initiated WebSocket tunnel code, cloud relay/session manager, browser proxy, local target allowlist initially limited to `127.0.0.1:5000`, timeouts, and tests. Live gateway deployment/restart is a separate operator step.
 - MVP-Tunnel-C: audit logs, idle/session controls, permission polish, and connection management UX.
 
 MVP-014C next planning slice:
