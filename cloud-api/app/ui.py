@@ -34,6 +34,26 @@ APP_SCRIPT = r"""
     element.className = isError ? "notice error" : "notice";
   }
 
+  function renderImportResult(result) {
+    const panel = byId("import-result");
+    if (!panel) {
+      return;
+    }
+    const createdTotal = Number(result.created_devices || 0) + Number(result.created_points || 0) + Number(result.created_groups || 0);
+    const updatedTotal = Number(result.updated_devices || 0) + Number(result.updated_points || 0) + Number(result.updated_groups || 0);
+    const action = createdTotal ? "created" : updatedTotal ? "updated" : "validated";
+    panel.hidden = false;
+    panel.innerHTML = `
+      <h3>Last Import</h3>
+      <p>Template ${action} the cloud commissioning model.</p>
+      <dl>
+        <dt>Groups</dt><dd>${escapeHtml(result.created_groups || 0)} created, ${escapeHtml(result.updated_groups || 0)} updated</dd>
+        <dt>Devices</dt><dd>${escapeHtml(result.created_devices || 0)} created, ${escapeHtml(result.updated_devices || 0)} updated</dd>
+        <dt>Points</dt><dd>${escapeHtml(result.created_points || 0)} created, ${escapeHtml(result.updated_points || 0)} updated</dd>
+      </dl>
+    `;
+  }
+
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;",
@@ -619,10 +639,6 @@ APP_SCRIPT = r"""
         points: points.length
       }, [
         {
-          label: "Load points",
-          handler: () => loadPointsForDevice(device)
-        },
-        {
           label: "Remove device",
           handler: () => removeTreeItem("device", device.id, deviceLabel)
         }
@@ -637,7 +653,7 @@ APP_SCRIPT = r"""
         addCollapsible(container.querySelector(".tree-children"), treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1), pointRows);
       }
       if (!points.length) {
-        container.querySelector(".tree-children").appendChild(leafRow("empty", "No saved points", "load points to select", depth + 1));
+        container.querySelector(".tree-children").appendChild(leafRow("empty", "No imported points", "import edge template", depth + 1));
       }
       return container;
     }
@@ -700,9 +716,6 @@ APP_SCRIPT = r"""
         <td>
           <button type="button" data-role="save-device">Save</button>
         </td>
-        <td>
-          <button class="secondary" type="button" data-role="load-points">Load points</button>
-        </td>
       `;
       row.querySelector('[data-role="save-device"]').addEventListener("click", async (event) => {
         const button = event.currentTarget;
@@ -726,9 +739,6 @@ APP_SCRIPT = r"""
         } finally {
           button.disabled = false;
         }
-      });
-      row.querySelector('[data-role="load-points"]').addEventListener("click", () => {
-        setText("status", `Save device ${deviceInstance}, then use Load points from the saved tree.`);
       });
       body.appendChild(row);
     }
@@ -853,6 +863,7 @@ APP_SCRIPT = r"""
         });
         byId("template-file").value = "";
         await loadGatewayWorkspace();
+        renderImportResult(result);
         setText("status", `Imported template: ${result.created_devices} device(s) created, ${result.updated_devices} updated, ${result.created_points} point(s) created, ${result.updated_points} updated.`);
       } catch (error) {
         setText("status", error.message, true);
@@ -890,7 +901,7 @@ APP_SCRIPT = r"""
     removeSelectedPointsButton.addEventListener("click", removeSelectedSavedPoints);
     saveSelectedPointsButton.addEventListener("click", async () => {
       if (!currentPointCandidateDevice) {
-        setText("status", "Load points for a saved device first.", true);
+        setText("status", "Import an edge commissioning template first.", true);
         return;
       }
       const selected = selectedPointCandidates();
@@ -1161,6 +1172,10 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .tree-shell > aside .detail-panel {{
       min-height: 0;
     }}
+    .compact-panel {{
+      min-height: 0;
+      margin: 12px 0;
+    }}
     .tree-view {{
       display: grid;
       gap: 2px;
@@ -1418,7 +1433,8 @@ def gateway_workspace_html(gateway_id: str) -> str:
       <div id="status" class="notice"></div>
     </section>
     <section>
-      <h2>Saved Tree</h2>
+      <h2>Imported Commissioning Model</h2>
+      <div class="notice">Use the edge commissioning UI for BACnet discovery and point selection, then import the approved JSON template here.</div>
       <form id="import-template-form" class="grid">
         <div class="span-6">
           <label for="template-file">Edge commissioning template JSON</label>
@@ -1428,12 +1444,13 @@ def gateway_workspace_html(gateway_id: str) -> str:
           <button type="submit">Import template</button>
         </div>
       </form>
+      <div id="import-result" class="detail-panel compact-panel" hidden></div>
       <div class="tree-shell">
         <div id="tree" class="tree-panel">Loading...</div>
         <aside>
           <div id="tree-details" class="detail-panel" hidden></div>
           <div id="selected-points-panel" class="detail-panel" hidden>
-            <h2>Selected Saved Points</h2>
+            <h2>Selected Imported Points</h2>
             <div id="selected-points-count" class="notice">No saved points selected.</div>
             <ul id="selected-points-list" class="selected-point-list"></ul>
             <button id="remove-selected-points" class="secondary" type="button" disabled>Remove selected points</button>
@@ -1451,7 +1468,8 @@ def gateway_workspace_html(gateway_id: str) -> str:
       </form>
     </section>
     <section>
-      <h2>Discovery</h2>
+      <h2>Cloud BACnet Diagnostics</h2>
+      <div class="notice">Temporary diagnostics only. Normal commissioning should happen in the edge UI and be imported as a template.</div>
       <div class="toolbar">
         <button id="discover-devices" type="button">Discover devices</button>
       </div>
@@ -1472,7 +1490,6 @@ def gateway_workspace_html(gateway_id: str) -> str:
               <th>APDU</th>
               <th>Group</th>
               <th>Save</th>
-              <th>Points</th>
             </tr>
           </thead>
           <tbody id="discovered-devices"></tbody>

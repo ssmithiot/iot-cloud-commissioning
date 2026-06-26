@@ -40,7 +40,7 @@ cloud role: fleet, users, jobs, templates, reports, future graphics/trends
 edge UI role: BACnet commissioning workstation for discovery, point selection, validation
 remote console bridge: future controlled launcher for cloud-authenticated edge UI access
 template flow: edge builds approved devices/groups/points, cloud imports the template
-saved tree: cloud stores imported gateway groups, BACnet devices, BACnet points
+imported commissioning model: cloud stores imported gateway groups, BACnet devices, BACnet points
 edge export: /devices/export/{device_profile_id}.json from the edge UI
 cloud import: POST /api/ui/gateways/{gateway_id}/commissioning-template/import
 remove behavior: soft-disable saved devices/points; preserve history

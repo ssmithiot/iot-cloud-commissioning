@@ -307,11 +307,12 @@ MVP-014B direction:
 - Edge UI is the primary BACnet commissioning workstation.
 - Edge UI performs device discovery, point discovery, point selection, local validation, and template export.
 - Cloud UI is the operations platform for fleet, users, jobs, templates, reports, and future graphics/trends.
-- Cloud stores imported commissioning templates as gateway groups, BACnet devices, and BACnet points.
+- Cloud stores imported commissioning templates as the gateway commissioning model: groups, BACnet devices, and approved BACnet points.
 - Cloud template import should be idempotent and should update/re-enable existing matching rows where practical.
 - Cloud may queue safe follow-up jobs, but it should not duplicate the full edge commissioning workstation.
 - Edge saved live devices expose a cloud-template JSON download route.
 - Cloud gateway workspaces expose a template import form backed by `POST /api/ui/gateways/{gateway_id}/commissioning-template/import`.
+- The cloud gateway workspace should present this as an imported commissioning model, not as the primary BACnet point discovery workstation.
 
 MVP-014C direction:
 

@@ -343,7 +343,7 @@ Future compatibility notes: when Supabase Auth and RLS are active, this can be s
 
 ## POST /api/ui/gateways/{gateway_id}/commissioning-template/import
 
-Purpose: import an edge-exported commissioning template into a cloud gateway saved tree.
+Purpose: import an edge-exported commissioning template into a cloud gateway commissioning model.
 
 Authentication: requires an active Supabase user with `admin` or `operator` role, or the server-side admin token for automation.
 
@@ -398,7 +398,7 @@ Success behavior: creates or updates/re-enables matching groups, devices, and po
 
 Failure behavior: viewer users return HTTP 403. A template `gateway_id` that does not match the URL target returns HTTP 400.
 
-Future compatibility notes: the edge UI remains the BACnet commissioning workstation. Cloud imports approved metadata and should not require direct cloud BACnet execution.
+Future compatibility notes: the edge UI remains the BACnet commissioning workstation. Cloud imports approved metadata into the imported commissioning model and should not require direct cloud BACnet execution.
 
 ## POST /api/admin/gateways/provision
 

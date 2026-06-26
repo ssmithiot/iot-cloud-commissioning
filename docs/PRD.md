@@ -253,11 +253,11 @@ The cloud API must provide:
 | `POST /api/admin/gateways/provision` | Admin provisions gateway | Admin/operator auth |
 | `GET /api/ui/gateways` | Browser UI gateway list with effective status | Viewer/operator/admin auth |
 | `GET /api/ui/gateways/summary` | Browser UI gateway status summary | Viewer/operator/admin auth |
-| `GET /api/ui/gateways/{gateway_id}/tree` | Browser UI saved group/device/point tree | Viewer/operator/admin auth |
+| `GET /api/ui/gateways/{gateway_id}/tree` | Browser UI imported commissioning model | Viewer/operator/admin auth |
 | `POST /api/ui/gateways/{gateway_id}/groups` | Create saved gateway group | Operator/admin auth |
 | `POST /api/ui/gateways/{gateway_id}/devices` | Save discovered BACnet device metadata | Operator/admin auth |
 | `POST /api/ui/devices/{device_id}/points` | Save BACnet point metadata | Operator/admin auth |
-| `POST /api/ui/gateways/{gateway_id}/commissioning-template/import` | Import an edge-exported commissioning template into the cloud saved tree | Operator/admin auth |
+| `POST /api/ui/gateways/{gateway_id}/commissioning-template/import` | Import an edge-exported commissioning template into the cloud commissioning model | Operator/admin auth |
 | `POST /api/ui/gateways/{gateway_id}/discover-devices` | Queue safe BACnet discovery job | Operator/admin auth |
 
 ### 7.2 Admin / Operator Auth
@@ -435,8 +435,8 @@ The live admin smoke test passes only when:
 - Gateway status uses heartbeat age, so stale or missing heartbeats are not shown as active just because `latest_status` was previously `online`.
 - The cloud UI is the operations platform for fleet, users, jobs, templates, reports, and future graphics/trends.
 - The edge UI is the BACnet commissioning workstation for device discovery, point discovery, point selection, local validation, and template export.
-- Gateway workspace shows imported or saved groups, devices, and points.
-- Completed edge commissioning templates can be imported into the cloud gateway tree.
+- Gateway workspace shows the imported commissioning model: groups, devices, and approved points.
+- Completed edge commissioning templates can be imported into the cloud gateway commissioning model.
 - Saved devices render under groups with BACnet object-type folders generated from saved point `object_type`.
 - Operator/admin users can remove saved devices and points from the default tree by soft-disabling them.
 - Cloud-queued BACnet jobs remain available for safe runtime checks and targeted follow-up reads, but cloud should not duplicate the full edge commissioning workstation.
@@ -452,7 +452,7 @@ The live admin smoke test passes only when:
 - Imports are idempotent: existing groups/devices/points are updated or re-enabled; missing ones are created.
 - Template import does not require cloud direct BACnet execution.
 - Template import does not expose Supabase, Postgres, service-role, admin-token, or server-pepper secrets to the edge gateway.
-- First implementation slice: edge saved live devices can download a cloud template JSON, and cloud gateway workspaces can import that JSON into the saved tree.
+- First implementation slice: edge saved live devices can download a cloud template JSON, and cloud gateway workspaces can import that JSON into the imported commissioning model.
 
 ### MVP-014C Candidate: Remote Edge Console Launcher
 

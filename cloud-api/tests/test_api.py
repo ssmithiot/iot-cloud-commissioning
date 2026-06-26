@@ -324,9 +324,13 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'class="tree-shell"' in response.text
     assert 'id="tree-details"' in response.text
     assert "renderDiscoveredDevices" in response.text
-    assert "Load points" in response.text
-    assert "Saved Tree" in response.text
+    assert "Load points" not in response.text
+    assert "Saved Tree" not in response.text
+    assert "Imported Commissioning Model" in response.text
+    assert "Last Import" in response.text
+    assert "Use the edge commissioning UI for BACnet discovery and point selection" in response.text
     assert 'id="import-template-form"' in response.text
+    assert 'id="import-result"' in response.text
     assert 'id="template-file"' in response.text
     assert "Import template" in response.text
     assert "/commissioning-template/import" in response.text
@@ -340,8 +344,7 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert "Save selected points" in response.text
     assert "select-all-point-candidates" in response.text
     assert "Loaded Point Candidates" in response.text
-    assert "Save device" in response.text
-    assert "/load-points" in response.text
+    assert 'data-role="save-device"' in response.text
     assert "Remove device" in response.text
     assert "Input Objects" in response.text
     assert "pollDiscoveryJob" in response.text
