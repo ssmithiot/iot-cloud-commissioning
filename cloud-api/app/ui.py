@@ -73,7 +73,14 @@ APP_SCRIPT = r"""
     };
     const response = await fetch(path, { ...options, headers });
     const text = await response.text();
-    const body = text ? JSON.parse(text) : null;
+    let body = null;
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = { detail: text };
+      }
+    }
     if (!response.ok) {
       const message = body?.detail || `HTTP ${response.status}`;
       const error = new Error(message);
@@ -299,6 +306,57 @@ APP_SCRIPT = r"""
     target.textContent = lines.join("\n");
   }
 
+  function setDiscoveryProgress(percent, label, isError = false) {
+    const panel = byId("discovery-progress-panel");
+    const bar = byId("discovery-progress");
+    const labelEl = byId("discovery-progress-label");
+    if (!panel || !bar || !labelEl) {
+      return;
+    }
+    panel.hidden = false;
+    bar.value = percent;
+    labelEl.textContent = label;
+    labelEl.className = isError ? "notice error" : "notice";
+  }
+
+  function progressForJob(job) {
+    if (!job) {
+      return { percent: 10, label: "Waiting for job record..." };
+    }
+    if (job.status === "queued") {
+      return { percent: 25, label: `Queued ${job.job_id}` };
+    }
+    if (job.status === "claimed") {
+      return { percent: 65, label: `Running ${job.job_id}` };
+    }
+    if (job.status === "completed") {
+      return { percent: 100, label: `Completed ${job.job_id}` };
+    }
+    if (job.status === "deferred") {
+      return { percent: 100, label: `Deferred ${job.job_id}: ${job.error_message || "gateway busy"}`, isError: true };
+    }
+    if (job.status === "failed") {
+      return { percent: 100, label: `Failed ${job.job_id}: ${job.error_message || "unknown error"}`, isError: true };
+    }
+    return { percent: 40, label: `${job.status} ${job.job_id}` };
+  }
+
+  async function pollDiscoveryJob(jobId) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 120000) {
+      const jobs = await api("/api/edge/jobs?limit=50");
+      const job = jobs.find((item) => item.job_id === jobId);
+      const progress = progressForJob(job);
+      setDiscoveryProgress(progress.percent, progress.label, Boolean(progress.isError));
+      if (job && ["completed", "failed", "deferred"].includes(job.status)) {
+        return job;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    setDiscoveryProgress(100, `Timed out waiting for ${jobId}`, true);
+    throw new Error("Discovery job did not finish before timeout.");
+  }
+
   async function loadGatewayWorkspace() {
     const gatewayId = document.body.dataset.gatewayId;
     const gateway = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}`);
@@ -346,11 +404,21 @@ APP_SCRIPT = r"""
       }
     });
     discoverButton.addEventListener("click", async () => {
+      discoverButton.disabled = true;
+      setDiscoveryProgress(5, "Queueing discovery job...");
       try {
         const job = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/discover-devices`, { method: "POST" });
-        setText("status", `Queued ${job.job_id} on BACnet 47814.`);
+        setDiscoveryProgress(25, `Queued ${job.job_id} on BACnet 47814.`);
+        const completedJob = await pollDiscoveryJob(job.job_id);
+        if (completedJob.status === "completed") {
+          setText("status", `Discovery completed: ${completedJob.job_id}.`);
+        } else {
+          setText("status", `Discovery ${completedJob.status}: ${completedJob.job_id}.`, true);
+        }
       } catch (error) {
         setText("status", error.message, true);
+      } finally {
+        discoverButton.disabled = false;
       }
     });
     try {
@@ -517,6 +585,10 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       color: var(--accent);
       background: #ffffff;
     }}
+    button:disabled {{
+      cursor: wait;
+      opacity: 0.65;
+    }}
     .grid {{
       display: grid;
       grid-template-columns: repeat(12, 1fr);
@@ -564,6 +636,18 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       color: var(--muted);
     }}
     .notice.error {{ color: var(--danger); }}
+    progress {{
+      width: min(420px, 100%);
+      height: 18px;
+      accent-color: var(--accent);
+    }}
+    .progress-panel {{
+      margin-top: 14px;
+      display: grid;
+      gap: 6px;
+      align-items: start;
+    }}
+    .progress-panel[hidden] {{ display: none; }}
     .toolbar {{
       display: flex;
       gap: 10px;
@@ -765,6 +849,10 @@ def gateway_workspace_html(gateway_id: str) -> str:
       <h2>Discovery</h2>
       <div class="toolbar">
         <button id="discover-devices" type="button">Discover devices</button>
+      </div>
+      <div id="discovery-progress-panel" class="progress-panel" hidden>
+        <progress id="discovery-progress" max="100" value="0"></progress>
+        <div id="discovery-progress-label" class="notice"></div>
       </div>
     </section>
     <section id="technical-section" hidden>

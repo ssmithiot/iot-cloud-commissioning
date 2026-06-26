@@ -315,6 +315,16 @@ def test_protected_ui_contains_unauthenticated_redirect() -> None:
     assert "/api/auth/me" in response.text
 
 
+def test_gateway_workspace_contains_discovery_progress_ui() -> None:
+    response = client.get("/gateways/GW777")
+
+    assert response.status_code == 200
+    assert 'id="discovery-progress"' in response.text
+    assert "pollDiscoveryJob" in response.text
+    assert "/api/edge/jobs?limit=50" in response.text
+    assert "Unexpected token" not in response.text
+
+
 def test_public_auth_config_reports_missing_browser_config() -> None:
     response = client.get("/api/auth/public-config")
 
