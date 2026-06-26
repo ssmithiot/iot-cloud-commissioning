@@ -166,6 +166,9 @@ Protected operator endpoints:
 
 - `GET /api/edge/gateways`
 - `GET /api/ui/sites`
+- `GET /api/ui/sites/{site_id}`
+- `GET /api/ui/gateways/{gateway_id}/direct-connect`
+- `GET /api/ui/gateways/{gateway_id}/tunnel-status`
 - `PATCH /api/ui/sites/{site_id}`
 - `POST /api/edge/jobs`
 - `GET /api/edge/jobs`
@@ -193,6 +196,29 @@ The edge agent then proxies that traffic to its local gateway UI, configured wit
 tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
 ```
+
+## Direct Connect
+
+Direct Connect is separate from the cloud tunnel. It is a new-tab browser link to a configured Cradlepoint/cellular host and external port, usually:
+
+```text
+http://<direct_connect_host>:5002
+```
+
+It is not a cloud proxy and does not store gateway UI passwords. Admin users can edit site information; operators and viewers are read-only by default. Direct Connect metadata is stored on `sites`:
+
+- `name`
+- `address`
+- `cradlepoint_ip`
+- `direct_connect_host`
+- `direct_connect_port` default `5002`
+- `gateway_ui_port` informational default `5000`
+- `store_hours_monday_friday`
+- `store_hours_saturday`
+- `store_hours_sunday`
+- `network_status_notes`
+
+Live Supabase changes should be applied with the SQL Editor script in `supabase/migrations/0008_site_direct_connect.sql`.
 
 Related docs:
 

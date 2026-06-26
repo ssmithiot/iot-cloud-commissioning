@@ -457,11 +457,18 @@ The live admin smoke test passes only when:
 ### MVP-014C Candidate: Remote Edge Console Launcher
 
 - Cloud UI provides a Configure action for a gateway.
-- Cloud verifies operator/admin role before creating a temporary remote-console session.
-- Gateway opens an outbound tunnel/session to a controlled cloud relay.
-- Operator opens the edge UI through a cloud-authenticated, time-limited URL.
+- Cloud separates Cloud Tunnel from Direct Connect.
+- Cloud Tunnel uses the gateway's outbound session to a controlled cloud relay.
+- Direct Connect is a separate button/link to a configured Cradlepoint/cellular host and port, usually `http://10.x.x.x:5002`.
+- Direct Connect opens in a new browser tab and is not a cloud proxy.
+- Direct Connect does not store gateway UI passwords in the cloud.
+- Direct Connect host/port values are validated server-side; user-controlled schemes and `javascript:` URLs are rejected.
+- Site information includes site name, site address, Cradlepoint/direct-connect host, Direct Connect external port, gateway UI internal port, Monday-Friday/Saturday/Sunday store hours, and network status notes.
+- Site information currently records that the rest of the boxes on the two known networks are online as well.
+- Admin users can edit site information; operator/viewer users are read-only by default.
 - Sessions are audited and expire automatically.
-- The design must not expose the edge UI directly to the public internet and must not require inbound access to private LAN IPs such as `192.168.1.200`.
+- The design must not expose admin tokens, gateway tokens, Supabase secrets, service-role keys, server pepper values, or database credentials.
+- Direct Connect and Cloud Tunnel do not change cloud BACnet jobs: UDP `47814` remains the cloud commissioning runtime and legacy UDP `47808` remains excluded.
 
 ### MVP-014 Later: Commissioning Job Workflows
 

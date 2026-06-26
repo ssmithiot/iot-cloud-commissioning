@@ -2,6 +2,8 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import ipaddress
+import re
 from urllib.parse import quote
 from uuid import UUID
 from uuid import uuid4
@@ -10,7 +12,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket,
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.auth import (
     DEFAULT_GATEWAY_SCOPES,
@@ -43,6 +45,7 @@ from app.schemas import (
     CommissioningTemplateImportOut,
     CommissioningTemplateIn,
     CurrentOperatorOut,
+    DirectConnectOut,
     EdgeJobClaimOut,
     GatewayGroupIn,
     GatewayGroupOut,
@@ -69,6 +72,7 @@ from app.schemas import (
     SavedPointsBulkRemoveOut,
     SiteOut,
     SiteUpdate,
+    TunnelStatusOut,
 )
 from app.tunnel import TunnelRequestFailed, TunnelUnavailable, tunnel_manager
 from app.ui import (
@@ -91,6 +95,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lifespan)
+
+
+DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
 
 
 def _aware_utc(value: datetime | None) -> datetime | None:
@@ -126,6 +133,11 @@ def _effective_status(edge_node: EdgeNode, now: datetime | None = None) -> dict[
 
 
 def _gateway_out(edge_node: EdgeNode, now: datetime | None = None) -> dict[str, object]:
+    site = edge_node.site
+    store_hours_mf = (site.store_hours_monday_friday or site.store_hours_mf) if site else None
+    store_hours_sat = (site.store_hours_saturday or site.store_hours_sat) if site else None
+    store_hours_sun = (site.store_hours_sunday or site.store_hours_sun) if site else None
+    direct_connect = _direct_connect_for_site(site) if site else DirectConnectOut(available=False)
     return {
         "gateway_id": edge_node.gateway_id,
         "site_id": edge_node.site_id,
@@ -139,6 +151,15 @@ def _gateway_out(edge_node: EdgeNode, now: datetime | None = None) -> dict[str, 
         "latest_status": edge_node.latest_status,
         "latest_heartbeat_at": edge_node.latest_heartbeat_at,
         "updated_at": edge_node.updated_at,
+        "site_name": site.name if site else None,
+        "site_address": site.address if site else None,
+        "store_hours_monday_friday": store_hours_mf,
+        "store_hours_saturday": store_hours_sat,
+        "store_hours_sunday": store_hours_sun,
+        "network_status_notes": site.network_status_notes if site else None,
+        "direct_connect_available": direct_connect.available,
+        "direct_connect_host": direct_connect.host,
+        "direct_connect_port": direct_connect.port,
         **_effective_status(edge_node, now),
     }
 
@@ -148,6 +169,61 @@ def _get_gateway_or_404(db: Session, gateway_id: str) -> EdgeNode:
     if edge_node is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
     return edge_node
+
+
+def _get_gateway_with_site_or_404(db: Session, gateway_id: str) -> EdgeNode:
+    edge_node = db.scalar(select(EdgeNode).options(joinedload(EdgeNode.site)).where(EdgeNode.gateway_id == gateway_id))
+    if edge_node is None:
+        raise HTTPException(status_code=404, detail="Gateway not found")
+    return edge_node
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _validate_direct_connect_host(host: str | None) -> str | None:
+    host = _clean_optional_text(host)
+    if host is None:
+        return None
+    if "://" in host or "/" in host or "\\" in host or "?" in host or "#" in host or "@" in host:
+        raise HTTPException(status_code=422, detail="Direct connect host must be a host or IP only")
+    if not DIRECT_CONNECT_HOST_PATTERN.fullmatch(host):
+        raise HTTPException(status_code=422, detail="Direct connect host contains unsafe characters")
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        labels = host.split(".")
+        if any(not label or label.startswith("-") or label.endswith("-") for label in labels):
+            raise HTTPException(status_code=422, detail="Direct connect host is not a valid host or IP") from None
+    return host
+
+
+def _direct_connect_for_site(site: Site | None) -> DirectConnectOut:
+    if site is None:
+        return DirectConnectOut(available=False, reason="Direct connect is not configured for this site or gateway.")
+
+    host = site.direct_connect_host or site.cradlepoint_ip or site.external_ip
+    try:
+        host = _validate_direct_connect_host(host)
+    except HTTPException:
+        return DirectConnectOut(available=False, reason="Direct connect host is invalid.")
+    if host is None:
+        return DirectConnectOut(available=False, reason="Direct connect is not configured for this site or gateway.")
+
+    port = site.direct_connect_port or 5002
+    if port < 1 or port > 65535:
+        return DirectConnectOut(available=False, reason="Direct connect port is invalid.")
+
+    return DirectConnectOut(
+        available=True,
+        url=f"http://{host}:{port}",
+        host=host,
+        port=port,
+    )
 
 
 def _require_online_gateway(edge_node: EdgeNode) -> None:
@@ -362,7 +438,10 @@ def ui_list_gateways(
     status_filter: str = "all",
 ) -> list[dict[str, object]]:
     now = utc_now()
-    gateways = [_gateway_out(edge_node, now) for edge_node in db.scalars(select(EdgeNode).order_by(EdgeNode.gateway_id)).all()]
+    gateways = [
+        _gateway_out(edge_node, now)
+        for edge_node in db.scalars(select(EdgeNode).options(joinedload(EdgeNode.site)).order_by(EdgeNode.gateway_id)).all()
+    ]
     if status_filter != "all":
         gateways = [gateway for gateway in gateways if gateway["effective_status"] == status_filter]
     return gateways
@@ -389,11 +468,23 @@ def ui_list_sites(
     return list(db.scalars(select(Site).order_by(Site.site_id)).all())
 
 
+@app.get("/api/ui/sites/{site_id}", response_model=SiteOut)
+def ui_get_site(
+    site_id: str,
+    _: AdminAuthContext = Depends(require_operator_auth),
+    db: Session = Depends(get_db),
+) -> Site:
+    site = db.scalar(select(Site).where(Site.site_id == site_id))
+    if site is None:
+        raise HTTPException(status_code=404, detail="Site not found")
+    return site
+
+
 @app.patch("/api/ui/sites/{site_id}", response_model=SiteOut)
 def ui_update_site(
     site_id: str,
     payload: SiteUpdate,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
     db: Session = Depends(get_db),
 ) -> Site:
     site = db.scalar(select(Site).where(Site.site_id == site_id))
@@ -402,6 +493,10 @@ def ui_update_site(
         db.add(site)
 
     updates = payload.model_dump(exclude_unset=True)
+    if "direct_connect_host" in updates:
+        updates["direct_connect_host"] = _validate_direct_connect_host(updates["direct_connect_host"])
+    if "cradlepoint_ip" in updates:
+        updates["cradlepoint_ip"] = _validate_direct_connect_host(updates["cradlepoint_ip"])
     for field, value in updates.items():
         if field == "name" and value is None:
             continue
@@ -418,7 +513,48 @@ def ui_get_gateway(
     _: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return _gateway_out(_get_gateway_or_404(db, gateway_id))
+    return _gateway_out(_get_gateway_with_site_or_404(db, gateway_id))
+
+
+@app.get("/api/ui/gateways/{gateway_id}/site", response_model=SiteOut)
+def ui_get_gateway_site(
+    gateway_id: str,
+    _: AdminAuthContext = Depends(require_operator_auth),
+    db: Session = Depends(get_db),
+) -> Site:
+    return _get_gateway_with_site_or_404(db, gateway_id).site
+
+
+@app.patch("/api/ui/gateways/{gateway_id}/site", response_model=SiteOut)
+def ui_update_gateway_site(
+    gateway_id: str,
+    payload: SiteUpdate,
+    auth: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> Site:
+    gateway = _get_gateway_with_site_or_404(db, gateway_id)
+    return ui_update_site(gateway.site_id, payload, auth, db)
+
+
+@app.get("/api/ui/gateways/{gateway_id}/direct-connect", response_model=DirectConnectOut)
+def ui_gateway_direct_connect(
+    gateway_id: str,
+    _: AdminAuthContext = Depends(require_operator_auth),
+    db: Session = Depends(get_db),
+) -> DirectConnectOut:
+    gateway = _get_gateway_with_site_or_404(db, gateway_id)
+    return _direct_connect_for_site(gateway.site)
+
+
+@app.get("/api/ui/gateways/{gateway_id}/tunnel-status", response_model=TunnelStatusOut)
+def ui_gateway_tunnel_status(
+    gateway_id: str,
+    _: AdminAuthContext = Depends(require_operator_auth),
+    db: Session = Depends(get_db),
+) -> TunnelStatusOut:
+    _get_gateway_or_404(db, gateway_id)
+    connected = tunnel_manager.is_connected(gateway_id)
+    return TunnelStatusOut(connected=connected, status="connected" if connected else "not_connected")
 
 
 @app.websocket("/api/edge/tunnels/{gateway_id}")
@@ -1002,7 +1138,10 @@ def list_gateways(
     db: Session = Depends(get_db),
 ) -> list[dict[str, object]]:
     now = utc_now()
-    return [_gateway_out(edge_node, now) for edge_node in db.scalars(select(EdgeNode).order_by(EdgeNode.gateway_id)).all()]
+    return [
+        _gateway_out(edge_node, now)
+        for edge_node in db.scalars(select(EdgeNode).options(joinedload(EdgeNode.site)).order_by(EdgeNode.gateway_id)).all()
+    ]
 
 
 @app.post("/api/edge/jobs", response_model=JobOut)

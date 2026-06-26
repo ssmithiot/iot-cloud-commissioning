@@ -264,6 +264,7 @@ APP_SCRIPT = r"""
     if (!me) {
       return;
     }
+    currentUser = me;
     try {
       const summary = await api("/api/ui/gateways/summary");
       const gateways = await api("/api/ui/gateways");
@@ -282,6 +283,16 @@ APP_SCRIPT = r"""
     }
   }
 
+  function directConnectCell(gateway) {
+    if (!gateway.direct_connect_available) {
+      return '<span class="muted">Not configured</span>';
+    }
+    if (!currentUser || currentUser.role === "viewer") {
+      return '<span class="muted">Configured</span>';
+    }
+    return `<a class="button secondary" href="/api/ui/gateways/${encodeURIComponent(gateway.gateway_id)}/direct-connect" data-direct-connect="${escapeHtml(gateway.gateway_id)}">Direct Connect</a>`;
+  }
+
   function statusLabel(gateway) {
     if (gateway.heartbeat_age_seconds === null || gateway.heartbeat_age_seconds === undefined) {
       return `${gateway.effective_status} | no heartbeat`;
@@ -294,7 +305,7 @@ APP_SCRIPT = r"""
     table.textContent = "";
     if (!gateways.length) {
       const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="7">No gateways found.</td>`;
+      row.innerHTML = `<td colspan="8">No gateways found.</td>`;
       table.appendChild(row);
       return;
     }
@@ -302,15 +313,32 @@ APP_SCRIPT = r"""
       const row = document.createElement("tr");
       row.innerHTML = `
         <td><a href="/gateways/${encodeURIComponent(gateway.gateway_id)}">${gateway.gateway_id}</a></td>
-        <td>${gateway.site_id}</td>
-        <td>${gateway.hostname}</td>
+        <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
+        <td>${escapeHtml(gateway.site_address || "")}</td>
+        <td>${escapeHtml(gateway.hostname)}</td>
         <td>${statusLabel(gateway)}</td>
-        <td>${gateway.bacnet_port}</td>
-        <td>${gateway.agent_version || ""}</td>
+        <td>${escapeHtml(gateway.network_status_notes || "")}</td>
+        <td>${directConnectCell(gateway)}</td>
         <td><a class="button secondary" href="/gateways/${encodeURIComponent(gateway.gateway_id)}/configure">Configure</a></td>
       `;
       table.appendChild(row);
     }
+    table.querySelectorAll("[data-direct-connect]").forEach((link) => {
+      link.addEventListener("click", async (event) => {
+        event.preventDefault();
+        try {
+          const gatewayId = link.getAttribute("data-direct-connect");
+          const result = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/direct-connect`);
+          if (!result.available || !result.url) {
+            setText("status", result.reason || "Direct Connect is not configured.", true);
+            return;
+          }
+          window.open(result.url, "_blank", "noopener,noreferrer");
+        } catch (error) {
+          setText("status", error.message, true);
+        }
+      });
+    });
   }
 
   function objectFolderLabel(objectType) {
@@ -798,10 +826,16 @@ APP_SCRIPT = r"""
 
   async function loadGatewayWorkspace() {
     const gatewayId = document.body.dataset.gatewayId;
-    const gateway = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}`);
-    const tree = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`);
+    const [gateway, tree, site, directConnect, tunnelStatus] = await Promise.all([
+      api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}`),
+      api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`),
+      api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/site`),
+      api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/direct-connect`),
+      api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`)
+    ]);
     byId("gateway-title").textContent = `${gateway.gateway_id} Workspace`;
     byId("gateway-status").textContent = `${statusLabel(gateway)} | BACnet ${gateway.bacnet_port} | ${gateway.lan_ip || "no LAN IP"}`;
+    renderSiteInfo(site, directConnect, tunnelStatus);
     const details = byId("gateway-details");
     if (details) {
       details.textContent = JSON.stringify({
@@ -816,6 +850,44 @@ APP_SCRIPT = r"""
     renderTree(tree);
   }
 
+  function setFieldValue(id, value) {
+    const element = byId(id);
+    if (element) {
+      element.value = value ?? "";
+    }
+  }
+
+  function renderSiteInfo(site, directConnect, tunnelStatus) {
+    setFieldValue("site-name", site.name);
+    setFieldValue("site-address", site.address);
+    setFieldValue("direct-connect-host", site.direct_connect_host || site.cradlepoint_ip || site.external_ip);
+    setFieldValue("direct-connect-port", site.direct_connect_port || 5002);
+    setFieldValue("gateway-ui-port", site.gateway_ui_port || 5000);
+    setFieldValue("store-hours-mf", site.store_hours_monday_friday || site.store_hours_mf);
+    setFieldValue("store-hours-sat", site.store_hours_saturday || site.store_hours_sat);
+    setFieldValue("store-hours-sun", site.store_hours_sunday || site.store_hours_sun);
+    setFieldValue("network-status-notes", site.network_status_notes);
+    byId("tunnel-status").textContent = tunnelStatus.connected ? "connected" : "not connected";
+
+    const directLink = byId("direct-connect-link");
+    const directStatus = byId("direct-connect-status");
+    if (directConnect.available && directConnect.url && currentUser && currentUser.role !== "viewer") {
+      directStatus.textContent = `${directConnect.host}:${directConnect.port}`;
+      directLink.hidden = false;
+      directLink.href = directConnect.url;
+      directLink.target = "_blank";
+      directLink.rel = "noopener noreferrer";
+    } else if (directConnect.available) {
+      directStatus.textContent = `${directConnect.host}:${directConnect.port} (read-only)`;
+      directLink.hidden = true;
+      directLink.removeAttribute("href");
+    } else {
+      directStatus.textContent = directConnect.reason || "Direct Connect is not configured.";
+      directLink.hidden = true;
+      directLink.removeAttribute("href");
+    }
+  }
+
   async function initGatewayWorkspace() {
     const me = await initProtectedPage(null);
     if (!me) {
@@ -824,6 +896,7 @@ APP_SCRIPT = r"""
     currentUser = me;
     const groupForm = byId("group-form");
     const importTemplateForm = byId("import-template-form");
+    const siteInfoForm = byId("site-info-form");
     const discoverButton = byId("discover-devices");
     const saveSelectedPointsButton = byId("save-selected-points");
     const selectAllPointsButton = byId("select-all-point-candidates");
@@ -834,6 +907,38 @@ APP_SCRIPT = r"""
     if (technicalSection && me.role === "admin") {
       technicalSection.hidden = false;
     }
+    const canEditSite = me.role === "admin";
+    siteInfoForm.querySelectorAll("input, textarea").forEach((field) => {
+      field.disabled = !canEditSite;
+    });
+    byId("save-site-info").hidden = !canEditSite;
+    siteInfoForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!canEditSite) {
+        setText("status", "Admin role required to edit site information.", true);
+        return;
+      }
+      try {
+        await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/site`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            name: byId("site-name").value.trim(),
+            address: byId("site-address").value.trim(),
+            direct_connect_host: byId("direct-connect-host").value.trim() || null,
+            direct_connect_port: Number(byId("direct-connect-port").value || 5002),
+            gateway_ui_port: Number(byId("gateway-ui-port").value || 5000),
+            store_hours_monday_friday: byId("store-hours-mf").value.trim(),
+            store_hours_saturday: byId("store-hours-sat").value.trim(),
+            store_hours_sunday: byId("store-hours-sun").value.trim(),
+            network_status_notes: byId("network-status-notes").value.trim()
+          })
+        });
+        setText("status", "Site information saved.");
+        await loadGatewayWorkspace();
+      } catch (error) {
+        setText("status", error.message, true);
+      }
+    });
     groupForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       try {
@@ -1060,7 +1165,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       color: var(--muted);
       margin-bottom: 6px;
     }}
-    input, select {{
+    input, select, textarea {{
       width: 100%;
       min-height: 38px;
       border: 1px solid var(--border);
@@ -1068,6 +1173,16 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       padding: 8px 10px;
       font: inherit;
       background: #ffffff;
+    }}
+    textarea {{
+      resize: vertical;
+    }}
+    input:disabled, textarea:disabled {{
+      background: #f4f6f8;
+      color: var(--muted);
+    }}
+    .muted {{
+      color: var(--muted);
     }}
     button, .button {{
       min-height: 38px;
@@ -1399,10 +1514,11 @@ def app_html() -> str:
           <tr>
             <th>Gateway</th>
             <th>Site</th>
+            <th>Address</th>
             <th>Hostname</th>
             <th>Status</th>
-            <th>BACnet</th>
-            <th>Agent</th>
+            <th>Network Notes</th>
+            <th>Direct</th>
             <th>Configure</th>
           </tr>
         </thead>
@@ -1433,6 +1549,55 @@ def gateway_workspace_html(gateway_id: str) -> str:
       <h2>Status</h2>
       <pre id="gateway-status">Loading...</pre>
       <div id="status" class="notice"></div>
+    </section>
+    <section>
+      <h2>Site Information</h2>
+      <div class="grid">
+        <div class="span-3"><label>Tunnel Status</label><pre id="tunnel-status">Loading...</pre></div>
+        <div class="span-3"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
+        <div class="span-3"><label>Action</label><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div>
+      </div>
+      <form id="site-info-form" class="grid">
+        <div class="span-4">
+          <label for="site-name">Site name</label>
+          <input id="site-name" type="text" maxlength="200">
+        </div>
+        <div class="span-6">
+          <label for="site-address">Site address</label>
+          <input id="site-address" type="text" maxlength="500">
+        </div>
+        <div class="span-4">
+          <label for="direct-connect-host">Cradlepoint/direct-connect host</label>
+          <input id="direct-connect-host" type="text" maxlength="255">
+        </div>
+        <div class="span-2">
+          <label for="direct-connect-port">External port</label>
+          <input id="direct-connect-port" type="number" min="1" max="65535" value="5002">
+        </div>
+        <div class="span-2">
+          <label for="gateway-ui-port">Gateway UI port</label>
+          <input id="gateway-ui-port" type="number" min="1" max="65535" value="5000">
+        </div>
+        <div class="span-3">
+          <label for="store-hours-mf">Hours M-F</label>
+          <input id="store-hours-mf" type="text" maxlength="120">
+        </div>
+        <div class="span-3">
+          <label for="store-hours-sat">Hours Sat</label>
+          <input id="store-hours-sat" type="text" maxlength="120">
+        </div>
+        <div class="span-3">
+          <label for="store-hours-sun">Hours Sun</label>
+          <input id="store-hours-sun" type="text" maxlength="120">
+        </div>
+        <div class="span-12">
+          <label for="network-status-notes">Network status notes</label>
+          <textarea id="network-status-notes" maxlength="500" rows="2"></textarea>
+        </div>
+        <div class="span-2">
+          <button id="save-site-info" type="submit">Save site</button>
+        </div>
+      </form>
     </section>
     <section>
       <h2>Imported Commissioning Model</h2>

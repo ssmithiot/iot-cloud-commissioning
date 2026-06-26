@@ -496,6 +496,24 @@ erDiagram
 
 Groups gateways and commissioning projects by site.
 
+Current site information fields include:
+
+| Field | Type | Required | Notes |
+|---|---:|---:|---|
+| `site_id` | text | Yes | Stable site identifier |
+| `name` | text | Yes | Operator-facing site name |
+| `address` | text | No | Operator-facing site address |
+| `cradlepoint_ip` | text | No | Cradlepoint/cellular host metadata |
+| `direct_connect_host` | text | No | Validated host used for Direct Connect URL generation |
+| `direct_connect_port` | integer | No | External Direct Connect port, default `5002` |
+| `gateway_ui_port` | integer | No | Informational gateway-local UI port, default `5000` |
+| `store_hours_monday_friday` | text | No | Monday-Friday store hours |
+| `store_hours_saturday` | text | No | Saturday store hours |
+| `store_hours_sunday` | text | No | Sunday store hours |
+| `network_status_notes` | text | No | Operator-facing network/box status notes |
+
+Direct Connect fields store only routing metadata. They do not store gateway UI passwords, cloud tokens, Supabase keys, or database credentials.
+
 ### 7.2 `operator_users`
 
 Represents authenticated users.
