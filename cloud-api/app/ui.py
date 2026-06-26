@@ -8,6 +8,7 @@ APP_SCRIPT = r"""
   let supabaseClient = null;
   let currentGatewayTree = null;
   let currentUser = null;
+  let currentPointCandidateDevice = null;
 
   const statePaths = {
     login: "/login",
@@ -405,11 +406,51 @@ APP_SCRIPT = r"""
     return { saved, duplicates };
   }
 
+  function renderPointCandidates(device, points, job) {
+    const panel = byId("point-candidates-panel");
+    const body = byId("point-candidates");
+    const count = byId("point-candidates-count");
+    if (!panel || !body || !count) {
+      return;
+    }
+    panel.hidden = false;
+    body.textContent = "";
+    count.textContent = points.length
+      ? `${points.length} point candidate(s) loaded from ${job.job_id}. Select the points to save.`
+      : `No point candidates were returned by ${job.job_id}.`;
+
+    const sortedPoints = [...points].sort((left, right) => (
+      String(left.object_type || "").localeCompare(String(right.object_type || ""))
+      || Number(left.object_instance || 0) - Number(right.object_instance || 0)
+    ));
+
+    for (const point of sortedPoints) {
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td><input type="checkbox" data-role="point-candidate" checked></td>
+        <td>${escapeHtml(objectFolderLabel(point.object_type))}</td>
+        <td>${escapeHtml(point.object_type)}</td>
+        <td>${escapeHtml(point.object_instance)}</td>
+        <td>${escapeHtml(point.object_name || "")}</td>
+        <td>${escapeHtml(point.property_name || point.property || "present-value")}</td>
+      `;
+      row.querySelector('[data-role="point-candidate"]').dataset.point = JSON.stringify(point);
+      body.appendChild(row);
+    }
+  }
+
+  function selectedPointCandidates() {
+    return [...document.querySelectorAll('[data-role="point-candidate"]:checked')].map((checkbox) => (
+      JSON.parse(checkbox.dataset.point || "{}")
+    ));
+  }
+
   async function loadPointsForDevice(device) {
     if (!canEditTree()) {
       setText("status", "Your role is read-only.", true);
       return;
     }
+    currentPointCandidateDevice = null;
     setDiscoveryProgress(5, `Queueing point load for device ${device.device_instance}...`);
     const job = await api(`/api/ui/devices/${encodeURIComponent(device.id)}/load-points`, { method: "POST" });
     setDiscoveryProgress(25, `Queued ${job.job_id} on BACnet 47814.`);
@@ -419,9 +460,9 @@ APP_SCRIPT = r"""
       return;
     }
     const points = completedJob.result_json?.points || [];
-    const counts = await saveLoadedPoints(device, points);
-    await loadGatewayWorkspace();
-    setText("status", `Loaded ${points.length} point(s); saved ${counts.saved}, skipped ${counts.duplicates} duplicate(s).`);
+    currentPointCandidateDevice = device;
+    renderPointCandidates(device, points, completedJob);
+    setText("status", `Loaded ${points.length} point candidate(s). Select the ones to save.`);
   }
 
   function addCollapsible(parent, row, children, onSelect = null) {
@@ -502,7 +543,7 @@ APP_SCRIPT = r"""
         addCollapsible(container.querySelector(".tree-children"), treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1), pointRows);
       }
       if (!points.length) {
-        container.querySelector(".tree-children").appendChild(leafRow("empty", "No saved points", "load points pending", depth + 1));
+        container.querySelector(".tree-children").appendChild(leafRow("empty", "No saved points", "load points to select", depth + 1));
       }
       return container;
     }
@@ -677,6 +718,9 @@ APP_SCRIPT = r"""
     currentUser = me;
     const groupForm = byId("group-form");
     const discoverButton = byId("discover-devices");
+    const saveSelectedPointsButton = byId("save-selected-points");
+    const selectAllPointsButton = byId("select-all-point-candidates");
+    const deselectAllPointsButton = byId("deselect-all-point-candidates");
     const gatewayId = document.body.dataset.gatewayId;
     const technicalSection = byId("technical-section");
     if (technicalSection && me.role === "admin") {
@@ -713,6 +757,39 @@ APP_SCRIPT = r"""
         setText("status", error.message, true);
       } finally {
         discoverButton.disabled = false;
+      }
+    });
+    selectAllPointsButton.addEventListener("click", () => {
+      document.querySelectorAll('[data-role="point-candidate"]').forEach((checkbox) => {
+        checkbox.checked = true;
+      });
+    });
+    deselectAllPointsButton.addEventListener("click", () => {
+      document.querySelectorAll('[data-role="point-candidate"]').forEach((checkbox) => {
+        checkbox.checked = false;
+      });
+    });
+    saveSelectedPointsButton.addEventListener("click", async () => {
+      if (!currentPointCandidateDevice) {
+        setText("status", "Load points for a saved device first.", true);
+        return;
+      }
+      const selected = selectedPointCandidates();
+      if (!selected.length) {
+        setText("status", "Select at least one point to save.", true);
+        return;
+      }
+      saveSelectedPointsButton.disabled = true;
+      try {
+        const counts = await saveLoadedPoints(currentPointCandidateDevice, selected);
+        currentPointCandidateDevice = null;
+        byId("point-candidates-panel").hidden = true;
+        await loadGatewayWorkspace();
+        setText("status", `Saved ${counts.saved} selected point(s), skipped ${counts.duplicates} duplicate(s).`);
+      } catch (error) {
+        setText("status", error.message, true);
+      } finally {
+        saveSelectedPointsButton.disabled = false;
       }
     });
     try {
@@ -1238,6 +1315,28 @@ def gateway_workspace_html(gateway_id: str) -> str:
             </tr>
           </thead>
           <tbody id="discovered-devices"></tbody>
+        </table>
+      </div>
+      <div id="point-candidates-panel" hidden>
+        <h2>Loaded Point Candidates</h2>
+        <div id="point-candidates-count" class="notice"></div>
+        <div class="toolbar">
+          <button id="select-all-point-candidates" class="secondary" type="button">Select all</button>
+          <button id="deselect-all-point-candidates" class="secondary" type="button">Deselect all</button>
+          <button id="save-selected-points" type="button">Save selected points</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Select</th>
+              <th>Folder</th>
+              <th>Object Type</th>
+              <th>Instance</th>
+              <th>Object Name</th>
+              <th>Property</th>
+            </tr>
+          </thead>
+          <tbody id="point-candidates"></tbody>
         </table>
       </div>
     </section>
