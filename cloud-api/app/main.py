@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth import (
@@ -150,6 +151,10 @@ def _uuid(value: str) -> UUID:
         return UUID(value)
     except ValueError:
         raise HTTPException(status_code=404, detail="Record not found") from None
+
+
+def _tree_id(value: str) -> str:
+    return str(_uuid(value))
 
 
 def _group_out(group: GatewayGroup) -> dict[str, object]:
@@ -399,7 +404,11 @@ def ui_create_group(
     _get_gateway_or_404(db, gateway_id)
     group = GatewayGroup(gateway_id=gateway_id, name=payload.name.strip())
     db.add(group)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Group already exists for this gateway") from None
     db.refresh(group)
     return _group_out(group)
 
@@ -411,7 +420,7 @@ def ui_rename_group(
     _: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    group = db.get(GatewayGroup, _uuid(group_id))
+    group = db.get(GatewayGroup, _tree_id(group_id))
     if group is None:
         raise HTTPException(status_code=404, detail="Group not found")
     group.name = payload.name.strip()
@@ -427,7 +436,7 @@ def ui_delete_group(
     _: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> None:
-    group = db.get(GatewayGroup, _uuid(group_id))
+    group = db.get(GatewayGroup, _tree_id(group_id))
     if group is None:
         raise HTTPException(status_code=404, detail="Group not found")
     has_devices = db.scalar(select(SavedBacnetDevice).where(SavedBacnetDevice.group_id == group.id).limit(1))
@@ -445,7 +454,7 @@ def ui_save_device(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     _get_gateway_or_404(db, gateway_id)
-    group_id = _uuid(payload.group_id) if payload.group_id else None
+    group_id = _tree_id(payload.group_id) if payload.group_id else None
     if group_id is not None:
         group = db.get(GatewayGroup, group_id)
         if group is None or group.gateway_id != gateway_id:
@@ -462,7 +471,11 @@ def ui_save_device(
         enabled=payload.enabled,
     )
     db.add(device)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Device already exists for this gateway") from None
     db.refresh(device)
     return _device_out(device)
 
@@ -474,11 +487,11 @@ def ui_patch_device(
     _: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    device = db.get(SavedBacnetDevice, _uuid(device_id))
+    device = db.get(SavedBacnetDevice, _tree_id(device_id))
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found")
     if payload.group_id is not None:
-        group_id = _uuid(payload.group_id)
+        group_id = _tree_id(payload.group_id)
         group = db.get(GatewayGroup, group_id)
         if group is None or group.gateway_id != device.gateway_id:
             raise HTTPException(status_code=404, detail="Group not found")
@@ -502,7 +515,7 @@ def ui_save_point(
     _: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    device = db.get(SavedBacnetDevice, _uuid(device_id))
+    device = db.get(SavedBacnetDevice, _tree_id(device_id))
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found")
     point = SavedBacnetPoint(
@@ -520,7 +533,11 @@ def ui_save_point(
         enabled=payload.enabled,
     )
     db.add(point)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Point already exists for this device") from None
     db.refresh(point)
     return _point_out(point)
 
@@ -532,7 +549,7 @@ def ui_patch_point(
     _: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    point = db.get(SavedBacnetPoint, _uuid(point_id))
+    point = db.get(SavedBacnetPoint, _tree_id(point_id))
     if point is None:
         raise HTTPException(status_code=404, detail="Point not found")
     if payload.object_name is not None:

@@ -320,6 +320,10 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
 
     assert response.status_code == 200
     assert 'id="discovery-progress"' in response.text
+    assert 'id="discovered-devices"' in response.text
+    assert "renderDiscoveredDevices" in response.text
+    assert "Load points" in response.text
+    assert "No point data was faked" in response.text
     assert "pollDiscoveryJob" in response.text
     assert "/api/edge/jobs?limit=50" in response.text
     assert "Unexpected token" not in response.text
@@ -721,6 +725,42 @@ def test_ui_gateway_tree_can_store_group_device_and_point() -> None:
     assert tree["devices"][0]["device_instance"] == 1001
     assert tree["points"][0]["object_type"] == "analog-input"
     assert tree["points"][0]["property"] == "present-value"
+
+
+def test_ui_duplicate_group_returns_clean_json_error() -> None:
+    create_gateway_token("GW777")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+
+    first_response = client.post("/api/ui/gateways/GW777/groups", headers=headers, json={"name": "HVAC"})
+    duplicate_response = client.post("/api/ui/gateways/GW777/groups", headers=headers, json={"name": "HVAC"})
+
+    assert first_response.status_code == 200
+    assert duplicate_response.status_code == 409
+    assert duplicate_response.headers["content-type"].startswith("application/json")
+    assert duplicate_response.json()["detail"] == "Group already exists for this gateway"
+    assert "Internal Server Error" not in duplicate_response.text
+
+
+def test_ui_duplicate_device_returns_clean_json_error() -> None:
+    create_gateway_token("GW777")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    device_payload = {
+        "device_instance": 1,
+        "device_name": "Device 1",
+        "network_number": 2001,
+        "mac_address": "C0:A8:01:66:BA:C6 sadr 01",
+    }
+
+    first_response = client.post("/api/ui/gateways/GW777/devices", headers=headers, json=device_payload)
+    duplicate_response = client.post("/api/ui/gateways/GW777/devices", headers=headers, json=device_payload)
+
+    assert first_response.status_code == 200
+    assert duplicate_response.status_code == 409
+    assert duplicate_response.headers["content-type"].startswith("application/json")
+    assert duplicate_response.json()["detail"] == "Device already exists for this gateway"
+    assert "Internal Server Error" not in duplicate_response.text
 
 
 def test_ui_device_group_must_belong_to_same_gateway() -> None:

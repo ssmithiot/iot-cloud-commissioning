@@ -6,6 +6,7 @@ APP_SCRIPT = r"""
   import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
   let supabaseClient = null;
+  let currentGatewayTree = null;
 
   const statePaths = {
     login: "/login",
@@ -28,6 +29,16 @@ APP_SCRIPT = r"""
     }
     element.textContent = value || "";
     element.className = isError ? "notice error" : "notice";
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    })[char]);
   }
 
   async function getConfig() {
@@ -279,6 +290,7 @@ APP_SCRIPT = r"""
   }
 
   function renderTree(tree) {
+    currentGatewayTree = tree;
     const target = byId("tree");
     target.textContent = "";
     if (!tree.groups.length && !tree.devices.length) {
@@ -304,6 +316,78 @@ APP_SCRIPT = r"""
       }
     }
     target.textContent = lines.join("\n");
+  }
+
+  function groupOptions() {
+    const groups = currentGatewayTree?.groups || [];
+    if (!groups.length) {
+      return `<option value="">Ungrouped</option>`;
+    }
+    return `<option value="">Ungrouped</option>${groups.map((group) => (
+      `<option value="${escapeHtml(group.id)}">${escapeHtml(group.name)}</option>`
+    )).join("")}`;
+  }
+
+  function renderDiscoveredDevices(job) {
+    const panel = byId("discovered-devices-panel");
+    const body = byId("discovered-devices");
+    const count = byId("discovered-devices-count");
+    if (!panel || !body || !count) {
+      return;
+    }
+    const devices = job?.result_json?.devices || [];
+    panel.hidden = false;
+    count.textContent = devices.length ? `${devices.length} device(s) discovered.` : "No devices discovered.";
+    body.textContent = "";
+    for (const device of devices) {
+      const deviceInstance = device.device_id;
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td>${escapeHtml(deviceInstance)}</td>
+        <td>${escapeHtml(device.network)}</td>
+        <td>${escapeHtml(device.mac)}</td>
+        <td>${escapeHtml(device.sadr)}</td>
+        <td>${escapeHtml(device.apdu)}</td>
+        <td>
+          <select data-role="device-group">
+            ${groupOptions()}
+          </select>
+        </td>
+        <td>
+          <button type="button" data-role="save-device">Save</button>
+        </td>
+        <td>
+          <button class="secondary" type="button" data-role="load-points">Load points</button>
+        </td>
+      `;
+      row.querySelector('[data-role="save-device"]').addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        const groupId = row.querySelector('[data-role="device-group"]').value || null;
+        try {
+          await api(`/api/ui/gateways/${encodeURIComponent(job.gateway_id)}/devices`, {
+            method: "POST",
+            body: JSON.stringify({
+              group_id: groupId,
+              device_instance: deviceInstance,
+              device_name: `Device ${deviceInstance}`,
+              network_number: device.network ?? null,
+              mac_address: device.sadr ? `${device.mac || ""} sadr ${device.sadr}`.trim() : (device.mac || null)
+            })
+          });
+          setText("status", `Saved device ${deviceInstance}.`);
+          await loadGatewayWorkspace();
+        } catch (error) {
+          setText("status", error.message, true);
+        } finally {
+          button.disabled = false;
+        }
+      });
+      row.querySelector('[data-role="load-points"]').addEventListener("click", () => {
+        setText("status", `Point loading for device ${deviceInstance} needs the next edge-agent point enumeration job. No point data was faked.`);
+      });
+      body.appendChild(row);
+    }
   }
 
   function setDiscoveryProgress(percent, label, isError = false) {
@@ -411,6 +495,7 @@ APP_SCRIPT = r"""
         setDiscoveryProgress(25, `Queued ${job.job_id} on BACnet 47814.`);
         const completedJob = await pollDiscoveryJob(job.job_id);
         if (completedJob.status === "completed") {
+          renderDiscoveredDevices(completedJob);
           setText("status", `Discovery completed: ${completedJob.job_id}.`);
         } else {
           setText("status", `Discovery ${completedJob.status}: ${completedJob.job_id}.`, true);
@@ -853,6 +938,25 @@ def gateway_workspace_html(gateway_id: str) -> str:
       <div id="discovery-progress-panel" class="progress-panel" hidden>
         <progress id="discovery-progress" max="100" value="0"></progress>
         <div id="discovery-progress-label" class="notice"></div>
+      </div>
+      <div id="discovered-devices-panel" hidden>
+        <h2>Discovered Devices</h2>
+        <div id="discovered-devices-count" class="notice"></div>
+        <table>
+          <thead>
+            <tr>
+              <th>Device</th>
+              <th>Network</th>
+              <th>MAC</th>
+              <th>SADR</th>
+              <th>APDU</th>
+              <th>Group</th>
+              <th>Save</th>
+              <th>Points</th>
+            </tr>
+          </thead>
+          <tbody id="discovered-devices"></tbody>
+        </table>
       </div>
     </section>
     <section id="technical-section" hidden>

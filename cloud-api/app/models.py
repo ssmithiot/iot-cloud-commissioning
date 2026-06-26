@@ -10,6 +10,10 @@ from sqlalchemy.types import TypeDecorator
 from app.database import Base
 
 
+def uuid_str() -> str:
+    return str(uuid4())
+
+
 class StringList(TypeDecorator):
     impl = JSON
     cache_ok = True
@@ -192,7 +196,7 @@ class GatewayGroup(Base):
     __tablename__ = "gateway_groups"
     __table_args__ = (UniqueConstraint("gateway_id", "name", name="uq_gateway_groups_gateway_name"),)
 
-    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     gateway_id: Mapped[str] = mapped_column(
         String(120),
         ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"),
@@ -208,14 +212,14 @@ class SavedBacnetDevice(Base):
     __tablename__ = "saved_bacnet_devices"
     __table_args__ = (UniqueConstraint("gateway_id", "device_instance", name="uq_saved_devices_gateway_instance"),)
 
-    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     gateway_id: Mapped[str] = mapped_column(
         String(120),
         ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    group_id: Mapped[UUID | None] = mapped_column(ForeignKey("gateway_groups.id", ondelete="SET NULL"), nullable=True)
+    group_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("gateway_groups.id", ondelete="SET NULL"), nullable=True)
     device_instance: Mapped[int] = mapped_column(Integer, nullable=False)
     device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     vendor_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -239,14 +243,15 @@ class SavedBacnetPoint(Base):
         ),
     )
 
-    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     gateway_id: Mapped[str] = mapped_column(
         String(120),
         ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    saved_device_id: Mapped[UUID] = mapped_column(
+    saved_device_id: Mapped[str] = mapped_column(
+        String(36),
         ForeignKey("saved_bacnet_devices.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
