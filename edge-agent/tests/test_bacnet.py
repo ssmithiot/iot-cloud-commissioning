@@ -142,8 +142,16 @@ def test_bacnet_load_points_success_with_mocked_command(tmp_path: Path, monkeypa
     def fake_run(*args, **kwargs):
         calls.append(args[0])
         assert kwargs["env"]["BACNET_IP_PORT"] == "47814"
-        if args[0] == ["bacrp", "1", "device", "1", "76", "-2"]:
-            return subprocess.CompletedProcess(args[0], 0, stdout=SAMPLE_OBJECT_LIST_OUTPUT, stderr="")
+        if args[0] == ["bacrp", "1", "device", "1", "76", "0"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout="object-list: 4\n", stderr="")
+        if args[0] == ["bacrp", "1", "device", "1", "76", "1"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout="object-list: (device, 1)\n", stderr="")
+        if args[0] == ["bacrp", "1", "device", "1", "76", "2"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout="object-list: (binary-input, 3)\n", stderr="")
+        if args[0] == ["bacrp", "1", "device", "1", "76", "3"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout="object-list: (binary-output, 1)\n", stderr="")
+        if args[0] == ["bacrp", "1", "device", "1", "76", "4"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout="object-list: (analog-value, 2)\n", stderr="")
         object_type = args[0][2]
         object_instance = args[0][3]
         return subprocess.CompletedProcess(args[0], 0, stdout=f"object-name: {object_type} {object_instance}\n", stderr="")
@@ -160,9 +168,12 @@ def test_bacnet_load_points_success_with_mocked_command(tmp_path: Path, monkeypa
     assert result is not None
     assert result["job_type"] == "bacnet_load_points"
     assert result["bacnet_port"] == 47814
+    assert result["object_count"] == 4
     assert result["point_count"] == 3
     assert result["points"][0]["object_name"] == "binary-input 3"
-    assert ["bacrp", "1", "device", "1", "76", "-2"] in calls
+    assert ["bacrp", "1", "device", "1", "76", "0"] in calls
+    assert ["bacrp", "1", "device", "1", "76", "4"] in calls
+    assert ["bacrp", "1", "device", "1", "76", "-2"] not in calls
     assert ["bacrp", "1", "binary-input", "3", "77"] in calls
 
 

@@ -367,16 +367,22 @@ def build_bacnet_read_args(config: AgentConfig, normalized_request: dict[str, ob
     ]
 
 
-def build_bacnet_load_points_args(config: AgentConfig, normalized_request: dict[str, object]) -> list[str]:
+def build_bacnet_load_points_args(
+    config: AgentConfig,
+    normalized_request: dict[str, object],
+    array_index: int | None = None,
+) -> list[str]:
     device_instance = str(normalized_request["device_instance"])
-    return [
+    args = [
         config.bacrp_path,
         device_instance,
         "device",
         device_instance,
         str(BACNET_OBJECT_LIST_PROPERTY_ID),
-        "-2",
     ]
+    if array_index is not None:
+        args.append(str(array_index))
+    return args
 
 
 def build_bacnet_object_name_args(config: AgentConfig, device_instance: int, object_type: str, object_instance: int) -> list[str]:
@@ -537,6 +543,41 @@ def _parse_object_name(raw_output: str) -> str | None:
     return None
 
 
+def _parse_array_length(raw_output: str) -> int | None:
+    candidates = re.findall(r"\b\d+\b", raw_output)
+    if not candidates:
+        return None
+    return int(candidates[-1])
+
+
+def _run_bacrp(
+    args: list[str],
+    config: AgentConfig,
+    env: dict[str, str],
+    description: str,
+) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    try:
+        completed = subprocess.run(
+            args,
+            capture_output=True,
+            check=False,
+            env=env,
+            text=True,
+            timeout=config.bacnet_timeout_sec,
+        )
+    except FileNotFoundError:
+        return None, f"BACnet read command not found: {config.bacrp_path}"
+    except subprocess.TimeoutExpired:
+        return None, f"{description} timed out after {config.bacnet_timeout_sec} seconds"
+    except OSError as exc:
+        return None, f"{description} failed to start: {exc}"
+
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        return completed, f"{description} failed: {detail}"
+    return completed, None
+
+
 def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[str, object], str | None]:
     try:
         normalized = validate_bacnet_load_points_request(request)
@@ -546,40 +587,45 @@ def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tupl
 
     env = os.environ.copy()
     env["BACNET_IP_PORT"] = str(CLOUD_BACNET_PORT)
-    args = build_bacnet_load_points_args(config, normalized)
     lock_fd = acquire_bacnet_runtime_lock(config)
     if lock_fd is None:
         return _deferred_result(normalized, config), BACNET_RUNTIME_BUSY
 
     try:
-        try:
-            completed = subprocess.run(
-                args,
-                capture_output=True,
-                check=False,
-                env=env,
-                text=True,
-                timeout=config.bacnet_timeout_sec,
-            )
-        except FileNotFoundError:
-            error = f"BACnet read command not found: {config.bacrp_path}"
-            return _failure_result(normalized, error), error
-        except subprocess.TimeoutExpired as exc:
-            raw_output = "\n".join(part for part in (_text(exc.stdout).strip(), _text(exc.stderr).strip()) if part)
-            error = f"BACnet object-list read timed out after {config.bacnet_timeout_sec} seconds"
+        count_args = build_bacnet_load_points_args(config, normalized, array_index=0)
+        count_completed, count_error = _run_bacrp(count_args, config, env, "BACnet object-list count read")
+        if count_error is not None:
+            raw_output = ""
+            if count_completed is not None:
+                raw_output = "\n".join(
+                    part for part in (count_completed.stdout.strip(), count_completed.stderr.strip()) if part
+                )
+            return _failure_result(normalized, count_error, raw_output or None), count_error
+
+        assert count_completed is not None
+        object_count = _parse_array_length(count_completed.stdout)
+        if object_count is None:
+            error = "BACnet object-list count read did not return an array length"
+            raw_output = "\n".join(part for part in (count_completed.stdout.strip(), count_completed.stderr.strip()) if part)
             return _failure_result(normalized, error, raw_output or None), error
-        except OSError as exc:
-            error = f"BACnet object-list read failed to start: {exc}"
-            return _failure_result(normalized, error), error
 
-        raw_output = completed.stdout
-        combined_output = "\n".join(part for part in (completed.stdout.strip(), completed.stderr.strip()) if part)
-        if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
-            error = f"BACnet object-list read failed: {detail}"
-            return _failure_result(normalized, error, combined_output or None), error
+        raw_outputs = [count_completed.stdout]
+        max_items = min(object_count, int(normalized["limit"]))
+        points: list[dict[str, object]] = []
+        for array_index in range(1, max_items + 1):
+            item_args = build_bacnet_load_points_args(config, normalized, array_index=array_index)
+            item_completed, item_error = _run_bacrp(item_args, config, env, "BACnet object-list item read")
+            if item_error is not None:
+                raw_output = ""
+                if item_completed is not None:
+                    raw_output = "\n".join(
+                        part for part in (item_completed.stdout.strip(), item_completed.stderr.strip()) if part
+                    )
+                return _failure_result(normalized, item_error, raw_output or None), item_error
+            assert item_completed is not None
+            raw_outputs.append(item_completed.stdout)
+            points.extend(parse_bacnet_object_list(item_completed.stdout))
 
-        points = parse_bacnet_object_list(raw_output)
         if normalized["object_types"] is not None:
             allowed = set(normalized["object_types"])
             points = [point for point in points if point["object_type"] in allowed]
@@ -610,12 +656,14 @@ def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tupl
     finally:
         release_bacnet_runtime_lock(config, lock_fd)
 
+    raw_output = "\n".join(output.strip() for output in raw_outputs if output.strip())
     result = dict(normalized)
     result.update(
         {
             "status": "ok",
             "points": points,
             "point_count": len(points),
+            "object_count": object_count,
             "raw_output": raw_output,
         }
     )
