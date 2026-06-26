@@ -316,9 +316,11 @@ MVP-014B direction:
 
 MVP-014C direction:
 
-- Cloud UI may offer a Configure gateway action.
-- Configure starts a role-protected remote edge console path.
-- Gateway should initiate outbound connectivity to a controlled relay for Cloud Tunnel access; the cloud tunnel is separate from Direct Connect.
+- Direct Connect / Site Info is the current working access slice and has live-smoke passed.
+- Cloud UI offers a Configure gateway action and Direct Connect button when site metadata is configured.
+- Cloud Tunnel is separate from Direct Connect and remains future scope unless a real gateway tunnel client/session is safely completed.
+- When no gateway tunnel session is connected, the tunnel route returns a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`.
+- Tunnel connectivity must not be faked.
 - Direct Connect is an optional browser link, not a cloud proxy, to `http://<direct_connect_host>:<direct_connect_port>` when site metadata is configured.
 - Direct Connect defaults are external port `5002` and informational gateway UI port `5000`.
 - Direct Connect must open in a new tab and must not store gateway UI passwords in the cloud.
@@ -326,9 +328,22 @@ MVP-014C direction:
 - Site information includes site name, split site address fields (street, city, state, ZIP/postal code), Cradlepoint/direct-connect host, Direct Connect port, gateway UI port, store hours for Monday-Friday/Saturday/Sunday, and network status notes.
 - Current network status note: the rest of the boxes on the two known networks are online as well.
 - Admin users can edit site information; operators and viewers are read-only unless explicitly changed later.
-- Remote console sessions must be audited and expire automatically.
 - Remote console design must not expose cloud/admin/Supabase/Postgres/service-role/server-pepper secrets to gateways or browsers.
 - Direct Connect does not change heartbeat status, job polling, Cloud Tunnel status, or BACnet job architecture.
+- Recommended tag for the Direct Connect / Site Info slice: `mvp-014b-direct-connect-site-management`.
+
+MVP-014C next planning slice:
+
+- Implement the real `bacnet_load_points` edge-agent job.
+- The edge agent reads actual BACnet object-list data locally on UDP `47814`.
+- The cloud queues point-load jobs for saved devices on online gateways.
+- Completed point-load results return point candidates to the browser.
+- Admin/operator users can save approved point candidates as BACnet points under the saved device.
+- Viewer users remain read-only.
+- Saved points populate the gateway workspace point tree with friendly object folders.
+- Point data must come from edge-agent BACnet job results; point data must not be faked.
+- No BACnet writes, schedules, program edits, command writes, subscriptions, or background polling are included.
+- Legacy UDP `47808` remains untouched.
 
 Not included in MVP-014A:
 

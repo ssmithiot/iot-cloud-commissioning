@@ -197,6 +197,8 @@ tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
 ```
 
+Current state: Cloud Tunnel is future scope for the next remote-console slice unless an actual gateway tunnel client/session is present. When no gateway tunnel session is connected, the tunnel route must keep returning a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`. Do not fake tunnel connectivity.
+
 ## Direct Connect
 
 Direct Connect is separate from the cloud tunnel. It is a new-tab browser link to a configured Cradlepoint/cellular host and external port, usually:
@@ -223,6 +225,20 @@ It is not a cloud proxy and does not store gateway UI passwords. Admin users can
 - `network_status_notes`
 
 Live Supabase changes should be applied with the SQL Editor scripts in `supabase/migrations/0008_site_direct_connect.sql` and `supabase/migrations/0009_site_split_address.sql`.
+
+Live smoke status: Direct Connect / Site Info passed. The site info form saves split address fields, gateway list/detail display site information correctly, the Direct Connect button appears after host/port configuration, and the button opens the forwarded gateway UI through the configured host/port. Direct Connect remains the working access path for now and stays separate from Cloud Tunnel.
+
+Recommended tag for this slice:
+
+```text
+mvp-014b-direct-connect-site-management
+```
+
+Next planning slice:
+
+```text
+MVP-014C: real bacnet_load_points edge-agent job plus UI point-tree population
+```
 
 Related docs:
 

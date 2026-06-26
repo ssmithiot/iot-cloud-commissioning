@@ -14,6 +14,7 @@ live API: https://iot-cloud-api-dev.onrender.com
 admin auth: AdminBearer (http, Bearer)
 job creation body field: request
 runtime-check request: { "bacnet_port": 47814 }
+latest smoke: Direct Connect / Site Info passed
 ```
 
 Current MVP-013 direction:
@@ -42,6 +43,10 @@ remote console bridge: future controlled launcher for cloud-authenticated edge U
 direct connect: optional new-tab link to configured Cradlepoint/cellular host on port 5002
 site info: name, split address (street/city/state/ZIP), direct-connect host/ports, M-F/Sat/Sun store hours, network status notes
 network status note: rest of the boxes on the two known networks are online as well
+direct connect smoke: passed; opens forwarded gateway UI through configured host/port
+cloud tunnel status: separate from Direct Connect; friendly disconnected state remains valid when no gateway tunnel session is connected
+recommended slice tag: mvp-014b-direct-connect-site-management
+next slice: MVP-014C real bacnet_load_points edge-agent job plus UI point-tree population
 template flow: edge builds approved devices/groups/points, cloud imports the template
 imported commissioning model: cloud stores imported gateway groups, BACnet devices, BACnet points
 edge export: /devices/export/{device_profile_id}.json from the edge UI
@@ -53,6 +58,8 @@ admin role: can edit site info and Direct Connect metadata
 BACnet writes: out of scope
 fake point data: out of scope
 ```
+
+Cloud Tunnel remains future scope unless a real gateway tunnel client/session is safely completed. Do not represent Direct Connect as tunnel connectivity and do not fake tunnel status.
 
 Current live smoke handoff:
 

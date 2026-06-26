@@ -24,6 +24,8 @@ Released milestones:
 | MVP-012 Operator API security | Released |
 | MVP-013 Supabase email login and admin user roles | Released |
 | MVP-014A Operator UI foundation | In progress |
+| MVP-014B Direct Connect and site management | Live smoke passed |
+| MVP-014C BACnet point loading and point-tree population | Planned |
 
 Current live dev API:
 
@@ -454,11 +456,10 @@ The live admin smoke test passes only when:
 - Template import does not expose Supabase, Postgres, service-role, admin-token, or server-pepper secrets to the edge gateway.
 - First implementation slice: edge saved live devices can download a cloud template JSON, and cloud gateway workspaces can import that JSON into the imported commissioning model.
 
-### MVP-014C Candidate: Remote Edge Console Launcher
+### MVP-014B Complete: Direct Connect And Site Management
 
 - Cloud UI provides a Configure action for a gateway.
 - Cloud separates Cloud Tunnel from Direct Connect.
-- Cloud Tunnel uses the gateway's outbound session to a controlled cloud relay.
 - Direct Connect is a separate button/link to a configured Cradlepoint/cellular host and port, usually `http://10.x.x.x:5002`.
 - Direct Connect opens in a new browser tab and is not a cloud proxy.
 - Direct Connect does not store gateway UI passwords in the cloud.
@@ -466,9 +467,31 @@ The live admin smoke test passes only when:
 - Site information includes site name, split site address fields (street, city, state, ZIP/postal code), Cradlepoint/direct-connect host, Direct Connect external port, gateway UI internal port, Monday-Friday/Saturday/Sunday store hours, and network status notes.
 - Site information currently records that the rest of the boxes on the two known networks are online as well.
 - Admin users can edit site information; operator/viewer users are read-only by default.
-- Sessions are audited and expire automatically.
 - The design must not expose admin tokens, gateway tokens, Supabase secrets, service-role keys, server pepper values, or database credentials.
 - Direct Connect and Cloud Tunnel do not change cloud BACnet jobs: UDP `47814` remains the cloud commissioning runtime and legacy UDP `47808` remains excluded.
+- Live smoke passed: the site info form saves correctly, split address fields work, gateway list/detail display site information correctly, Direct Connect appears after host/port configuration, and Direct Connect opens the forwarded gateway UI through the configured host/port.
+- Recommended tag: `mvp-014b-direct-connect-site-management`.
+
+### Future Candidate: Cloud Tunnel Remote Console
+
+- Cloud Tunnel uses the gateway's outbound session to a controlled cloud relay.
+- Cloud Tunnel remains separate from Direct Connect.
+- When no gateway tunnel client/session is connected, tunnel status remains a friendly disconnected state and the tunnel route returns `{"detail":"Gateway tunnel is not connected"}`.
+- Tunnel connectivity must not be faked.
+- Remote console sessions must be audited and expire automatically.
+- Cloud Tunnel work must not expose admin tokens, gateway tokens, Supabase secrets, service-role keys, server pepper values, or database credentials.
+
+### MVP-014C Candidate: BACnet Point Loading And Point-Tree Population
+
+- Implement the real `bacnet_load_points` edge-agent job.
+- The edge agent reads BACnet object-list data locally on UDP `47814`.
+- The job returns point candidates from the actual gateway/BACnet network; fake point data remains out of scope.
+- The cloud UI queues point-load jobs only for eligible saved devices on online gateways.
+- The gateway workspace displays completed point-load results and lets an admin/operator save approved point candidates.
+- Saved points populate the UI point tree under the saved device with friendly object folders.
+- Viewer users remain read-only.
+- No BACnet writes, schedules, program edits, command writes, subscriptions, or background polling are included.
+- Legacy UDP `47808` remains untouched.
 
 ### MVP-014 Later: Commissioning Job Workflows
 
