@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 import sys
 from types import SimpleNamespace
 
@@ -20,7 +21,7 @@ def test_tunnel_url_uses_gateway_id() -> None:
     assert tunnel_url(config) == "wss://cloud.example.com/api/edge/tunnels/GW%20001"
 
 
-def test_handle_tunnel_message_proxies_to_local_ui(monkeypatch) -> None:
+def test_handle_tunnel_message_proxies_to_local_ui(monkeypatch, caplog) -> None:
     config = AgentConfig(
         gateway_id="GW001",
         site_id="demo-site",
@@ -43,6 +44,7 @@ def test_handle_tunnel_message_proxies_to_local_ui(monkeypatch) -> None:
         return response
 
     monkeypatch.setattr(requests, "request", fake_request)
+    caplog.set_level(logging.WARNING, logger="iot-cx-agent.tunnel")
 
     response = handle_tunnel_message(
         config,
@@ -65,6 +67,21 @@ def test_handle_tunnel_message_proxies_to_local_ui(monkeypatch) -> None:
     assert response["request_id"] == "req-1"
     assert response["status_code"] == 200
     assert response["body_b64"] == "Z2F0ZXdheSB1aQ=="
+    log_text = caplog.text
+    assert "EDGE_TUNNEL_DEBUG request" in log_text
+    assert "EDGE_TUNNEL_DEBUG response" in log_text
+    assert "local_method=GET" in log_text
+    assert "local_path=/status" in log_text
+    assert "received_header_names=content-type,cookie" in log_text
+    assert "forwarded_local_header_names=content-type,cookie" in log_text
+    assert "received_cookie_names=session" in log_text
+    assert "received_cookie_count=1" in log_text
+    assert "forwarded_cookie_names=session" in log_text
+    assert "forwarded_cookie_count=1" in log_text
+    assert "local_response_status=200" in log_text
+    assert "local_response_location_shape=none" in log_text
+    assert "session=secret" not in log_text
+    assert "browser-token" not in log_text
 
 
 def test_local_ui_base_url_requires_allowlisted_target(tmp_path: Path) -> None:
@@ -141,6 +158,44 @@ def test_handle_tunnel_message_reports_local_ui_unavailable(monkeypatch, tmp_pat
     )
 
     assert response == {"type": "error", "request_id": "req-3", "error": "Local gateway UI unavailable"}
+
+
+def test_handle_tunnel_message_logs_redirect_shape_without_location_value(monkeypatch, tmp_path: Path, caplog) -> None:
+    config = AgentConfig(
+        gateway_id="GW001",
+        site_id="demo-site",
+        cloud_url="http://localhost:8000",
+        local_ui_url="http://127.0.0.1:5000",
+        sqlite_path=tmp_path / "edge.db",
+    )
+
+    def redirect(*args: object, **kwargs: object) -> requests.Response:
+        response = requests.Response()
+        response.status_code = 302
+        response._content = b""
+        response.headers["Location"] = "http://127.0.0.1:5000/login?next=%2F"
+        return response
+
+    monkeypatch.setattr(requests, "request", redirect)
+    caplog.set_level(logging.WARNING, logger="iot-cx-agent.tunnel")
+
+    response = handle_tunnel_message(
+        config,
+        {
+            "type": "request",
+            "request_id": "req-4",
+            "method": "GET",
+            "path": "/",
+            "query_string": "",
+            "headers": {"Cookie": "session=secret"},
+            "body_b64": "",
+        },
+    )
+
+    assert response["status_code"] == 302
+    assert "local_response_location_shape=gateway-local:/login" in caplog.text
+    assert "127.0.0.1:5000/login?next" not in caplog.text
+    assert "session=secret" not in caplog.text
 
 
 def test_run_tunnel_sends_gateway_auth_header(monkeypatch, tmp_path: Path) -> None:

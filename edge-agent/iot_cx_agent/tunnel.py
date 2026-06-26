@@ -12,6 +12,7 @@ from iot_cx_agent.config import AgentConfig
 logger = logging.getLogger("iot-cx-agent.tunnel")
 ALLOWED_LOCAL_UI_URL = "http://127.0.0.1:5000"
 STRIPPED_LOCAL_HEADERS = {"host", "content-length", "connection", "authorization"}
+SENSITIVE_LOG_HEADER_NAMES = {"authorization"}
 
 
 def tunnel_url(config: AgentConfig) -> str:
@@ -60,6 +61,46 @@ def local_ui_base_url(config: AgentConfig) -> str:
     return ALLOWED_LOCAL_UI_URL
 
 
+def _parse_cookie_pairs(cookie_header: str | None) -> list[tuple[str, str]]:
+    if not cookie_header:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for part in cookie_header.split(";"):
+        name, separator, value = part.strip().partition("=")
+        if separator and name:
+            pairs.append((name, value))
+    return pairs
+
+
+def _cookie_summary(cookie_header: str | None) -> tuple[str, int]:
+    pairs = _parse_cookie_pairs(cookie_header)
+    if not pairs:
+        return "", 0
+    return ",".join(name for name, _ in pairs), len(pairs)
+
+
+def _header_names(headers: dict[object, object]) -> str:
+    names = sorted(
+        str(key).lower()
+        for key in headers
+        if str(key).lower() not in SENSITIVE_LOG_HEADER_NAMES
+    )
+    return ",".join(names)
+
+
+def _location_shape(location: str | None) -> str:
+    if not location:
+        return "none"
+    parsed = urlparse(location.strip())
+    path = parsed.path or "/"
+    if parsed.scheme or parsed.netloc:
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme.lower() == "http" and host in {"127.0.0.1", "localhost"} and parsed.port == 5000:
+            return f"gateway-local:{path}"
+        return "external"
+    return f"relative:{path}"
+
+
 def handle_tunnel_message(config: AgentConfig, message: dict[str, object]) -> dict[str, object]:
     request_id = str(message.get("request_id", ""))
     if message.get("type") != "request":
@@ -81,17 +122,48 @@ def handle_tunnel_message(config: AgentConfig, message: dict[str, object]) -> di
         if query_string:
             url = f"{url}?{query_string}"
 
+        forwarded_headers = {
+            str(key): str(value)
+            for key, value in headers.items()
+            if str(key).lower() not in STRIPPED_LOCAL_HEADERS
+        }
+        received_cookie_names, received_cookie_count = _cookie_summary(
+            next((str(value) for key, value in headers.items() if str(key).lower() == "cookie"), None)
+        )
+        forwarded_cookie_names, forwarded_cookie_count = _cookie_summary(
+            next((value for key, value in forwarded_headers.items() if key.lower() == "cookie"), None)
+        )
+        logger.warning(
+            "EDGE_TUNNEL_DEBUG request gateway=%s local_method=%s local_path=%s received_header_names=%s "
+            "forwarded_local_header_names=%s received_cookie_names=%s received_cookie_count=%s "
+            "forwarded_cookie_names=%s forwarded_cookie_count=%s",
+            config.gateway_id,
+            method,
+            path,
+            _header_names(headers),
+            _header_names(forwarded_headers),
+            received_cookie_names,
+            received_cookie_count,
+            forwarded_cookie_names,
+            forwarded_cookie_count,
+        )
+
         response = requests.request(
             method,
             url,
-            headers={
-                str(key): str(value)
-                for key, value in headers.items()
-                if str(key).lower() not in STRIPPED_LOCAL_HEADERS
-            },
+            headers=forwarded_headers,
             data=base64.b64decode(body_b64),
             timeout=30,
             allow_redirects=False,
+        )
+        logger.warning(
+            "EDGE_TUNNEL_DEBUG response gateway=%s local_method=%s local_path=%s local_response_status=%s "
+            "local_response_location_shape=%s",
+            config.gateway_id,
+            method,
+            path,
+            response.status_code,
+            _location_shape(response.headers.get("Location")),
         )
         return {
             "type": "response",
