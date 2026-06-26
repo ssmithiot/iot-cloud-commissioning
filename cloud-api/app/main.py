@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import ipaddress
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 from uuid import uuid4
 
@@ -219,6 +219,30 @@ def _validate_direct_connect_host(host: str | None) -> str | None:
         if any(not label or label.startswith("-") or label.endswith("-") for label in labels):
             raise HTTPException(status_code=422, detail="Direct connect host is not a valid host or IP") from None
     return host
+
+
+def _tunnel_proxy_prefix(gateway_id: str) -> str:
+    return f"/gateways/{quote(gateway_id, safe='')}/tunnel/proxy"
+
+
+def _rewrite_tunnel_redirect_location(gateway_id: str, location: str) -> str:
+    location = location.strip()
+    if not location or "\r" in location or "\n" in location:
+        raise HTTPException(status_code=502, detail="Gateway tunnel redirect target is not allowlisted")
+
+    parsed = urlsplit(location)
+    if parsed.scheme or parsed.netloc:
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme.lower() != "http" or host not in {"127.0.0.1", "localhost"} or parsed.port != 5000:
+            raise HTTPException(status_code=502, detail="Gateway tunnel redirect target is not allowlisted")
+
+    path = parsed.path or "/"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    rewritten = f"{_tunnel_proxy_prefix(gateway_id)}{path}"
+    if parsed.query:
+        rewritten = f"{rewritten}?{parsed.query}"
+    return rewritten
 
 
 def _direct_connect_for_site(site: Site | None) -> DirectConnectOut:
@@ -648,14 +672,17 @@ async def proxy_gateway_tunnel(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     excluded_headers = {"content-encoding", "content-length", "connection", "transfer-encoding"}
+    response_headers = {
+        key: value for key, value in tunnel_response.headers.items() if key.lower() not in excluded_headers
+    }
+    location_header = next((key for key in response_headers if key.lower() == "location"), None)
+    if 300 <= tunnel_response.status_code < 400 and location_header is not None:
+        response_headers[location_header] = _rewrite_tunnel_redirect_location(gateway_id, response_headers[location_header])
+
     return Response(
         content=tunnel_response.body,
         status_code=tunnel_response.status_code,
-        headers={
-            key: value
-            for key, value in tunnel_response.headers.items()
-            if key.lower() not in excluded_headers
-        },
+        headers=response_headers,
     )
 
 

@@ -326,6 +326,8 @@ MVP-014C direction:
 - Tunnel proxy access is for AdminBearer or active Supabase admin/operator users; viewer users can see status but cannot open the tunnel console unless explicitly approved later.
 - Tunnel target is allowlisted to the gateway-local UI at `http://127.0.0.1:5000`; arbitrary host/port proxying and LAN scanning are out of scope.
 - Browser authorization and cookie headers are stripped before tunnel relay to the gateway-local UI.
+- Gateway-local redirects to `127.0.0.1:5000`, `localhost:5000`, or relative paths are rewritten back through the protected cloud tunnel proxy; redirects to arbitrary hosts are rejected.
+- The current browser shell uses iframe HTML injection. Complex gateway UI assets, cookies, and form workflows may require a short-lived signed tunnel session URL in a later tunnel polish slice.
 - Direct Connect is an optional browser link, not a cloud proxy, to `http://<direct_connect_host>:<direct_connect_port>` when site metadata is configured.
 - Direct Connect defaults are external port `5002` and informational gateway UI port `5000`.
 - Direct Connect must open in a new tab and must not store gateway UI passwords in the cloud.

@@ -670,6 +670,52 @@ def test_tunnel_proxy_relays_for_operator_without_forwarding_browser_auth() -> N
     assert response.headers["content-type"].startswith("text/html")
 
 
+@pytest.mark.parametrize(
+    ("upstream_location", "rewritten_location"),
+    [
+        ("http://127.0.0.1:5000/login?next=%2F", "/gateways/GW001/tunnel/proxy/login?next=%2F"),
+        ("http://localhost:5000/login?next=%2F", "/gateways/GW001/tunnel/proxy/login?next=%2F"),
+        ("/login?next=%2F", "/gateways/GW001/tunnel/proxy/login?next=%2F"),
+    ],
+)
+def test_tunnel_proxy_rewrites_safe_gateway_local_redirects(upstream_location: str, rewritten_location: str) -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager
+
+    create_gateway_token("GW001")
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            return TunnelResponse(status_code=302, headers={"Location": upstream_location}, body=b"")
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        response = client.get("/gateways/GW001/tunnel/proxy/", headers=admin_headers(), follow_redirects=False)
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == rewritten_location
+
+
+def test_tunnel_proxy_rejects_external_redirect_location() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager
+
+    create_gateway_token("GW001")
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            return TunnelResponse(status_code=302, headers={"Location": "https://example.com/login"}, body=b"")
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        response = client.get("/gateways/GW001/tunnel/proxy/", headers=admin_headers(), follow_redirects=False)
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Gateway tunnel redirect target is not allowlisted"}
+
+
 def test_tunnel_console_direct_navigation_renders_friendly_shell() -> None:
     create_gateway_token("GW001")
 
