@@ -885,7 +885,10 @@ def test_tunnel_console_direct_navigation_renders_friendly_shell() -> None:
     assert "Missing admin credentials" not in response.text
     assert "initTunnelConsole" in response.text
     assert "/tunnel-session" in response.text
-    assert "window.open(session.url" in response.text
+    assert 'window.open("", "_blank", "noopener,noreferrer")' in response.text
+    assert "tunnelWindow.location = session.url" in response.text
+    assert "tunnelWindow.close()" in response.text
+    assert "Popup blocked? Open tunnel manually" in response.text
     assert 'id="tunnel-frame"' not in response.text
 
 

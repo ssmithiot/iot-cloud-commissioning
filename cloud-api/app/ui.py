@@ -1081,18 +1081,22 @@ APP_SCRIPT = r"""
         openTunnelButton.disabled = true;
         tunnelFallback.hidden = true;
         tunnelFallback.removeAttribute("href");
+        const tunnelWindow = window.open("", "_blank", "noopener,noreferrer");
         setText("status", "Creating short-lived tunnel console session...");
         try {
           const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST" });
-          const opened = window.open(session.url, "_blank", "noopener,noreferrer");
-          if (opened) {
+          if (tunnelWindow) {
+            tunnelWindow.location = session.url;
             setText("status", "Tunnel console opened in a new tab.");
           } else {
             tunnelFallback.href = session.url;
             tunnelFallback.hidden = false;
-            setText("status", "Popup blocked. Use the generated tunnel console link.");
+            setText("status", "Popup blocked. Use the manual tunnel console link.");
           }
         } catch (error) {
+          if (tunnelWindow) {
+            tunnelWindow.close();
+          }
           setText("status", error.message, true);
         } finally {
           openTunnelButton.disabled = !tunnelStatus.connected;
@@ -1814,7 +1818,7 @@ def tunnel_console_html(gateway_id: str) -> str:
       </div>
       <div class="toolbar">
         <button id="open-tunnel-console" type="button" disabled>Open Tunnel Console</button>
-        <a id="tunnel-session-link" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>Open generated tunnel link</a>
+        <a id="tunnel-session-link" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>Popup blocked? Open tunnel manually</a>
       </div>
     </section>
   </main>"""
