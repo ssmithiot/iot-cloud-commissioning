@@ -1081,7 +1081,7 @@ APP_SCRIPT = r"""
         openTunnelButton.disabled = true;
         tunnelFallback.hidden = true;
         tunnelFallback.removeAttribute("href");
-        const tunnelWindow = window.open("", "_blank", "noopener,noreferrer");
+        const tunnelWindow = window.open("about:blank", "_blank");
         setText("status", "Creating short-lived tunnel console session...");
         try {
           const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST" });

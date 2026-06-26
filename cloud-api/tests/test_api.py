@@ -871,6 +871,73 @@ def test_tunnel_session_proxies_post_and_scopes_cookie_path() -> None:
     assert response.headers["set-cookie"] == f"sid=abc; Path=/gateways/GW001/tunnel/session/{session_id}/; HttpOnly"
 
 
+def test_tunnel_session_rewrites_html_root_relative_and_gateway_local_urls() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW001")
+    html = (
+        '<a href="/login?next=%2F">login</a>'
+        '<img src="/static/app.css">'
+        '<form action="/login" method="post"></form>'
+        '<button formaction="/submit">save</button>'
+        '<a href="http://127.0.0.1:5000/settings?tab=users">settings</a>'
+        '<script src="http://localhost:5000/static/app.js"></script>'
+        '<a href="https://example.com/help">external</a>'
+        '<a href="#local">anchor</a>'
+    )
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            return TunnelResponse(status_code=200, headers={"content-type": "text/html; charset=utf-8"}, body=html.encode())
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        created = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+        session_url = created.json()["url"]
+        session_id = session_url.rstrip("/").split("/")[-1]
+        response = client.get(session_url)
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+        tunnel_session_manager._sessions.pop(session_id, None)
+
+    prefix = f"/gateways/GW001/tunnel/session/{session_id}"
+    assert response.status_code == 200
+    assert f'href="{prefix}/login?next=%2F"' in response.text
+    assert f'src="{prefix}/static/app.css"' in response.text
+    assert f'action="{prefix}/login"' in response.text
+    assert f'formaction="{prefix}/submit"' in response.text
+    assert f'href="{prefix}/settings?tab=users"' in response.text
+    assert f'src="{prefix}/static/app.js"' in response.text
+    assert 'href="https://example.com/help"' in response.text
+    assert 'href="#local"' in response.text
+
+
+def test_tunnel_proxy_does_not_rewrite_html_body() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager
+
+    create_gateway_token("GW001")
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            return TunnelResponse(status_code=200, headers={"content-type": "text/html"}, body=b'<a href="/login">login</a>')
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        response = client.get("/gateways/GW001/tunnel/proxy/", headers=admin_headers())
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+
+    assert response.status_code == 200
+    assert response.text == '<a href="/login">login</a>'
+
+
+def test_cloud_login_route_is_not_hijacked_by_tunnel_session() -> None:
+    response = client.get("/login")
+
+    assert response.status_code == 200
+    assert "IOT Cloud Commissioning" in response.text
+
+
 def test_tunnel_console_direct_navigation_renders_friendly_shell() -> None:
     create_gateway_token("GW001")
 
@@ -885,7 +952,7 @@ def test_tunnel_console_direct_navigation_renders_friendly_shell() -> None:
     assert "Missing admin credentials" not in response.text
     assert "initTunnelConsole" in response.text
     assert "/tunnel-session" in response.text
-    assert 'window.open("", "_blank", "noopener,noreferrer")' in response.text
+    assert 'window.open("about:blank", "_blank")' in response.text
     assert "tunnelWindow.location = session.url" in response.text
     assert "tunnelWindow.close()" in response.text
     assert "Popup blocked? Open tunnel manually" in response.text

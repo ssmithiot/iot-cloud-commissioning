@@ -433,6 +433,8 @@ The short-lived session proxy path is `GET|POST|PUT|PATCH|DELETE /gateways/{gate
 
 Redirect handling: proxy responses with `Location` pointing to `http://127.0.0.1:5000/...`, `http://localhost:5000/...`, or a relative path such as `/login` are rewritten to the active cloud tunnel proxy/session path. Redirects to arbitrary hosts are rejected with `502`.
 
+HTML handling: tunnel session HTML responses rewrite safe `href`, `src`, `action`, and `formaction` values that point to root-relative paths, `http://127.0.0.1:5000/...`, or `http://localhost:5000/...` into the active session path. Arbitrary external URLs are left unchanged and are not proxied through the tunnel.
+
 Authentication: tunnel proxy access requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin` or `operator` role. Viewer users may see tunnel status but cannot open the tunnel console unless explicitly approved in a later scope.
 
 Current live behavior: if no gateway tunnel client/session is connected, the proxy returns `503` with `{"detail":"Gateway tunnel is not connected"}`. This disconnected tunnel state is separate from heartbeat status, job polling, Direct Connect, and BACnet job workflows.

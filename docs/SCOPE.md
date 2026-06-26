@@ -328,6 +328,7 @@ MVP-014C direction:
 - Tunnel target is allowlisted to the gateway-local UI at `http://127.0.0.1:5000`; arbitrary host/port proxying and LAN scanning are out of scope.
 - Browser authorization and cookie headers are stripped before tunnel relay to the gateway-local UI.
 - Gateway-local redirects to `127.0.0.1:5000`, `localhost:5000`, or relative paths are rewritten back through the active cloud tunnel session/proxy path; redirects to arbitrary hosts are rejected.
+- Tunnel session HTML rewrites safe `href`, `src`, `action`, and `formaction` values into the active session path so root-relative gateway UI navigation stays inside the tunnel.
 - The tunnel console opens in a full browser tab, not an embedded iframe, to reduce nested scrolling and better support normal gateway UI navigation.
 - Direct Connect is an optional browser link, not a cloud proxy, to `http://<direct_connect_host>:<direct_connect_port>` when site metadata is configured.
 - Direct Connect defaults are external port `5002` and informational gateway UI port `5000`.

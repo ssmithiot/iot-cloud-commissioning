@@ -215,7 +215,7 @@ local_ui_url: http://127.0.0.1:5000
 
 The gateway tunnel client authenticates with the gateway credential from `GATEWAY_API_TOKEN`, not with `IOT_ADMIN_API_TOKEN` or Supabase credentials. The browser tunnel shell authenticates with the logged-in Supabase session for admin/operator users. The protected relay strips browser authorization and cookie headers before forwarding to the local gateway UI.
 
-Gateway-local redirects from `http://127.0.0.1:5000`, `http://localhost:5000`, and relative paths are rewritten back through the active tunnel proxy/session path. Redirects to arbitrary hosts are rejected.
+Gateway-local redirects from `http://127.0.0.1:5000`, `http://localhost:5000`, and relative paths are rewritten back through the active tunnel proxy/session path. Tunnel session HTML also rewrites safe `href`, `src`, `action`, and `formaction` values into the session path. Redirects or links to arbitrary external hosts are not rewritten into the tunnel.
 
 Current state: Cloud Tunnel code supports gateway-initiated outbound WebSocket sessions and protected browser relay. Live tunnel status remains disconnected until the provisioned gateway service is running tunnel-enabled code and can reach the cloud WebSocket. When no gateway tunnel session is connected, the protected proxy route must keep returning a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`. Do not fake tunnel connectivity.
 

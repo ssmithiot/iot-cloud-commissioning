@@ -485,6 +485,7 @@ The live admin smoke test passes only when:
 - Gateway tunnel traffic is allowlisted to the local gateway UI target `http://127.0.0.1:5000`; arbitrary host/port proxying is out of scope.
 - Browser authorization and cookie headers are stripped before a tunnel request is forwarded to the gateway-local UI.
 - Gateway-local redirects to `127.0.0.1:5000`, `localhost:5000`, or relative paths are rewritten back through the active cloud tunnel session/proxy path; redirects to arbitrary hosts are rejected.
+- Tunnel session HTML rewrites safe `href`, `src`, `action`, and `formaction` values into the active session path so root-relative gateway UI navigation stays inside the tunnel.
 - The tunnel console opens in a full browser tab, not an embedded iframe, to reduce nested scrolling and better support normal gateway UI navigation.
 - Remote console sessions must be audited and expire automatically.
 - Cloud Tunnel work must not expose admin tokens, gateway tokens, Supabase secrets, service-role keys, server pepper values, or database credentials.

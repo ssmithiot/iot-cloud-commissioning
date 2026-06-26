@@ -100,6 +100,7 @@ app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lif
 
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
+TUNNEL_HTML_ATTR_PATTERN = re.compile(r"""(?P<attr>\b(?:href|src|action|formaction)=)(?P<quote>["'])(?P<url>[^"']+)(?P=quote)""", re.IGNORECASE)
 
 
 def _aware_utc(value: datetime | None) -> datetime | None:
@@ -268,11 +269,32 @@ def _rewrite_tunnel_set_cookie(set_cookie: str, redirect_prefix: str) -> str:
     return "; ".join(rewritten)
 
 
+def _rewrite_tunnel_html_body(body: bytes, redirect_prefix: str) -> bytes:
+    try:
+        html = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return body
+
+    def replace(match: re.Match[str]) -> str:
+        url = match.group("url")
+        if url.startswith(("#", "mailto:", "tel:", "data:", "javascript:")):
+            rewritten = url
+        else:
+            try:
+                rewritten = _rewrite_tunnel_redirect_location(redirect_prefix, url)
+            except HTTPException:
+                rewritten = url
+        return f"{match.group('attr')}{match.group('quote')}{rewritten}{match.group('quote')}"
+
+    return TUNNEL_HTML_ATTR_PATTERN.sub(replace, html).encode("utf-8")
+
+
 def _tunnel_response_headers(
     tunnel_response: TunnelResponse,
     *,
     redirect_prefix: str,
     allow_set_cookie: bool,
+    rewrite_html_body: bool,
 ) -> dict[str, str]:
     excluded_headers = {"content-encoding", "content-length", "connection", "transfer-encoding"}
     response_headers = {
@@ -718,6 +740,7 @@ async def proxy_gateway_tunnel(
         request=request,
         redirect_prefix=_tunnel_proxy_prefix(gateway_id),
         allow_cookie_headers=False,
+        rewrite_html_body=False,
     )
 
 
@@ -749,6 +772,7 @@ async def proxy_gateway_tunnel_session(
         request=request,
         redirect_prefix=_tunnel_session_prefix(gateway_id, session_id),
         allow_cookie_headers=True,
+        rewrite_html_body=True,
     )
 
 
@@ -759,6 +783,7 @@ async def _proxy_gateway_tunnel_request(
     request: Request,
     redirect_prefix: str,
     allow_cookie_headers: bool,
+    rewrite_html_body: bool,
 ) -> Response:
     stripped_headers = {"host", "content-length", "connection", "authorization"}
     if not allow_cookie_headers:
@@ -784,14 +809,21 @@ async def _proxy_gateway_tunnel_request(
     except TunnelRequestFailed as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    response_headers = _tunnel_response_headers(
+        tunnel_response,
+        redirect_prefix=redirect_prefix,
+        allow_set_cookie=allow_cookie_headers,
+        rewrite_html_body=rewrite_html_body,
+    )
+    content_type = next((value for key, value in response_headers.items() if key.lower() == "content-type"), "")
+    response_body = tunnel_response.body
+    if rewrite_html_body and "text/html" in content_type.lower():
+        response_body = _rewrite_tunnel_html_body(tunnel_response.body, redirect_prefix)
+
     return Response(
-        content=tunnel_response.body,
+        content=response_body,
         status_code=tunnel_response.status_code,
-        headers=_tunnel_response_headers(
-            tunnel_response,
-            redirect_prefix=redirect_prefix,
-            allow_set_cookie=allow_cookie_headers,
-        ),
+        headers=response_headers,
     )
 
 
