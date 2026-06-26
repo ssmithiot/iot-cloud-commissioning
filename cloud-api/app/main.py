@@ -608,7 +608,13 @@ async def edge_tunnel(
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     include_in_schema=False,
 )
-async def proxy_gateway_tunnel(gateway_id: str, path: str, request: Request, db: Session = Depends(get_db)) -> Response:
+async def proxy_gateway_tunnel(
+    gateway_id: str,
+    path: str,
+    request: Request,
+    _: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> Response:
     _get_gateway_or_404(db, gateway_id)
     try:
         tunnel = tunnel_manager.get(gateway_id)

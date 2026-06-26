@@ -321,6 +321,8 @@ MVP-014C direction:
 - Cloud Tunnel is separate from Direct Connect and remains future scope unless a real gateway tunnel client/session is safely completed.
 - When no gateway tunnel session is connected, the tunnel route returns a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`.
 - Tunnel connectivity must not be faked.
+- Current tunnel code is partial: cloud session/proxy routes and an edge-agent tunnel client module exist, but live access depends on a provisioned gateway process actively maintaining the outbound WebSocket session.
+- Tunnel proxy access is for AdminBearer or active Supabase admin/operator users; viewer users can see status but cannot open the tunnel console unless explicitly approved later.
 - Direct Connect is an optional browser link, not a cloud proxy, to `http://<direct_connect_host>:<direct_connect_port>` when site metadata is configured.
 - Direct Connect defaults are external port `5002` and informational gateway UI port `5000`.
 - Direct Connect must open in a new tab and must not store gateway UI passwords in the cloud.
@@ -331,6 +333,12 @@ MVP-014C direction:
 - Remote console design must not expose cloud/admin/Supabase/Postgres/service-role/server-pepper secrets to gateways or browsers.
 - Direct Connect does not change heartbeat status, job polling, Cloud Tunnel status, or BACnet job architecture.
 - Recommended tag for the Direct Connect / Site Info slice: `mvp-014b-direct-connect-site-management`.
+
+Cloud Tunnel future split:
+
+- MVP-Tunnel-A: harden status-only behavior, friendly disconnected UI/API, gateway session registration tests, and docs.
+- MVP-Tunnel-B: complete gateway-initiated WebSocket tunnel rollout, cloud relay/session manager, browser proxy, local target allowlist initially limited to `127.0.0.1:5000`, timeouts, and tests.
+- MVP-Tunnel-C: audit logs, idle/session controls, permission polish, and connection management UX.
 
 MVP-014C next planning slice:
 

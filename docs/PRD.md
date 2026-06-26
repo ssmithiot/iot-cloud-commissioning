@@ -478,8 +478,16 @@ The live admin smoke test passes only when:
 - Cloud Tunnel remains separate from Direct Connect.
 - When no gateway tunnel client/session is connected, tunnel status remains a friendly disconnected state and the tunnel route returns `{"detail":"Gateway tunnel is not connected"}`.
 - Tunnel connectivity must not be faked.
+- Current implementation state is partial: cloud tunnel manager/proxy routes and an edge-agent tunnel client module exist, but live tunnel access requires a provisioned gateway process to run and maintain the outbound WebSocket session.
+- Tunnel proxy access is limited to AdminBearer or active Supabase admin/operator users; viewer users may see status but cannot open the tunnel console.
 - Remote console sessions must be audited and expire automatically.
 - Cloud Tunnel work must not expose admin tokens, gateway tokens, Supabase secrets, service-role keys, server pepper values, or database credentials.
+
+Recommended tunnel split:
+
+- MVP-Tunnel-A: status-only hardening, friendly disconnected UX, gateway session registration tests, docs, and no gateway service rollout.
+- MVP-Tunnel-B: real gateway-initiated WebSocket tunnel client rollout, cloud session manager hardening, browser proxy route, local target allowlist initially limited to the gateway UI on `127.0.0.1:5000`, timeout handling, and tests.
+- MVP-Tunnel-C: audit trails, idle/session controls, connection management UX, and operational polish.
 
 ### MVP-014C Candidate: BACnet Point Loading And Point-Tree Population
 

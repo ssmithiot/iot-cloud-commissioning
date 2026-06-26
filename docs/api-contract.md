@@ -409,6 +409,10 @@ Authentication: requires the gateway API token for the same `gateway_id`.
 
 The cloud proxy path is `GET|POST|PUT|PATCH|DELETE /gateways/{gateway_id}/tunnel/{path}`. Browser requests to that path are relayed over the active outbound gateway tunnel.
 
+Authentication: tunnel proxy access requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin` or `operator` role. Viewer users may see tunnel status but cannot open the tunnel console unless explicitly approved in a later scope.
+
+Current live behavior: if no gateway tunnel client/session is connected, the proxy returns `503` with `{"detail":"Gateway tunnel is not connected"}`. This disconnected tunnel state is separate from heartbeat status, job polling, Direct Connect, and BACnet job workflows.
+
 ## POST /api/ui/gateways/{gateway_id}/commissioning-template/import
 
 Purpose: import an edge-exported commissioning template into a cloud gateway commissioning model.
