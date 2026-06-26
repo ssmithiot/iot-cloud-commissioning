@@ -298,6 +298,55 @@ def _safe_tunnel_query_keys(query_string: str) -> str:
     return ",".join(keys) if keys else "<blank>"
 
 
+def _parse_cookie_pairs(cookie_header: str | None) -> list[tuple[str, str]]:
+    if not cookie_header:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for part in cookie_header.split(";"):
+        name, separator, value = part.strip().partition("=")
+        if separator and name:
+            pairs.append((name, value))
+    return pairs
+
+
+def _safe_cookie_summary(cookie_header: str | None) -> tuple[str, int]:
+    pairs = _parse_cookie_pairs(cookie_header)
+    if not pairs:
+        return "", 0
+    names = ",".join(name for name, _ in pairs)
+    return names, len(pairs)
+
+
+def _deduplicate_cookie_header(cookie_header: str | None) -> str | None:
+    pairs = _parse_cookie_pairs(cookie_header)
+    if not pairs:
+        return None
+    seen: set[str] = set()
+    forwarded: list[tuple[str, str]] = []
+    for name, value in pairs:
+        if name in seen:
+            continue
+        seen.add(name)
+        forwarded.append((name, value))
+    return "; ".join(f"{name}={value}" for name, value in forwarded)
+
+
+def _tunnel_location_shape(location: str | None) -> str:
+    if not location:
+        return "none"
+    try:
+        parsed = urlsplit(location.strip())
+    except ValueError:
+        return "invalid"
+    path = parsed.path or "/"
+    if parsed.scheme or parsed.netloc:
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme.lower() == "http" and host in {"127.0.0.1", "localhost"} and parsed.port == 5000:
+            return f"gateway-local:{path}"
+        return "external"
+    return f"relative:{path}"
+
+
 def _tunnel_response_headers(
     tunnel_response: TunnelResponse,
     *,
@@ -803,20 +852,33 @@ async def _proxy_gateway_tunnel_request(
         for key, value in request.headers.items()
         if key.lower() not in stripped_headers
     }
+    incoming_cookie_header = request.headers.get("cookie")
+    if allow_cookie_headers:
+        deduplicated_cookie = _deduplicate_cookie_header(incoming_cookie_header)
+        if deduplicated_cookie:
+            forward_headers["cookie"] = deduplicated_cookie
+        else:
+            forward_headers.pop("cookie", None)
     upstream_path = f"/{path}"
     incoming_headers = {key.lower(): value for key, value in request.headers.items()}
-    forwarded_header_names = {key.lower() for key in forward_headers}
+    inbound_cookie_names, inbound_cookie_count = _safe_cookie_summary(incoming_cookie_header)
+    forwarded_cookie_names, forwarded_cookie_count = _safe_cookie_summary(forward_headers.get("cookie"))
     logger.info(
-        "Tunnel proxy request gateway=%s method=%s path=%s query_keys=%s body_bytes=%s content_type=%s "
-        "browser_cookie_present=%s cookie_forwarded=%s html_rewrite_enabled=%s",
+        "Tunnel proxy request gateway=%s inbound_method=%s inbound_path=%s upstream_method=%s upstream_path=%s "
+        "query_keys=%s body_bytes=%s content_type=%s inbound_cookie_names=%s inbound_cookie_count=%s "
+        "forwarded_cookie_names=%s forwarded_cookie_count=%s html_rewrite_enabled=%s",
         gateway_id,
+        request.method,
+        request.url.path,
         request.method,
         upstream_path,
         _safe_tunnel_query_keys(request.url.query),
         len(request_body),
         incoming_headers.get("content-type", ""),
-        "cookie" in incoming_headers,
-        "cookie" in forwarded_header_names,
+        inbound_cookie_names,
+        inbound_cookie_count,
+        forwarded_cookie_names,
+        forwarded_cookie_count,
         rewrite_html_body,
     )
     try:
@@ -848,16 +910,21 @@ async def _proxy_gateway_tunnel_request(
         response_body = _rewrite_tunnel_html_body(tunnel_response.body, redirect_prefix)
 
     response_header_names = {key.lower() for key in response_headers}
+    upstream_location = next((value for key, value in tunnel_response.headers.items() if key.lower() == "location"), None)
+    response_location = next((value for key, value in response_headers.items() if key.lower() == "location"), None)
     logger.info(
         "Tunnel proxy response gateway=%s method=%s path=%s status=%s content_type=%s body_bytes=%s "
-        "location_present=%s set_cookie_received=%s set_cookie_forwarded=%s html_rewritten=%s",
+        "upstream_location_shape=%s response_location_shape=%s response_location_session_slash=%s "
+        "set_cookie_received=%s set_cookie_forwarded=%s html_rewritten=%s",
         gateway_id,
         request.method,
         upstream_path,
         tunnel_response.status_code,
         content_type,
         len(response_body),
-        any(key.lower() == "location" for key in tunnel_response.headers),
+        _tunnel_location_shape(upstream_location),
+        _tunnel_location_shape(response_location),
+        f"{redirect_prefix}/" in response_location if response_location else False,
         any(key.lower() == "set-cookie" for key in tunnel_response.headers),
         "set-cookie" in response_header_names,
         response_body != tunnel_response.body,

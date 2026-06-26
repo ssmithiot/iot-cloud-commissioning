@@ -926,13 +926,109 @@ def test_tunnel_session_login_post_preserves_form_cookie_and_rewrites_next_redir
     assert "path=/login" in log_text
     assert "query_keys=next" in log_text
     assert f"body_bytes={len(body)}" in log_text
-    assert "browser_cookie_present=True" in log_text
-    assert "cookie_forwarded=True" in log_text
+    assert "inbound_cookie_names=session" in log_text
+    assert "inbound_cookie_count=1" in log_text
+    assert "forwarded_cookie_names=session" in log_text
+    assert "forwarded_cookie_count=1" in log_text
     assert "set_cookie_received=True" in log_text
     assert "set_cookie_forwarded=True" in log_text
     assert "secret-password" not in log_text
     assert "old-gateway-session" not in log_text
     assert "gateway-session" not in log_text
+
+
+def test_tunnel_session_redirected_get_forwards_gateway_cookie_and_devices_path(caplog) -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW001")
+    captured: dict[str, object] = {}
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            captured.update(kwargs)
+            return TunnelResponse(status_code=200, headers={"content-type": "text/html"}, body=b"devices")
+
+    caplog.set_level(logging.INFO, logger="iot-cloud-api.tunnel")
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        created = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+        session_url = created.json()["url"]
+        session_id = session_url.rstrip("/").split("/")[-1]
+        response = client.get(
+            f"{session_url}devices?tab=network",
+            headers={"Cookie": "session=gateway-ui-session"},
+        )
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+        tunnel_session_manager._sessions.pop(session_id, None)
+
+    assert response.status_code == 200
+    assert response.text == "devices"
+    assert captured["method"] == "GET"
+    assert captured["path"] == "/devices"
+    assert captured["query_string"] == "tab=network"
+    assert captured["headers"]["cookie"] == "session=gateway-ui-session"
+    log_text = caplog.text
+    assert f"inbound_path=/gateways/GW001/tunnel/session/{session_id}/devices" in log_text
+    assert "upstream_path=/devices" in log_text
+    assert "query_keys=tab" in log_text
+    assert "inbound_cookie_names=session" in log_text
+    assert "forwarded_cookie_names=session" in log_text
+    assert "gateway-ui-session" not in log_text
+
+
+def test_tunnel_session_deduplicates_cookie_names_before_upstream_forwarding() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW001")
+    captured: dict[str, object] = {}
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            captured.update(kwargs)
+            return TunnelResponse(status_code=200, headers={"content-type": "text/html"}, body=b"devices")
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        created = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+        session_url = created.json()["url"]
+        session_id = session_url.rstrip("/").split("/")[-1]
+        response = client.get(
+            f"{session_url}devices",
+            headers={"Cookie": "session=gateway-ui-session; session=cloud-root-session; theme=dark"},
+        )
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+        tunnel_session_manager._sessions.pop(session_id, None)
+
+    assert response.status_code == 200
+    assert captured["headers"]["cookie"] == "session=gateway-ui-session; theme=dark"
+
+
+def test_tunnel_session_login_redirect_rewrite_keeps_session_slash(caplog) -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW001")
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            return TunnelResponse(status_code=302, headers={"Location": "/login?next=%2Fdevices"}, body=b"")
+
+    caplog.set_level(logging.INFO, logger="iot-cloud-api.tunnel")
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        created = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+        session_url = created.json()["url"]
+        session_id = session_url.rstrip("/").split("/")[-1]
+        response = client.get(f"{session_url}devices", follow_redirects=False)
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+        tunnel_session_manager._sessions.pop(session_id, None)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == f"/gateways/GW001/tunnel/session/{session_id}/login?next=%2Fdevices"
+    assert "upstream_location_shape=relative:/login" in caplog.text
+    assert "response_location_session_slash=True" in caplog.text
 
 
 def test_tunnel_session_rewrites_html_root_relative_and_gateway_local_urls() -> None:
