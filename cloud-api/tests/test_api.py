@@ -321,6 +321,8 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert response.status_code == 200
     assert 'id="discovery-progress"' in response.text
     assert 'id="discovered-devices"' in response.text
+    assert 'class="tree-shell"' in response.text
+    assert 'id="tree-details"' in response.text
     assert "renderDiscoveredDevices" in response.text
     assert "Load points" in response.text
     assert "No point data was faked" in response.text

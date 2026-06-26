@@ -289,6 +289,66 @@ APP_SCRIPT = r"""
     }
   }
 
+  function objectFolderLabel(objectType) {
+    return `${String(objectType || "unknown").replaceAll("-", " ")} objects`;
+  }
+
+  function treeRow(kind, label, meta = "", depth = 0, expanded = true) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "tree-row";
+    row.dataset.kind = kind;
+    row.style.setProperty("--depth", String(depth));
+    row.innerHTML = `
+      <span class="twisty">${expanded ? "[-]" : "[+]"}</span>
+      <span class="node-icon">${kind === "point" ? "->" : kind === "device" ? "[D]" : "[F]"}</span>
+      <span class="node-label">${escapeHtml(label)}</span>
+      <span class="node-meta">${escapeHtml(meta)}</span>
+    `;
+    return row;
+  }
+
+  function leafRow(kind, label, meta = "", depth = 0) {
+    const row = treeRow(kind, label, meta, depth, false);
+    row.querySelector(".twisty").textContent = "";
+    return row;
+  }
+
+  function setTreeDetails(title, details) {
+    const panel = byId("tree-details");
+    if (!panel) {
+      return;
+    }
+    panel.hidden = false;
+    panel.innerHTML = `
+      <h2>${escapeHtml(title)}</h2>
+      <dl>
+        ${Object.entries(details).map(([key, value]) => `
+          <dt>${escapeHtml(key)}</dt>
+          <dd>${escapeHtml(value ?? "")}</dd>
+        `).join("")}
+      </dl>
+    `;
+  }
+
+  function addCollapsible(parent, row, children, onSelect = null) {
+    parent.appendChild(row);
+    const childWrap = document.createElement("div");
+    childWrap.className = "tree-children";
+    for (const child of children) {
+      childWrap.appendChild(child);
+    }
+    parent.appendChild(childWrap);
+    row.addEventListener("click", () => {
+      const hidden = childWrap.hidden;
+      childWrap.hidden = !hidden;
+      row.querySelector(".twisty").textContent = hidden ? "[-]" : "[+]";
+      if (onSelect) {
+        onSelect();
+      }
+    });
+  }
+
   function renderTree(tree) {
     currentGatewayTree = tree;
     const target = byId("tree");
@@ -298,24 +358,67 @@ APP_SCRIPT = r"""
       return;
     }
     const groupNames = new Map(tree.groups.map((group) => [group.id, group.name]));
-    const lines = [];
+    const root = document.createElement("div");
+    root.className = "tree-view";
+
+    function deviceNode(device, depth) {
+      const points = tree.points.filter((item) => item.saved_device_id === device.id);
+      const pointGroups = new Map();
+      for (const point of points) {
+        const label = objectFolderLabel(point.object_type);
+        pointGroups.set(label, [...(pointGroups.get(label) || []), point]);
+      }
+      const deviceLabel = `[${device.device_instance}] ${device.device_name || "Device " + device.device_instance}`;
+      const row = treeRow("device", deviceLabel, device.network_number ? `network ${device.network_number}` : "", depth);
+      const showDeviceDetails = () => setTreeDetails(deviceLabel, {
+        gateway_id: device.gateway_id,
+        device_instance: device.device_instance,
+        network_number: device.network_number,
+        mac_address: device.mac_address,
+        vendor_name: device.vendor_name,
+        latest_discovered_at: device.latest_discovered_at,
+        points: points.length
+      });
+      const container = document.createElement("div");
+      addCollapsible(container, row, [], showDeviceDetails);
+      for (const [folderLabel, folderPoints] of pointGroups.entries()) {
+        const pointRows = folderPoints.map((point) => {
+          const pointLabel = `[${point.object_type} ${point.object_instance}] ${point.object_name || "unnamed"}`;
+          const pointRow = leafRow("point", pointLabel, point.present_value ?? "", depth + 2);
+          pointRow.addEventListener("click", () => setTreeDetails(pointLabel, {
+            property: point.property,
+            value: point.present_value,
+            units: point.units,
+            writable: point.writable,
+            latest_read_at: point.latest_read_at
+          }));
+          return pointRow;
+        });
+        addCollapsible(container.querySelector(".tree-children"), treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1), pointRows);
+      }
+      if (!points.length) {
+        container.querySelector(".tree-children").appendChild(leafRow("empty", "No saved points", "load points pending", depth + 1));
+      }
+      return container;
+    }
+
     for (const group of tree.groups) {
-      lines.push(`Group: ${group.name}`);
       const groupedDevices = tree.devices.filter((device) => device.group_id === group.id);
-      for (const device of groupedDevices) {
-        lines.push(`  Device ${device.device_instance}: ${device.device_name || "unnamed"}`);
-        for (const point of tree.points.filter((item) => item.saved_device_id === device.id)) {
-          lines.push(`    ${point.object_type} ${point.object_instance} ${point.property}: ${point.object_name || "unnamed"}`);
-        }
-      }
+      const children = groupedDevices.length
+        ? groupedDevices.map((device) => deviceNode(device, 1))
+        : [leafRow("empty", "No devices saved", "", 1)];
+      const row = treeRow("folder", group.name, `${groupedDevices.length}`, 0);
+      const showGroupDetails = () => setTreeDetails(group.name, {
+        gateway_id: group.gateway_id,
+        devices: groupedDevices.length
+      });
+      addCollapsible(root, row, children, showGroupDetails);
     }
-    for (const device of tree.devices.filter((item) => !item.group_id || !groupNames.has(item.group_id))) {
-      lines.push(`Ungrouped device ${device.device_instance}: ${device.device_name || "unnamed"}`);
-      for (const point of tree.points.filter((item) => item.saved_device_id === device.id)) {
-        lines.push(`  ${point.object_type} ${point.object_instance} ${point.property}: ${point.object_name || "unnamed"}`);
-      }
+    const ungroupedDevices = tree.devices.filter((item) => !item.group_id || !groupNames.has(item.group_id));
+    if (ungroupedDevices.length) {
+      addCollapsible(root, treeRow("folder", "Ungrouped", `${ungroupedDevices.length}`, 0), ungroupedDevices.map((device) => deviceNode(device, 1)));
     }
-    target.textContent = lines.join("\n");
+    target.appendChild(root);
   }
 
   function groupOptions() {
@@ -733,6 +836,75 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       align-items: start;
     }}
     .progress-panel[hidden] {{ display: none; }}
+    .tree-shell {{
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) minmax(260px, 0.8fr);
+      gap: 16px;
+      align-items: stretch;
+      margin-bottom: 16px;
+    }}
+    .tree-panel, .detail-panel {{
+      min-height: 280px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 4px;
+      overflow: auto;
+      padding: 10px;
+    }}
+    .tree-view {{
+      display: grid;
+      gap: 2px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+    }}
+    .tree-row {{
+      width: 100%;
+      min-height: 28px;
+      border: 0;
+      border-radius: 3px;
+      padding: 3px 8px 3px calc(8px + (var(--depth) * 22px));
+      color: var(--ink);
+      background: transparent;
+      display: grid;
+      grid-template-columns: 34px 34px minmax(0, 1fr) auto;
+      gap: 4px;
+      align-items: center;
+      text-align: left;
+      font: inherit;
+    }}
+    .tree-row:hover {{
+      background: #e8eef5;
+    }}
+    .tree-row[data-kind="point"] .node-icon {{
+      color: var(--accent);
+    }}
+    .tree-row[data-kind="device"] .node-label {{
+      font-weight: 700;
+    }}
+    .node-label {{
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .node-meta {{
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .detail-panel[hidden] {{ display: none; }}
+    .detail-panel dl {{
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 8px 12px;
+      font-size: 13px;
+    }}
+    .detail-panel dt {{
+      color: var(--muted);
+      font-weight: 700;
+    }}
+    .detail-panel dd {{
+      margin: 0;
+      word-break: break-word;
+    }}
     .toolbar {{
       display: flex;
       gap: 10px;
@@ -745,6 +917,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       .grid {{ grid-template-columns: 1fr; }}
       .span-2, .span-3, .span-4, .span-6, .span-12 {{ grid-column: span 1; }}
       table {{ display: block; overflow-x: auto; white-space: nowrap; }}
+      .tree-shell {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -919,7 +1092,10 @@ def gateway_workspace_html(gateway_id: str) -> str:
     </section>
     <section>
       <h2>Saved Groups, Devices, And Points</h2>
-      <pre id="tree">Loading...</pre>
+      <div class="tree-shell">
+        <div id="tree" class="tree-panel">Loading...</div>
+        <aside id="tree-details" class="detail-panel" hidden></aside>
+      </div>
       <form id="group-form" class="grid">
         <div class="span-4">
           <label for="group-name">Group name</label>
