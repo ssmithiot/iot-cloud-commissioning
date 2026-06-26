@@ -1,4 +1,5 @@
 import os
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -871,6 +872,69 @@ def test_tunnel_session_proxies_post_and_scopes_cookie_path() -> None:
     assert response.headers["set-cookie"] == f"sid=abc; Path=/gateways/GW001/tunnel/session/{session_id}/; HttpOnly"
 
 
+def test_tunnel_session_login_post_preserves_form_cookie_and_rewrites_next_redirect(caplog) -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW001")
+    captured: dict[str, object] = {}
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            captured.update(kwargs)
+            return TunnelResponse(
+                status_code=302,
+                headers={
+                    "Location": "/devices",
+                    "Set-Cookie": "session=gateway-session; Path=/; HttpOnly; SameSite=Lax",
+                },
+                body=b"",
+            )
+
+    caplog.set_level(logging.INFO, logger="iot-cloud-api.tunnel")
+    body = b"username=local-admin&password=secret-password"
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        created = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+        session_url = created.json()["url"]
+        session_id = session_url.rstrip("/").split("/")[-1]
+        response = client.post(
+            f"{session_url}login?next=%2Fdevices",
+            content=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Cookie": "session=old-gateway-session",
+            },
+            follow_redirects=False,
+        )
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+        tunnel_session_manager._sessions.pop(session_id, None)
+
+    assert response.status_code == 302
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/login"
+    assert captured["query_string"] == "next=%2Fdevices"
+    assert captured["body"] == body
+    assert captured["headers"]["content-type"] == "application/x-www-form-urlencoded"
+    assert captured["headers"]["cookie"] == "session=old-gateway-session"
+    assert response.headers["location"] == f"/gateways/GW001/tunnel/session/{session_id}/devices"
+    assert response.headers["set-cookie"] == (
+        f"session=gateway-session; Path=/gateways/GW001/tunnel/session/{session_id}/; HttpOnly; SameSite=Lax"
+    )
+    log_text = caplog.text
+    assert "method=POST" in log_text
+    assert "path=/login" in log_text
+    assert "query_keys=next" in log_text
+    assert f"body_bytes={len(body)}" in log_text
+    assert "browser_cookie_present=True" in log_text
+    assert "cookie_forwarded=True" in log_text
+    assert "set_cookie_received=True" in log_text
+    assert "set_cookie_forwarded=True" in log_text
+    assert "secret-password" not in log_text
+    assert "old-gateway-session" not in log_text
+    assert "gateway-session" not in log_text
+
+
 def test_tunnel_session_rewrites_html_root_relative_and_gateway_local_urls() -> None:
     from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
 
@@ -953,7 +1017,8 @@ def test_tunnel_console_direct_navigation_renders_friendly_shell() -> None:
     assert "initTunnelConsole" in response.text
     assert "/tunnel-session" in response.text
     assert 'window.open("about:blank", "_blank")' in response.text
-    assert "tunnelWindow.location = session.url" in response.text
+    assert "tunnelWindow.opener = null" in response.text
+    assert "tunnelWindow.location.assign(session.url)" in response.text
     assert "tunnelWindow.close()" in response.text
     assert "Popup blocked? Open tunnel manually" in response.text
     assert 'id="tunnel-frame"' not in response.text

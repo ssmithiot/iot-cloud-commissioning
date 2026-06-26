@@ -11,7 +11,7 @@ from iot_cx_agent.config import AgentConfig
 
 logger = logging.getLogger("iot-cx-agent.tunnel")
 ALLOWED_LOCAL_UI_URL = "http://127.0.0.1:5000"
-STRIPPED_LOCAL_HEADERS = {"host", "content-length", "connection", "authorization", "cookie"}
+STRIPPED_LOCAL_HEADERS = {"host", "content-length", "connection", "authorization"}
 
 
 def tunnel_url(config: AgentConfig) -> str:

@@ -1086,7 +1086,10 @@ APP_SCRIPT = r"""
         try {
           const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST" });
           if (tunnelWindow) {
-            tunnelWindow.location = session.url;
+            try {
+              tunnelWindow.opener = null;
+            } catch (_) {}
+            tunnelWindow.location.assign(session.url);
             setText("status", "Tunnel console opened in a new tab.");
           } else {
             tunnelFallback.href = session.url;

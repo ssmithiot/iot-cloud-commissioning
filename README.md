@@ -213,7 +213,7 @@ tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
 ```
 
-The gateway tunnel client authenticates with the gateway credential from `GATEWAY_API_TOKEN`, not with `IOT_ADMIN_API_TOKEN` or Supabase credentials. The browser tunnel shell authenticates with the logged-in Supabase session for admin/operator users. The protected relay strips browser authorization and cookie headers before forwarding to the local gateway UI.
+The gateway tunnel client authenticates with the gateway credential from `GATEWAY_API_TOKEN`, not with `IOT_ADMIN_API_TOKEN` or Supabase credentials. The browser tunnel shell authenticates with the logged-in Supabase session for admin/operator users. The protected bearer-auth proxy strips browser authorization and cookie headers before forwarding to the local gateway UI. The short-lived tunnel session proxy strips browser authorization but forwards the session-scoped gateway UI cookie so Flask login can complete through the tunnel.
 
 Gateway-local redirects from `http://127.0.0.1:5000`, `http://localhost:5000`, and relative paths are rewritten back through the active tunnel proxy/session path. Tunnel session HTML also rewrites safe `href`, `src`, `action`, and `formaction` values into the session path. Redirects or links to arbitrary external hosts are not rewritten into the tunnel.
 

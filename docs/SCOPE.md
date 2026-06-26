@@ -326,7 +326,7 @@ MVP-014C direction:
 - Operators/admins create a short-lived tunnel session from the shell and open the returned `/gateways/{gateway_id}/tunnel/session/{session_id}/` URL in a new tab.
 - Tunnel proxy access is for AdminBearer or active Supabase admin/operator users; viewer users can see status but cannot open the tunnel console unless explicitly approved later.
 - Tunnel target is allowlisted to the gateway-local UI at `http://127.0.0.1:5000`; arbitrary host/port proxying and LAN scanning are out of scope.
-- Browser authorization and cookie headers are stripped before tunnel relay to the gateway-local UI.
+- Browser authorization headers are stripped before tunnel relay to the gateway-local UI. Raw bearer-auth proxy requests also strip browser cookies; short-lived tunnel session requests forward only the session-scoped gateway UI cookie so Flask login can complete.
 - Gateway-local redirects to `127.0.0.1:5000`, `localhost:5000`, or relative paths are rewritten back through the active cloud tunnel session/proxy path; redirects to arbitrary hosts are rejected.
 - Tunnel session HTML rewrites safe `href`, `src`, `action`, and `formaction` values into the active session path so root-relative gateway UI navigation stays inside the tunnel.
 - The tunnel console opens in a full browser tab, not an embedded iframe, to reduce nested scrolling and better support normal gateway UI navigation.

@@ -407,7 +407,7 @@ Purpose: allow a provisioned gateway to open an outbound tunnel for cloud-proxie
 
 Authentication: requires the gateway API token for the same `gateway_id`.
 
-Gateway behavior: the edge-agent tunnel client connects outbound to this WebSocket, sends `Authorization: Bearer <gateway_api_token>`, reconnects on disconnect, and forwards only to the allowlisted local gateway UI target `http://127.0.0.1:5000`. It must not connect directly to Supabase/Postgres and must not receive admin/operator tokens or service-role keys.
+Gateway behavior: the edge-agent tunnel client connects outbound to this WebSocket, sends `Authorization: Bearer <gateway_api_token>`, reconnects on disconnect, and forwards only to the allowlisted local gateway UI target `http://127.0.0.1:5000`. It must not connect directly to Supabase/Postgres and must not receive admin/operator tokens or service-role keys. Browser/cloud authorization headers are stripped before local UI forwarding; short-lived tunnel session cookies are forwarded so the gateway UI can maintain its own Flask session.
 
 The human-facing tunnel page is `GET /gateways/{gateway_id}/tunnel/`. It renders a browser shell that loads the Supabase session and calls authenticated UI APIs with an `Authorization` header. Direct address-bar navigation to this page must not return raw `Missing admin credentials` JSON.
 
@@ -429,7 +429,7 @@ The URL is scoped to the gateway, expires shortly, and does not expose the gatew
 
 The protected cloud proxy path is `GET|POST|PUT|PATCH|DELETE /gateways/{gateway_id}/tunnel/proxy/{path}`. Browser requests to that path are relayed over the active outbound gateway tunnel only after API authentication. Browser `Authorization` and `Cookie` headers are stripped before the request is sent to the gateway-local UI.
 
-The short-lived session proxy path is `GET|POST|PUT|PATCH|DELETE /gateways/{gateway_id}/tunnel/session/{session_id}/{path}`. It is intended for full-browser new-tab console use and supports normal GET/POST navigation through the active gateway tunnel.
+The short-lived session proxy path is `GET|POST|PUT|PATCH|DELETE /gateways/{gateway_id}/tunnel/session/{session_id}/{path}`. It is intended for full-browser new-tab console use and supports normal GET/POST navigation through the active gateway tunnel. Browser authorization is stripped, but the gateway UI cookie scoped to the tunnel session path is forwarded so POST login and subsequent authenticated gateway UI navigation work.
 
 Redirect handling: proxy responses with `Location` pointing to `http://127.0.0.1:5000/...`, `http://localhost:5000/...`, or a relative path such as `/login` are rewritten to the active cloud tunnel proxy/session path. Redirects to arbitrary hosts are rejected with `502`.
 

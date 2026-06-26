@@ -38,7 +38,8 @@ def test_handle_tunnel_message_proxies_to_local_ui(monkeypatch) -> None:
         assert args[1] == "http://127.0.0.1:5000/status?tab=network"
         forwarded_headers = kwargs["headers"]
         assert "Authorization" not in forwarded_headers
-        assert "Cookie" not in forwarded_headers
+        assert forwarded_headers["Cookie"] == "session=secret"
+        assert forwarded_headers["Content-Type"] == "application/x-www-form-urlencoded"
         return response
 
     monkeypatch.setattr(requests, "request", fake_request)
@@ -51,7 +52,11 @@ def test_handle_tunnel_message_proxies_to_local_ui(monkeypatch) -> None:
             "method": "GET",
             "path": "/status",
             "query_string": "tab=network",
-            "headers": {"Authorization": "Bearer browser-token", "Cookie": "session=secret"},
+            "headers": {
+                "Authorization": "Bearer browser-token",
+                "Cookie": "session=secret",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
             "body_b64": "",
         },
     )

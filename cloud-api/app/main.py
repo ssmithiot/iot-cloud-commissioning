@@ -3,8 +3,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import ipaddress
+import logging
 import re
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qsl, quote, urlsplit
 from uuid import UUID
 from uuid import uuid4
 
@@ -97,6 +98,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lifespan)
+logger = logging.getLogger("iot-cloud-api.tunnel")
 
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -287,6 +289,13 @@ def _rewrite_tunnel_html_body(body: bytes, redirect_prefix: str) -> bytes:
         return f"{match.group('attr')}{match.group('quote')}{rewritten}{match.group('quote')}"
 
     return TUNNEL_HTML_ATTR_PATTERN.sub(replace, html).encode("utf-8")
+
+
+def _safe_tunnel_query_keys(query_string: str) -> str:
+    if not query_string:
+        return ""
+    keys = sorted({key for key, _ in parse_qsl(query_string, keep_blank_values=True)})
+    return ",".join(keys) if keys else "<blank>"
 
 
 def _tunnel_response_headers(
@@ -788,18 +797,36 @@ async def _proxy_gateway_tunnel_request(
     stripped_headers = {"host", "content-length", "connection", "authorization"}
     if not allow_cookie_headers:
         stripped_headers.add("cookie")
+    request_body = await request.body()
+    forward_headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in stripped_headers
+    }
+    upstream_path = f"/{path}"
+    incoming_headers = {key.lower(): value for key, value in request.headers.items()}
+    forwarded_header_names = {key.lower() for key in forward_headers}
+    logger.info(
+        "Tunnel proxy request gateway=%s method=%s path=%s query_keys=%s body_bytes=%s content_type=%s "
+        "browser_cookie_present=%s cookie_forwarded=%s html_rewrite_enabled=%s",
+        gateway_id,
+        request.method,
+        upstream_path,
+        _safe_tunnel_query_keys(request.url.query),
+        len(request_body),
+        incoming_headers.get("content-type", ""),
+        "cookie" in incoming_headers,
+        "cookie" in forwarded_header_names,
+        rewrite_html_body,
+    )
     try:
         tunnel = tunnel_manager.get(gateway_id)
         tunnel_response = await tunnel.request(
             method=request.method,
-            path=f"/{path}",
+            path=upstream_path,
             query_string=request.url.query,
-            headers={
-                key: value
-                for key, value in request.headers.items()
-                if key.lower() not in stripped_headers
-            },
-            body=await request.body(),
+            headers=forward_headers,
+            body=request_body,
             timeout_sec=settings.tunnel_request_timeout_sec,
         )
     except TunnelUnavailable as exc:
@@ -819,6 +846,22 @@ async def _proxy_gateway_tunnel_request(
     response_body = tunnel_response.body
     if rewrite_html_body and "text/html" in content_type.lower():
         response_body = _rewrite_tunnel_html_body(tunnel_response.body, redirect_prefix)
+
+    response_header_names = {key.lower() for key in response_headers}
+    logger.info(
+        "Tunnel proxy response gateway=%s method=%s path=%s status=%s content_type=%s body_bytes=%s "
+        "location_present=%s set_cookie_received=%s set_cookie_forwarded=%s html_rewritten=%s",
+        gateway_id,
+        request.method,
+        upstream_path,
+        tunnel_response.status_code,
+        content_type,
+        len(response_body),
+        any(key.lower() == "location" for key in tunnel_response.headers),
+        any(key.lower() == "set-cookie" for key in tunnel_response.headers),
+        "set-cookie" in response_header_names,
+        response_body != tunnel_response.body,
+    )
 
     return Response(
         content=response_body,
