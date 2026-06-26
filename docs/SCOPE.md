@@ -319,9 +319,10 @@ MVP-014C direction:
 - Direct Connect / Site Info is the current working access slice and has live-smoke passed.
 - Cloud UI offers a Configure gateway action and Direct Connect button when site metadata is configured.
 - Cloud Tunnel is separate from Direct Connect and remains future scope unless a real gateway tunnel client/session is safely completed.
-- When no gateway tunnel session is connected, the tunnel route returns a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`.
+- When no gateway tunnel session is connected, the protected proxy route returns a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`.
 - Tunnel connectivity must not be faked.
 - Current tunnel code is partial: cloud session/proxy routes and an edge-agent tunnel client module exist, but live access depends on a provisioned gateway process actively maintaining the outbound WebSocket session.
+- Direct browser navigation to `/gateways/{gateway_id}/tunnel/` renders a friendly shell because logged-in browser sessions do not attach Supabase bearer tokens to address-bar proxy requests.
 - Tunnel proxy access is for AdminBearer or active Supabase admin/operator users; viewer users can see status but cannot open the tunnel console unless explicitly approved later.
 - Direct Connect is an optional browser link, not a cloud proxy, to `http://<direct_connect_host>:<direct_connect_port>` when site metadata is configured.
 - Direct Connect defaults are external port `5002` and informational gateway UI port `5000`.

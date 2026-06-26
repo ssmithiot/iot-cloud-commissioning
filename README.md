@@ -184,20 +184,28 @@ Gateway configuration uses an outbound tunnel, not Cradlepoint port forwarding. 
 /api/edge/tunnels/{gateway_id}
 ```
 
-The operator dashboard Configure link routes browser traffic through:
+The operator dashboard Configure link opens a browser shell at:
 
 ```text
 /gateways/{gateway_id}/tunnel/
 ```
 
-The edge agent then proxies that traffic to its local gateway UI, configured with:
+The shell uses the logged-in Supabase browser session to call authenticated tunnel status APIs. Address-bar navigation does not attach bearer tokens to raw proxy requests, so normal users should see friendly tunnel status UI instead of raw auth JSON.
+
+The protected proxy relay path is:
+
+```text
+/gateways/{gateway_id}/tunnel/proxy/{path}
+```
+
+When a real outbound session exists, the edge agent proxies that traffic to its local gateway UI, configured with:
 
 ```yaml
 tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
 ```
 
-Current state: Cloud Tunnel is future scope for the next remote-console slice unless an actual gateway tunnel client/session is present. When no gateway tunnel session is connected, the tunnel route must keep returning a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`. Do not fake tunnel connectivity.
+Current state: Cloud Tunnel is future scope for the next remote-console slice unless an actual gateway tunnel client/session is present. When no gateway tunnel session is connected, the protected proxy route must keep returning a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`. Do not fake tunnel connectivity.
 
 ## Direct Connect
 

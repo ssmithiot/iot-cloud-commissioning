@@ -82,6 +82,7 @@ from app.ui import (
     gateway_workspace_html,
     login_html,
     signup_html,
+    tunnel_console_html,
     unauthorized_html,
     waiting_approval_html,
 )
@@ -367,6 +368,15 @@ def configure_gateway_page(
     return RedirectResponse(f"/gateways/{quote(gateway_id, safe='')}/tunnel/")
 
 
+@app.get("/gateways/{gateway_id}/tunnel/", response_class=HTMLResponse, include_in_schema=False)
+def tunnel_console_page(
+    gateway_id: str,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    _get_gateway_or_404(db, gateway_id)
+    return HTMLResponse(tunnel_console_html(gateway_id))
+
+
 @app.get("/admin/users", response_class=HTMLResponse, include_in_schema=False)
 def admin_users_page() -> HTMLResponse:
     return HTMLResponse(admin_users_html())
@@ -604,7 +614,7 @@ async def edge_tunnel(
 
 
 @app.api_route(
-    "/gateways/{gateway_id}/tunnel/{path:path}",
+    "/gateways/{gateway_id}/tunnel/proxy/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     include_in_schema=False,
 )

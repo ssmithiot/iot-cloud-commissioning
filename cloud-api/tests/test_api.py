@@ -619,10 +619,25 @@ def test_tunnel_status_remains_friendly_when_disconnected() -> None:
     assert response.json() == {"connected": False, "status": "not_connected"}
 
 
-def test_tunnel_proxy_requires_operator_auth() -> None:
+def test_tunnel_console_direct_navigation_renders_friendly_shell() -> None:
     create_gateway_token("GW001")
 
     response = client.get("/gateways/GW001/tunnel/")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "Remote Console" in response.text
+    assert "Gateway tunnel is not connected" in response.text
+    assert "Direct Connect" in response.text
+    assert "Heartbeat and job polling" in response.text
+    assert "Missing admin credentials" not in response.text
+    assert "initTunnelConsole" in response.text
+
+
+def test_tunnel_proxy_requires_operator_auth() -> None:
+    create_gateway_token("GW001")
+
+    response = client.get("/gateways/GW001/tunnel/proxy/")
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Missing admin credentials"
@@ -632,7 +647,7 @@ def test_tunnel_proxy_blocks_viewer_role() -> None:
     create_gateway_token("GW001")
     viewer_id = create_operator_user("viewer@example.com", role="viewer", status="active")
 
-    response = client.get("/gateways/GW001/tunnel/", headers=user_headers("viewer@example.com", viewer_id))
+    response = client.get("/gateways/GW001/tunnel/proxy/", headers=user_headers("viewer@example.com", viewer_id))
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Operator role required"
@@ -641,7 +656,7 @@ def test_tunnel_proxy_blocks_viewer_role() -> None:
 def test_tunnel_proxy_returns_friendly_disconnected_for_adminbearer() -> None:
     create_gateway_token("GW001")
 
-    response = client.get("/gateways/GW001/tunnel/", headers=admin_headers())
+    response = client.get("/gateways/GW001/tunnel/proxy/", headers=admin_headers())
 
     assert response.status_code == 503
     assert response.json() == {"detail": "Gateway tunnel is not connected"}
@@ -651,7 +666,7 @@ def test_tunnel_proxy_returns_friendly_disconnected_for_operator_user() -> None:
     create_gateway_token("GW001")
     operator_id = create_operator_user("operator@example.com", role="operator", status="active")
 
-    response = client.get("/gateways/GW001/tunnel/", headers=user_headers("operator@example.com", operator_id))
+    response = client.get("/gateways/GW001/tunnel/proxy/", headers=user_headers("operator@example.com", operator_id))
 
     assert response.status_code == 503
     assert response.json() == {"detail": "Gateway tunnel is not connected"}

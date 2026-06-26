@@ -407,7 +407,9 @@ Purpose: allow a provisioned gateway to open an outbound tunnel for cloud-proxie
 
 Authentication: requires the gateway API token for the same `gateway_id`.
 
-The cloud proxy path is `GET|POST|PUT|PATCH|DELETE /gateways/{gateway_id}/tunnel/{path}`. Browser requests to that path are relayed over the active outbound gateway tunnel.
+The human-facing tunnel page is `GET /gateways/{gateway_id}/tunnel/`. It renders a browser shell that loads the Supabase session and calls authenticated UI APIs with an `Authorization` header. Direct address-bar navigation to this page must not return raw `Missing admin credentials` JSON.
+
+The protected cloud proxy path is `GET|POST|PUT|PATCH|DELETE /gateways/{gateway_id}/tunnel/proxy/{path}`. Browser requests to that path are relayed over the active outbound gateway tunnel only after API authentication.
 
 Authentication: tunnel proxy access requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin` or `operator` role. Viewer users may see tunnel status but cannot open the tunnel console unless explicitly approved in a later scope.
 

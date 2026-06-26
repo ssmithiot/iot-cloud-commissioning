@@ -1041,6 +1041,44 @@ APP_SCRIPT = r"""
     }
   }
 
+  async function initTunnelConsole() {
+    const me = await initProtectedPage("operator");
+    if (!me) {
+      return;
+    }
+    const gatewayId = document.body.dataset.gatewayId;
+    byId("workspace-link").href = `/gateways/${encodeURIComponent(gatewayId)}`;
+    try {
+      const [gateway, directConnect, tunnelStatus] = await Promise.all([
+        api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}`),
+        api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/direct-connect`),
+        api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`)
+      ]);
+      byId("gateway-title").textContent = `${gateway.gateway_id} Remote Console`;
+      byId("heartbeat-summary").textContent = `${gateway.effective_status} | heartbeat ${gateway.heartbeat_age_seconds ?? "unknown"}s ago`;
+      byId("tunnel-summary").textContent = tunnelStatus.connected ? "connected" : "not connected";
+      if (!tunnelStatus.connected) {
+        setText(
+          "status",
+          "Gateway tunnel is not connected. Direct Connect may still be available. Heartbeat and job polling are separate from tunnel status.",
+          true
+        );
+      } else {
+        setText(
+          "status",
+          "Gateway tunnel is connected. Opening the live remote console requires the protected tunnel relay flow."
+        );
+      }
+      const directLink = byId("direct-connect-link");
+      if (directConnect.available && directConnect.url && me.role !== "viewer") {
+        directLink.href = directConnect.url;
+        directLink.hidden = false;
+      }
+    } catch (error) {
+      setText("status", error.message, true);
+    }
+  }
+
   function renderUsers(users) {
     const usersEl = byId("users");
     usersEl.textContent = "";
@@ -1112,6 +1150,8 @@ APP_SCRIPT = r"""
     initDashboard();
   } else if (page === "gateway-workspace") {
     initGatewayWorkspace();
+  } else if (page === "tunnel-console") {
+    initTunnelConsole();
   } else if (page === "admin-users") {
     initAdminUsers();
   } else if (page === "waiting" || page === "unauthorized") {
@@ -1712,6 +1752,48 @@ def gateway_workspace_html(gateway_id: str) -> str:
         "Gateway Workspace - IOT Cloud Commissioning",
         body,
         "gateway-workspace",
+        f'data-gateway-id="{escaped_gateway_id}"',
+    )
+
+
+def tunnel_console_html(gateway_id: str) -> str:
+    escaped_gateway_id = escape(gateway_id, quote=True)
+    body = f"""
+  <header>
+    <div>
+      <h1 id="gateway-title">{escaped_gateway_id} Remote Console</h1>
+      <p class="muted">Cloud Tunnel is separate from Direct Connect, heartbeat, and job polling.</p>
+    </div>
+    <div class="toolbar">
+      <span id="identity"></span>
+      <a id="workspace-link" class="button secondary" href="/gateways/{escaped_gateway_id}">Workspace</a>
+      <button id="logout" class="secondary" type="button">Logout</button>
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>Tunnel Status</h2>
+      <div class="grid">
+        <div class="span-4"><label>Gateway</label><pre>{escaped_gateway_id}</pre></div>
+        <div class="span-4"><label>Heartbeat</label><pre id="heartbeat-summary">Loading...</pre></div>
+        <div class="span-4"><label>Cloud Tunnel</label><pre id="tunnel-summary">Loading...</pre></div>
+      </div>
+      <div id="status" class="notice">Loading tunnel status...</div>
+      <div class="toolbar">
+        <a id="direct-connect-link" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>Direct Connect</a>
+      </div>
+    </section>
+    <section>
+      <h2>Remote Console</h2>
+      <div class="notice">
+        The raw tunnel proxy requires an authenticated relay flow. Direct browser navigation does not attach the Supabase bearer token.
+      </div>
+    </section>
+  </main>"""
+    return _layout(
+        "Gateway Tunnel - IOT Cloud Commissioning",
+        body,
+        "tunnel-console",
         f'data-gateway-id="{escaped_gateway_id}"',
     )
 
