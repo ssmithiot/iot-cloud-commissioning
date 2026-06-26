@@ -411,9 +411,27 @@ Gateway behavior: the edge-agent tunnel client connects outbound to this WebSock
 
 The human-facing tunnel page is `GET /gateways/{gateway_id}/tunnel/`. It renders a browser shell that loads the Supabase session and calls authenticated UI APIs with an `Authorization` header. Direct address-bar navigation to this page must not return raw `Missing admin credentials` JSON.
 
+## POST /api/ui/gateways/{gateway_id}/tunnel-session
+
+Purpose: create a short-lived browser-openable tunnel console session for an active gateway tunnel.
+
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin` or `operator` role. Viewer users cannot create sessions.
+
+Response:
+
+```json
+{
+  "url": "/gateways/GW001/tunnel/session/<session_id>/"
+}
+```
+
+The URL is scoped to the gateway, expires shortly, and does not expose the gateway token, admin token, Supabase service-role key, or database credentials.
+
 The protected cloud proxy path is `GET|POST|PUT|PATCH|DELETE /gateways/{gateway_id}/tunnel/proxy/{path}`. Browser requests to that path are relayed over the active outbound gateway tunnel only after API authentication. Browser `Authorization` and `Cookie` headers are stripped before the request is sent to the gateway-local UI.
 
-Redirect handling: proxy responses with `Location` pointing to `http://127.0.0.1:5000/...`, `http://localhost:5000/...`, or a relative path such as `/login` are rewritten to `/gateways/{gateway_id}/tunnel/proxy/...`. Redirects to arbitrary hosts are rejected with `502`.
+The short-lived session proxy path is `GET|POST|PUT|PATCH|DELETE /gateways/{gateway_id}/tunnel/session/{session_id}/{path}`. It is intended for full-browser new-tab console use and supports normal GET/POST navigation through the active gateway tunnel.
+
+Redirect handling: proxy responses with `Location` pointing to `http://127.0.0.1:5000/...`, `http://localhost:5000/...`, or a relative path such as `/login` are rewritten to the active cloud tunnel proxy/session path. Redirects to arbitrary hosts are rejected with `502`.
 
 Authentication: tunnel proxy access requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin` or `operator` role. Viewer users may see tunnel status but cannot open the tunnel console unless explicitly approved in a later scope.
 

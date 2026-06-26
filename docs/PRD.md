@@ -480,11 +480,12 @@ The live admin smoke test passes only when:
 - Tunnel connectivity must not be faked.
 - Current implementation state: cloud tunnel manager/proxy routes and an edge-agent tunnel client module exist and are wired into the provisioned edge-agent loop. Live tunnel access requires the deployed gateway service to run this tunnel-enabled code and maintain the outbound WebSocket session.
 - Direct browser navigation to `/gateways/{gateway_id}/tunnel/` renders a friendly shell because browser address-bar navigation does not attach the logged-in Supabase bearer token.
+- Operators/admins create a short-lived tunnel session from the shell and open the returned `/gateways/{gateway_id}/tunnel/session/{session_id}/` URL in a new tab.
 - Tunnel proxy access is limited to AdminBearer or active Supabase admin/operator users; viewer users may see status but cannot open the tunnel console.
 - Gateway tunnel traffic is allowlisted to the local gateway UI target `http://127.0.0.1:5000`; arbitrary host/port proxying is out of scope.
 - Browser authorization and cookie headers are stripped before a tunnel request is forwarded to the gateway-local UI.
-- Gateway-local redirects to `127.0.0.1:5000`, `localhost:5000`, or relative paths are rewritten back through the protected cloud tunnel proxy; redirects to arbitrary hosts are rejected.
-- The current browser shell loads proxied HTML into an iframe. Complex gateway UI assets, cookies, and form workflows may still need a short-lived signed tunnel session URL in a later polish slice.
+- Gateway-local redirects to `127.0.0.1:5000`, `localhost:5000`, or relative paths are rewritten back through the active cloud tunnel session/proxy path; redirects to arbitrary hosts are rejected.
+- The tunnel console opens in a full browser tab, not an embedded iframe, to reduce nested scrolling and better support normal gateway UI navigation.
 - Remote console sessions must be audited and expire automatically.
 - Cloud Tunnel work must not expose admin tokens, gateway tokens, Supabase secrets, service-role keys, server pepper values, or database credentials.
 

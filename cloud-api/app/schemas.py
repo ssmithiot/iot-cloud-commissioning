@@ -189,6 +189,10 @@ class TunnelStatusOut(BaseModel):
     status: str
 
 
+class TunnelSessionOut(BaseModel):
+    url: str
+
+
 class GatewayOut(BaseModel):
     gateway_id: str
     site_id: str

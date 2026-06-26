@@ -192,6 +192,14 @@ The operator dashboard Configure link opens a browser shell at:
 
 The shell uses the logged-in Supabase browser session to call authenticated tunnel status APIs. Address-bar navigation does not attach bearer tokens to raw proxy requests, so normal users should see friendly tunnel status UI instead of raw auth JSON.
 
+Operators/admins open the live console by creating a short-lived tunnel session:
+
+```text
+POST /api/ui/gateways/{gateway_id}/tunnel-session
+```
+
+The browser opens the returned `/gateways/{gateway_id}/tunnel/session/{session_id}/` URL in a new tab.
+
 The protected proxy relay path is:
 
 ```text
@@ -207,7 +215,7 @@ local_ui_url: http://127.0.0.1:5000
 
 The gateway tunnel client authenticates with the gateway credential from `GATEWAY_API_TOKEN`, not with `IOT_ADMIN_API_TOKEN` or Supabase credentials. The browser tunnel shell authenticates with the logged-in Supabase session for admin/operator users. The protected relay strips browser authorization and cookie headers before forwarding to the local gateway UI.
 
-Gateway-local redirects from `http://127.0.0.1:5000`, `http://localhost:5000`, and relative paths are rewritten back through `/gateways/{gateway_id}/tunnel/proxy/...`. Redirects to arbitrary hosts are rejected.
+Gateway-local redirects from `http://127.0.0.1:5000`, `http://localhost:5000`, and relative paths are rewritten back through the active tunnel proxy/session path. Redirects to arbitrary hosts are rejected.
 
 Current state: Cloud Tunnel code supports gateway-initiated outbound WebSocket sessions and protected browser relay. Live tunnel status remains disconnected until the provisioned gateway service is running tunnel-enabled code and can reach the cloud WebSocket. When no gateway tunnel session is connected, the protected proxy route must keep returning a friendly disconnected response such as `{"detail":"Gateway tunnel is not connected"}`. Do not fake tunnel connectivity.
 

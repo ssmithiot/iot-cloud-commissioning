@@ -2,6 +2,8 @@ import asyncio
 from base64 import b64decode, b64encode
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import secrets
 from uuid import uuid4
 
 from fastapi import WebSocket
@@ -20,6 +22,14 @@ class TunnelUnavailable(Exception):
 
 class TunnelRequestFailed(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class TunnelConsoleSession:
+    session_id: str
+    gateway_id: str
+    subject: str
+    expires_at: datetime
 
 
 class GatewayTunnel:
@@ -120,4 +130,38 @@ class TunnelManager:
         return gateway_id in self._tunnels
 
 
+class TunnelSessionManager:
+    def __init__(self, ttl_seconds: int = 300) -> None:
+        self.ttl_seconds = ttl_seconds
+        self._sessions: dict[str, TunnelConsoleSession] = {}
+
+    def create(self, *, gateway_id: str, subject: str) -> TunnelConsoleSession:
+        self._expire_old()
+        session = TunnelConsoleSession(
+            session_id=secrets.token_urlsafe(32),
+            gateway_id=gateway_id,
+            subject=subject,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=self.ttl_seconds),
+        )
+        self._sessions[session.session_id] = session
+        return session
+
+    def get(self, *, gateway_id: str, session_id: str) -> TunnelConsoleSession:
+        self._expire_old()
+        session = self._sessions.get(session_id)
+        if session is None or session.gateway_id != gateway_id:
+            raise TunnelUnavailable("Tunnel console session is not valid")
+        if session.expires_at <= datetime.now(timezone.utc):
+            self._sessions.pop(session_id, None)
+            raise TunnelUnavailable("Tunnel console session expired")
+        return session
+
+    def _expire_old(self) -> None:
+        now = datetime.now(timezone.utc)
+        expired = [session_id for session_id, session in self._sessions.items() if session.expires_at <= now]
+        for session_id in expired:
+            self._sessions.pop(session_id, None)
+
+
 tunnel_manager = TunnelManager()
+tunnel_session_manager = TunnelSessionManager()

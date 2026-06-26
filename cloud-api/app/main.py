@@ -72,9 +72,10 @@ from app.schemas import (
     SavedPointsBulkRemoveOut,
     SiteOut,
     SiteUpdate,
+    TunnelSessionOut,
     TunnelStatusOut,
 )
-from app.tunnel import TunnelRequestFailed, TunnelUnavailable, tunnel_manager
+from app.tunnel import TunnelRequestFailed, TunnelResponse, TunnelUnavailable, tunnel_manager, tunnel_session_manager
 from app.ui import (
     admin_users_html,
     app_html,
@@ -225,7 +226,11 @@ def _tunnel_proxy_prefix(gateway_id: str) -> str:
     return f"/gateways/{quote(gateway_id, safe='')}/tunnel/proxy"
 
 
-def _rewrite_tunnel_redirect_location(gateway_id: str, location: str) -> str:
+def _tunnel_session_prefix(gateway_id: str, session_id: str) -> str:
+    return f"/gateways/{quote(gateway_id, safe='')}/tunnel/session/{quote(session_id, safe='')}"
+
+
+def _rewrite_tunnel_redirect_location(redirect_prefix: str, location: str) -> str:
     location = location.strip()
     if not location or "\r" in location or "\n" in location:
         raise HTTPException(status_code=502, detail="Gateway tunnel redirect target is not allowlisted")
@@ -239,10 +244,53 @@ def _rewrite_tunnel_redirect_location(gateway_id: str, location: str) -> str:
     path = parsed.path or "/"
     if not path.startswith("/"):
         path = f"/{path}"
-    rewritten = f"{_tunnel_proxy_prefix(gateway_id)}{path}"
+    rewritten = f"{redirect_prefix}{path}"
     if parsed.query:
         rewritten = f"{rewritten}?{parsed.query}"
     return rewritten
+
+
+def _rewrite_tunnel_set_cookie(set_cookie: str, redirect_prefix: str) -> str:
+    parts = [part.strip() for part in set_cookie.split(";")]
+    rewritten = [parts[0]]
+    has_path = False
+    for attribute in parts[1:]:
+        lower = attribute.lower()
+        if lower.startswith("domain="):
+            continue
+        if lower.startswith("path="):
+            rewritten.append(f"Path={redirect_prefix}/")
+            has_path = True
+        else:
+            rewritten.append(attribute)
+    if not has_path:
+        rewritten.append(f"Path={redirect_prefix}/")
+    return "; ".join(rewritten)
+
+
+def _tunnel_response_headers(
+    tunnel_response: TunnelResponse,
+    *,
+    redirect_prefix: str,
+    allow_set_cookie: bool,
+) -> dict[str, str]:
+    excluded_headers = {"content-encoding", "content-length", "connection", "transfer-encoding"}
+    response_headers = {
+        key: value for key, value in tunnel_response.headers.items() if key.lower() not in excluded_headers
+    }
+    location_header = next((key for key in response_headers if key.lower() == "location"), None)
+    if 300 <= tunnel_response.status_code < 400 and location_header is not None:
+        response_headers[location_header] = _rewrite_tunnel_redirect_location(redirect_prefix, response_headers[location_header])
+
+    set_cookie_header = next((key for key in response_headers if key.lower() == "set-cookie"), None)
+    if set_cookie_header is not None:
+        if allow_set_cookie:
+            response_headers[set_cookie_header] = _rewrite_tunnel_set_cookie(
+                response_headers[set_cookie_header], redirect_prefix
+            )
+        else:
+            response_headers.pop(set_cookie_header, None)
+    return response_headers
 
 
 def _direct_connect_for_site(site: Site | None) -> DirectConnectOut:
@@ -609,6 +657,20 @@ def ui_gateway_tunnel_status(
     return TunnelStatusOut(connected=connected, status="connected" if connected else "not_connected")
 
 
+@app.post("/api/ui/gateways/{gateway_id}/tunnel-session", response_model=TunnelSessionOut)
+def ui_create_gateway_tunnel_session(
+    gateway_id: str,
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> TunnelSessionOut:
+    _get_gateway_or_404(db, gateway_id)
+    if not tunnel_manager.is_connected(gateway_id):
+        raise HTTPException(status_code=503, detail="Gateway tunnel is not connected")
+    subject = auth.email or auth.auth_type
+    session = tunnel_session_manager.create(gateway_id=gateway_id, subject=subject)
+    return TunnelSessionOut(url=f"{_tunnel_session_prefix(gateway_id, session.session_id)}/")
+
+
 @app.websocket("/api/edge/tunnels/{gateway_id}")
 async def edge_tunnel(
     gateway_id: str,
@@ -650,6 +712,57 @@ async def proxy_gateway_tunnel(
     db: Session = Depends(get_db),
 ) -> Response:
     _get_gateway_or_404(db, gateway_id)
+    return await _proxy_gateway_tunnel_request(
+        gateway_id=gateway_id,
+        path=path,
+        request=request,
+        redirect_prefix=_tunnel_proxy_prefix(gateway_id),
+        allow_cookie_headers=False,
+    )
+
+
+@app.api_route(
+    "/gateways/{gateway_id}/tunnel/session/{session_id}/",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    include_in_schema=False,
+)
+@app.api_route(
+    "/gateways/{gateway_id}/tunnel/session/{session_id}/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    include_in_schema=False,
+)
+async def proxy_gateway_tunnel_session(
+    gateway_id: str,
+    session_id: str,
+    request: Request,
+    path: str = "",
+    db: Session = Depends(get_db),
+) -> Response:
+    _get_gateway_or_404(db, gateway_id)
+    try:
+        tunnel_session_manager.get(gateway_id=gateway_id, session_id=session_id)
+    except TunnelUnavailable as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return await _proxy_gateway_tunnel_request(
+        gateway_id=gateway_id,
+        path=path,
+        request=request,
+        redirect_prefix=_tunnel_session_prefix(gateway_id, session_id),
+        allow_cookie_headers=True,
+    )
+
+
+async def _proxy_gateway_tunnel_request(
+    *,
+    gateway_id: str,
+    path: str,
+    request: Request,
+    redirect_prefix: str,
+    allow_cookie_headers: bool,
+) -> Response:
+    stripped_headers = {"host", "content-length", "connection", "authorization"}
+    if not allow_cookie_headers:
+        stripped_headers.add("cookie")
     try:
         tunnel = tunnel_manager.get(gateway_id)
         tunnel_response = await tunnel.request(
@@ -659,7 +772,7 @@ async def proxy_gateway_tunnel(
             headers={
                 key: value
                 for key, value in request.headers.items()
-                if key.lower() not in {"host", "content-length", "connection", "authorization", "cookie"}
+                if key.lower() not in stripped_headers
             },
             body=await request.body(),
             timeout_sec=settings.tunnel_request_timeout_sec,
@@ -671,18 +784,14 @@ async def proxy_gateway_tunnel(
     except TunnelRequestFailed as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    excluded_headers = {"content-encoding", "content-length", "connection", "transfer-encoding"}
-    response_headers = {
-        key: value for key, value in tunnel_response.headers.items() if key.lower() not in excluded_headers
-    }
-    location_header = next((key for key in response_headers if key.lower() == "location"), None)
-    if 300 <= tunnel_response.status_code < 400 and location_header is not None:
-        response_headers[location_header] = _rewrite_tunnel_redirect_location(gateway_id, response_headers[location_header])
-
     return Response(
         content=tunnel_response.body,
         status_code=tunnel_response.status_code,
-        headers=response_headers,
+        headers=_tunnel_response_headers(
+            tunnel_response,
+            redirect_prefix=redirect_prefix,
+            allow_set_cookie=allow_cookie_headers,
+        ),
     )
 
 

@@ -716,6 +716,161 @@ def test_tunnel_proxy_rejects_external_redirect_location() -> None:
     assert response.json() == {"detail": "Gateway tunnel redirect target is not allowlisted"}
 
 
+def test_operator_can_create_tunnel_session_when_connected() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW001")
+    operator_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            return TunnelResponse(status_code=200, headers={"content-type": "text/html"}, body=b"gateway")
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        response = client.post(
+            "/api/ui/gateways/GW001/tunnel-session",
+            headers=user_headers("operator@example.com", operator_id),
+        )
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["url"].startswith("/gateways/GW001/tunnel/session/")
+    session_id = body["url"].rstrip("/").split("/")[-1]
+    tunnel_session_manager._sessions.pop(session_id, None)
+
+
+def test_tunnel_session_creation_requires_connected_tunnel() -> None:
+    create_gateway_token("GW001")
+
+    response = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Gateway tunnel is not connected"}
+
+
+def test_viewer_cannot_create_tunnel_session() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager
+
+    create_gateway_token("GW001")
+    viewer_id = create_operator_user("viewer@example.com", role="viewer", status="active")
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            return TunnelResponse(status_code=200, headers={}, body=b"")
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        response = client.post("/api/ui/gateways/GW001/tunnel-session", headers=user_headers("viewer@example.com", viewer_id))
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Operator role required"
+
+
+def test_tunnel_session_url_expires() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW001")
+    original_ttl = tunnel_session_manager.ttl_seconds
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            return TunnelResponse(status_code=200, headers={}, body=b"")
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    tunnel_session_manager.ttl_seconds = -1
+    try:
+        created = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+        response = client.get(created.json()["url"], follow_redirects=False)
+    finally:
+        tunnel_session_manager.ttl_seconds = original_ttl
+        tunnel_manager._tunnels.pop("GW001", None)
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Tunnel console session is not valid"}
+
+
+def test_tunnel_session_url_is_gateway_scoped() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW001")
+    create_gateway_token("GW002", token_prefix="gw00202")
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            return TunnelResponse(status_code=200, headers={}, body=b"")
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    tunnel_manager._tunnels["GW002"] = FakeTunnel()
+    try:
+        created = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+        session_id = created.json()["url"].rstrip("/").split("/")[-1]
+        response = client.get(f"/gateways/GW002/tunnel/session/{session_id}/", follow_redirects=False)
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+        tunnel_manager._tunnels.pop("GW002", None)
+        tunnel_session_manager._sessions.pop(session_id, None)
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Tunnel console session is not valid"}
+
+
+def test_tunnel_session_rewrites_redirects_into_session_path() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW001")
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            return TunnelResponse(status_code=302, headers={"Location": "http://127.0.0.1:5000/login?next=%2F"}, body=b"")
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        created = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+        session_url = created.json()["url"]
+        session_id = session_url.rstrip("/").split("/")[-1]
+        response = client.get(session_url, follow_redirects=False)
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+        tunnel_session_manager._sessions.pop(session_id, None)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == f"/gateways/GW001/tunnel/session/{session_id}/login?next=%2F"
+
+
+def test_tunnel_session_proxies_post_and_scopes_cookie_path() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW001")
+    captured: dict[str, object] = {}
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            captured.update(kwargs)
+            return TunnelResponse(status_code=200, headers={"Set-Cookie": "sid=abc; Path=/; HttpOnly"}, body=b"ok")
+
+    tunnel_manager._tunnels["GW001"] = FakeTunnel()
+    try:
+        created = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+        session_url = created.json()["url"]
+        session_id = session_url.rstrip("/").split("/")[-1]
+        response = client.post(f"{session_url}login", content=b"u=demo", headers={"Cookie": "sid=abc"})
+    finally:
+        tunnel_manager._tunnels.pop("GW001", None)
+        tunnel_session_manager._sessions.pop(session_id, None)
+
+    assert response.status_code == 200
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/login"
+    assert captured["body"] == b"u=demo"
+    assert captured["headers"]["cookie"] == "sid=abc"
+    assert response.headers["set-cookie"] == f"sid=abc; Path=/gateways/GW001/tunnel/session/{session_id}/; HttpOnly"
+
+
 def test_tunnel_console_direct_navigation_renders_friendly_shell() -> None:
     create_gateway_token("GW001")
 
@@ -729,8 +884,9 @@ def test_tunnel_console_direct_navigation_renders_friendly_shell() -> None:
     assert "Heartbeat and job polling" in response.text
     assert "Missing admin credentials" not in response.text
     assert "initTunnelConsole" in response.text
-    assert "apiText" in response.text
-    assert "/tunnel/proxy/" in response.text
+    assert "/tunnel-session" in response.text
+    assert "window.open(session.url" in response.text
+    assert 'id="tunnel-frame"' not in response.text
 
 
 def test_tunnel_proxy_requires_operator_auth() -> None:

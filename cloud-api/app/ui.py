@@ -124,32 +124,6 @@ APP_SCRIPT = r"""
     return body;
   }
 
-  async function apiText(path, options = {}) {
-    const session = await getSession();
-    if (!session) {
-      window.location.assign(statePaths.login);
-      throw new Error("Login required.");
-    }
-    const headers = {
-      "Authorization": `Bearer ${session.access_token}`,
-      ...(options.headers || {})
-    };
-    const response = await fetch(path, { ...options, headers });
-    const text = await response.text();
-    if (!response.ok) {
-      try {
-        const body = JSON.parse(text);
-        throw new Error(body?.detail || `HTTP ${response.status}`);
-      } catch (error) {
-        if (error instanceof SyntaxError) {
-          throw new Error(text || `HTTP ${response.status}`);
-        }
-        throw error;
-      }
-    }
-    return text;
-  }
-
   async function ensureProfile() {
     try {
       await api("/api/auth/register", { method: "POST" });
@@ -1101,18 +1075,24 @@ APP_SCRIPT = r"""
         directLink.hidden = false;
       }
       const openTunnelButton = byId("open-tunnel-console");
-      const tunnelFrame = byId("tunnel-frame");
+      const tunnelFallback = byId("tunnel-session-link");
       openTunnelButton.disabled = !tunnelStatus.connected;
       openTunnelButton.addEventListener("click", async () => {
         openTunnelButton.disabled = true;
-        setText("status", "Opening authenticated tunnel console...");
+        tunnelFallback.hidden = true;
+        tunnelFallback.removeAttribute("href");
+        setText("status", "Creating short-lived tunnel console session...");
         try {
-          const html = await apiText(`/gateways/${encodeURIComponent(gatewayId)}/tunnel/proxy/`);
-          tunnelFrame.srcdoc = html;
-          tunnelFrame.hidden = false;
-          setText("status", "Tunnel console loaded through the authenticated cloud relay.");
+          const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST" });
+          const opened = window.open(session.url, "_blank", "noopener,noreferrer");
+          if (opened) {
+            setText("status", "Tunnel console opened in a new tab.");
+          } else {
+            tunnelFallback.href = session.url;
+            tunnelFallback.hidden = false;
+            setText("status", "Popup blocked. Use the generated tunnel console link.");
+          }
         } catch (error) {
-          tunnelFrame.hidden = true;
           setText("status", error.message, true);
         } finally {
           openTunnelButton.disabled = !tunnelStatus.connected;
@@ -1830,12 +1810,12 @@ def tunnel_console_html(gateway_id: str) -> str:
     <section>
       <h2>Remote Console</h2>
       <div class="notice">
-        The tunnel console loads through authenticated browser requests from this page. Direct browser navigation does not attach the Supabase bearer token.
+        Open a short-lived authenticated tunnel session in a new tab for the full gateway UI.
       </div>
       <div class="toolbar">
-        <button id="open-tunnel-console" type="button" disabled>Open tunnel console</button>
+        <button id="open-tunnel-console" type="button" disabled>Open Tunnel Console</button>
+        <a id="tunnel-session-link" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>Open generated tunnel link</a>
       </div>
-      <iframe id="tunnel-frame" title="Gateway tunnel console" hidden style="width: 100%; min-height: 640px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff;"></iframe>
     </section>
   </main>"""
     return _layout(
