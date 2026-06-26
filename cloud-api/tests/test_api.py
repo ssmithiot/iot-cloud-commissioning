@@ -407,6 +407,45 @@ def test_heartbeat_creates_gateway_and_history() -> None:
     assert gateways.json()[0]["site_id"] == "demo-site"
 
 
+def test_configure_gateway_redirects_to_cloud_tunnel() -> None:
+    create_gateway_token("GW001")
+
+    response = client.get("/gateways/GW001/configure", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/gateways/GW001/tunnel/"
+
+
+def test_ui_site_metadata_can_be_stored() -> None:
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+
+    response = client.patch(
+        "/api/ui/sites/demo-site",
+        headers=headers,
+        json={
+            "name": "Demo Store",
+            "external_ip": "203.0.113.10",
+            "address": "123 Main St, Springfield, IL",
+            "store_hours_mf": "8:00 AM - 6:00 PM",
+            "store_hours_sat": "9:00 AM - 5:00 PM",
+            "store_hours_sun": "10:00 AM - 4:00 PM",
+        },
+    )
+    sites = client.get("/api/ui/sites", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["site_id"] == "demo-site"
+    assert response.json()["name"] == "Demo Store"
+    assert response.json()["external_ip"] == "203.0.113.10"
+    assert response.json()["address"] == "123 Main St, Springfield, IL"
+    assert response.json()["store_hours_mf"] == "8:00 AM - 6:00 PM"
+    assert response.json()["store_hours_sat"] == "9:00 AM - 5:00 PM"
+    assert response.json()["store_hours_sun"] == "10:00 AM - 4:00 PM"
+    assert sites.status_code == 200
+    assert sites.json()[0]["site_id"] == "demo-site"
+
+
 def test_admin_gateways_reject_missing_auth() -> None:
     response = client.get("/api/edge/gateways")
 

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     supabase_jwks_url: str | None = Field(default=None, validation_alias="SUPABASE_JWKS_URL")
     gateway_stale_after_seconds: int = Field(default=300, validation_alias="GATEWAY_STALE_AFTER_SECONDS")
     gateway_offline_after_seconds: int = Field(default=1800, validation_alias="GATEWAY_OFFLINE_AFTER_SECONDS")
+    tunnel_request_timeout_sec: float = Field(default=30.0, validation_alias="TUNNEL_REQUEST_TIMEOUT_SEC")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),

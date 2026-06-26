@@ -9,6 +9,7 @@ IOT Cloud Commissioning uses an outbound edge architecture. Edge gateways run lo
 - `edge-agent/` runs on Ubuntu gateways as `iot-cx-agent`.
 - Edge runtime state, offline history, heartbeat logs, job history, and future queues live in SQLite.
 - The edge agent calls `cloud_url` endpoints only.
+- Provisioned gateways can keep an outbound WebSocket tunnel open for cloud-proxied access to the local gateway UI.
 - The cloud can queue work through edge jobs.
 - BACnet discovery is executed locally on the edge through the configured `bacwi` command.
 
@@ -49,12 +50,13 @@ Edge:
 
 1. Edge agent sends heartbeat to the cloud API.
 2. Cloud API records latest gateway status and heartbeat history.
-3. Edge agent polls for a queued job.
-4. Cloud API marks the job claimed and returns the payload.
-5. Edge agent executes the job locally.
-6. Edge agent stores local job history in SQLite.
-7. Edge agent posts the result back to the cloud API.
-8. Cloud API stores result JSON in the cloud database.
+3. Provisioned edge agent opens the outbound gateway UI tunnel when enabled.
+4. Edge agent polls for a queued job.
+5. Cloud API marks the job claimed and returns the payload.
+6. Edge agent executes the job locally.
+7. Edge agent stores local job history in SQLite.
+8. Edge agent posts the result back to the cloud API.
+9. Cloud API stores result JSON in the cloud database.
 
 ## Non-Goals For Current MVPs
 

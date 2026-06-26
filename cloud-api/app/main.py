@@ -1,11 +1,13 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from urllib.parse import quote
 from uuid import UUID
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -65,7 +67,10 @@ from app.schemas import (
     SavedPointPatchIn,
     SavedPointsBulkRemoveIn,
     SavedPointsBulkRemoveOut,
+    SiteOut,
+    SiteUpdate,
 )
+from app.tunnel import TunnelRequestFailed, TunnelUnavailable, tunnel_manager
 from app.ui import (
     admin_users_html,
     app_html,
@@ -259,6 +264,15 @@ def gateway_workspace_page(gateway_id: str) -> HTMLResponse:
     return HTMLResponse(gateway_workspace_html(gateway_id))
 
 
+@app.get("/gateways/{gateway_id}/configure", include_in_schema=False)
+def configure_gateway_page(
+    gateway_id: str,
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    _get_gateway_or_404(db, gateway_id)
+    return RedirectResponse(f"/gateways/{quote(gateway_id, safe='')}/tunnel/")
+
+
 @app.get("/admin/users", response_class=HTMLResponse, include_in_schema=False)
 def admin_users_page() -> HTMLResponse:
     return HTMLResponse(admin_users_html())
@@ -367,6 +381,37 @@ def ui_gateway_summary(
     return GatewaySummaryOut(**counts)
 
 
+@app.get("/api/ui/sites", response_model=list[SiteOut])
+def ui_list_sites(
+    _: AdminAuthContext = Depends(require_operator_auth),
+    db: Session = Depends(get_db),
+) -> list[Site]:
+    return list(db.scalars(select(Site).order_by(Site.site_id)).all())
+
+
+@app.patch("/api/ui/sites/{site_id}", response_model=SiteOut)
+def ui_update_site(
+    site_id: str,
+    payload: SiteUpdate,
+    _: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> Site:
+    site = db.scalar(select(Site).where(Site.site_id == site_id))
+    if site is None:
+        site = Site(site_id=site_id, name=payload.name or site_id)
+        db.add(site)
+
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        if field == "name" and value is None:
+            continue
+        setattr(site, field, value)
+
+    db.commit()
+    db.refresh(site)
+    return site
+
+
 @app.get("/api/ui/gateways/{gateway_id}", response_model=GatewayOut)
 def ui_get_gateway(
     gateway_id: str,
@@ -374,6 +419,74 @@ def ui_get_gateway(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return _gateway_out(_get_gateway_or_404(db, gateway_id))
+
+
+@app.websocket("/api/edge/tunnels/{gateway_id}")
+async def edge_tunnel(
+    gateway_id: str,
+    websocket: WebSocket,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> None:
+    try:
+        auth = require_gateway_auth(authorization=authorization, db=db)
+        if auth.gateway_id != gateway_id:
+            await websocket.close(code=1008)
+            return
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    tunnel = tunnel_manager.register(gateway_id, websocket)
+    try:
+        while True:
+            tunnel.resolve_response(await websocket.receive_json())
+    except WebSocketDisconnect:
+        tunnel_manager.unregister(gateway_id, tunnel)
+    except Exception:
+        tunnel_manager.unregister(gateway_id, tunnel)
+        raise
+
+
+@app.api_route(
+    "/gateways/{gateway_id}/tunnel/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    include_in_schema=False,
+)
+async def proxy_gateway_tunnel(gateway_id: str, path: str, request: Request, db: Session = Depends(get_db)) -> Response:
+    _get_gateway_or_404(db, gateway_id)
+    try:
+        tunnel = tunnel_manager.get(gateway_id)
+        tunnel_response = await tunnel.request(
+            method=request.method,
+            path=f"/{path}",
+            query_string=request.url.query,
+            headers={
+                key: value
+                for key, value in request.headers.items()
+                if key.lower() not in {"host", "content-length", "connection"}
+            },
+            body=await request.body(),
+            timeout_sec=settings.tunnel_request_timeout_sec,
+        )
+    except TunnelUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Gateway tunnel request timed out") from exc
+    except TunnelRequestFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    excluded_headers = {"content-encoding", "content-length", "connection", "transfer-encoding"}
+    return Response(
+        content=tunnel_response.body,
+        status_code=tunnel_response.status_code,
+        headers={
+            key: value
+            for key, value in tunnel_response.headers.items()
+            if key.lower() not in excluded_headers
+        },
+    )
 
 
 @app.get("/api/ui/gateways/{gateway_id}/tree", response_model=GatewayTreeOut)

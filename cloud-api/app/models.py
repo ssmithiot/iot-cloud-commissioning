@@ -87,6 +87,11 @@ class Site(Base):
     id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
     site_id: Mapped[str] = mapped_column(String(120), nullable=False, unique=True, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    external_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    store_hours_mf: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    store_hours_sat: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    store_hours_sun: Mapped[str | None] = mapped_column(String(120), nullable=True)
     organization_id: Mapped[UUID | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 

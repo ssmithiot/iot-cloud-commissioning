@@ -130,6 +130,27 @@ class HeartbeatAccepted(BaseModel):
     latest_heartbeat_at: datetime
 
 
+class SiteOut(BaseModel):
+    site_id: str
+    name: str
+    external_ip: str | None
+    address: str | None
+    store_hours_mf: str | None
+    store_hours_sat: str | None
+    store_hours_sun: str | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SiteUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    external_ip: str | None = Field(default=None, max_length=64)
+    address: str | None = Field(default=None, max_length=500)
+    store_hours_mf: str | None = Field(default=None, max_length=120)
+    store_hours_sat: str | None = Field(default=None, max_length=120)
+    store_hours_sun: str | None = Field(default=None, max_length=120)
+
+
 class GatewayOut(BaseModel):
     gateway_id: str
     site_id: str

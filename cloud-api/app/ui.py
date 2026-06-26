@@ -294,7 +294,7 @@ APP_SCRIPT = r"""
     table.textContent = "";
     if (!gateways.length) {
       const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="6">No gateways found.</td>`;
+      row.innerHTML = `<td colspan="7">No gateways found.</td>`;
       table.appendChild(row);
       return;
     }
@@ -307,6 +307,7 @@ APP_SCRIPT = r"""
         <td>${statusLabel(gateway)}</td>
         <td>${gateway.bacnet_port}</td>
         <td>${gateway.agent_version || ""}</td>
+        <td><a class="button secondary" href="/gateways/${encodeURIComponent(gateway.gateway_id)}/configure">Configure</a></td>
       `;
       table.appendChild(row);
     }
@@ -1402,6 +1403,7 @@ def app_html() -> str:
             <th>Status</th>
             <th>BACnet</th>
             <th>Agent</th>
+            <th>Configure</th>
           </tr>
         </thead>
         <tbody id="gateway-list"></tbody>

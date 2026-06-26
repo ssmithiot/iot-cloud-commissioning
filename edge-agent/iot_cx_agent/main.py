@@ -1,5 +1,6 @@
 import argparse
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from iot_cx_agent.db import initialize_database, record_heartbeat_attempt
 from iot_cx_agent.heartbeat import send_heartbeat
 from iot_cx_agent.jobs import process_next_job
 from iot_cx_agent.status import collect_status, utc_timestamp
+from iot_cx_agent.tunnel import run_tunnel_forever
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -68,6 +70,12 @@ def safe_record_heartbeat_attempt(config_path: Path, **kwargs: object) -> None:
 
 
 def run_forever(config: AgentConfig) -> None:
+    if config.is_provisioned and config.tunnel_enabled:
+        threading.Thread(target=run_tunnel_forever, args=(config,), daemon=True).start()
+        logger.info("Outbound gateway tunnel enabled for %s", config.gateway_id)
+    elif config.tunnel_enabled:
+        logger.info("Outbound gateway tunnel skipped until gateway is provisioned")
+
     while True:
         run_once(config)
         time.sleep(config.heartbeat_interval_sec)

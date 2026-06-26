@@ -341,6 +341,30 @@ Failure behavior: missing or invalid admin credentials return HTTP 401. Database
 
 Future compatibility notes: when Supabase Auth and RLS are active, this can be served through a portal API using user-scoped access. Gateway-facing endpoints should remain gateway-authenticated.
 
+## GET /api/ui/sites
+
+Purpose: list customer site metadata for operator UI workflows.
+
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin`, `operator`, or `viewer` role.
+
+Response fields include `site_id`, `name`, `external_ip`, `address`, `store_hours_mf`, `store_hours_sat`, and `store_hours_sun`.
+
+## PATCH /api/ui/sites/{site_id}
+
+Purpose: create or update operator-facing site metadata such as site name, external IP, address, and store hours.
+
+Authentication: requires an active Supabase user with `admin` or `operator` role, or the server-side admin token for automation.
+
+The `external_ip` field is stored as site metadata only. Gateway configuration traffic uses the outbound tunnel instead of Cradlepoint port forwarding.
+
+## WEBSOCKET /api/edge/tunnels/{gateway_id}
+
+Purpose: allow a provisioned gateway to open an outbound tunnel for cloud-proxied access to the local gateway UI.
+
+Authentication: requires the gateway API token for the same `gateway_id`.
+
+The cloud proxy path is `GET|POST|PUT|PATCH|DELETE /gateways/{gateway_id}/tunnel/{path}`. Browser requests to that path are relayed over the active outbound gateway tunnel.
+
 ## POST /api/ui/gateways/{gateway_id}/commissioning-template/import
 
 Purpose: import an edge-exported commissioning template into a cloud gateway commissioning model.
