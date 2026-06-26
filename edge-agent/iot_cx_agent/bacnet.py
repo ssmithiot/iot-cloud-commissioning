@@ -64,6 +64,7 @@ BACNET_PRESENT_VALUE_PROPERTY_ID = 85
 BACNET_OBJECT_LIST_PROPERTY_ID = 76
 BACNET_OBJECT_NAME_PROPERTY_ID = 77
 BACNET_POINT_LOAD_BATCH_SIZE = 40
+BACNET_OBJECT_LIST_INDEX_BLOCK_SIZE = 40
 CLOUD_BACNET_PORT = 47814
 BACNET_RUNTIME_BUSY = "bacnet_runtime_busy"
 BACNET_RUNTIME_BUSY_MESSAGE = "Local commissioning UI is using BACnet port 47814. Cloud BACnet job yielded."
@@ -412,13 +413,7 @@ def build_bacnet_rpm_point_batch_args(
 ) -> list[str]:
     args = [config.bacrpm_path, str(device_instance)]
     for point in points:
-        args.extend(
-            [
-                str(point["object_type"]),
-                str(point["object_instance"]),
-                f"{BACNET_OBJECT_NAME_PROPERTY_ID},{BACNET_PRESENT_VALUE_PROPERTY_ID}",
-            ]
-        )
+        args.extend([str(point["object_type"]), str(point["object_instance"]), str(BACNET_OBJECT_NAME_PROPERTY_ID)])
     return args
 
 
@@ -432,7 +427,18 @@ def build_bacnet_rpm_point_args(
         str(device_instance),
         str(point["object_type"]),
         str(point["object_instance"]),
-        f"{BACNET_OBJECT_NAME_PROPERTY_ID},{BACNET_PRESENT_VALUE_PROPERTY_ID}",
+        str(BACNET_OBJECT_NAME_PROPERTY_ID),
+    ]
+
+
+def build_bacnet_rpm_object_list_args(config: AgentConfig, device_instance: int, start_index: int, end_index: int) -> list[str]:
+    prop_list = ",".join(f"{BACNET_OBJECT_LIST_PROPERTY_ID}[{index}]" for index in range(start_index, end_index + 1))
+    return [
+        config.bacrpm_path,
+        str(device_instance),
+        "device",
+        str(device_instance),
+        prop_list,
     ]
 
 
@@ -584,32 +590,37 @@ def _parse_object_name(raw_output: str) -> str | None:
     return None
 
 
-def _parse_rpm_point_values(raw_output: str, requested_points: list[dict[str, object]]) -> list[dict[str, object]]:
-    parsed_points = [dict(point) for point in requested_points]
-    current_index = 0
+def parse_bacnet_rpm_object_names(raw_output: str) -> dict[tuple[str, int], str]:
+    names: dict[tuple[str, int], str] = {}
+    current: tuple[str, int] | None = None
     for raw_line in raw_output.splitlines():
         line = raw_line.strip()
-        if not line or "error" in line.lower():
+        if not line or line in {"{", "}"} or line.lower().startswith("device #") or "error" in line.lower():
             continue
 
-        object_match = re.search(r"\(?\b([A-Za-z][A-Za-z0-9_-]+|\d+)\s*[,=: ]\s*(\d+)\)?", line)
+        object_match = (
+            re.match(r"^\(?([a-z]+(?:-[a-z]+)*)\s*,\s*(\d+)\)?$", line, flags=re.IGNORECASE)
+            or re.match(r"^([a-z]+(?:-[a-z]+)*)\s+#?(\d+)\s*$", line, flags=re.IGNORECASE)
+        )
         if object_match is not None:
             object_type = _normalize_object_type(object_match.group(1))
-            object_instance = int(object_match.group(2))
-            for index, point in enumerate(parsed_points):
-                if point["object_type"] == object_type and int(point["object_instance"]) == object_instance:
-                    current_index = index
-                    break
-
-        name_match = re.search(r"object[-_ ]name\s*(?:\([^)]*\))?\s*[:=]\s*(.+)$", line, flags=re.IGNORECASE)
-        if name_match is not None:
-            parsed_points[current_index]["object_name"] = _clean_candidate(name_match.group(1))
+            if object_type is not None:
+                current = (object_type, int(object_match.group(2)))
             continue
 
-        value_match = re.search(r"present[-_ ]value\s*(?:\([^)]*\))?\s*[:=]\s*(.+)$", line, flags=re.IGNORECASE)
-        if value_match is not None:
-            raw_value = _clean_candidate(value_match.group(1))
-            parsed_points[current_index]["present_value"] = _coerce_bacnet_value(raw_value)
+        name_match = re.match(r"^(?:object[-_ ]name|77)\s*[:=]\s*(.*)$", line, flags=re.IGNORECASE)
+        if name_match is not None and current is not None:
+            names[current] = _clean_candidate(name_match.group(1))
+            current = None
+            continue
+    return names
+
+
+def _parse_rpm_point_values(raw_output: str, requested_points: list[dict[str, object]]) -> list[dict[str, object]]:
+    parsed_points = [dict(point) for point in requested_points]
+    names = parse_bacnet_rpm_object_names(raw_output)
+    for point in parsed_points:
+        point["object_name"] = names.get((str(point["object_type"]), int(point["object_instance"])), point.get("object_name"))
     return parsed_points
 
 
@@ -689,7 +700,7 @@ def _point_key(point: dict[str, object]) -> tuple[object, int]:
 
 
 def _point_has_enrichment(point: dict[str, object]) -> bool:
-    return point.get("object_name") is not None or point.get("present_value") is not None
+    return point.get("object_name") is not None
 
 
 def _enrich_points_with_rpm(
@@ -738,6 +749,36 @@ def _enrich_points_with_rpm(
     return enriched, "rpm" if used_rpm else "bacrp"
 
 
+def _read_object_list_with_rpm_blocks(
+    config: AgentConfig,
+    env: dict[str, str],
+    normalized: dict[str, object],
+) -> tuple[list[dict[str, object]], list[str], str]:
+    rpm_status = _command_status(config.bacrpm_path)
+    if not rpm_status["executable"]:
+        return [], [], "bacrp"
+
+    device_instance = int(normalized["device_instance"])
+    limit = int(normalized["limit"])
+    points: list[dict[str, object]] = []
+    raw_outputs: list[str] = []
+    seen: set[tuple[str, int]] = set()
+    for start_index in range(1, limit + 1, BACNET_OBJECT_LIST_INDEX_BLOCK_SIZE):
+        end_index = min(limit, start_index + BACNET_OBJECT_LIST_INDEX_BLOCK_SIZE - 1)
+        args = build_bacnet_rpm_object_list_args(config, device_instance, start_index, end_index)
+        completed, error = _run_command(args, config, env, "BACnet object-list RPM block read")
+        if error is not None or completed is None:
+            continue
+        raw_outputs.append(completed.stdout)
+        for point in parse_bacnet_object_list(completed.stdout):
+            key = (str(point["object_type"]), int(point["object_instance"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            points.append(point)
+    return points[:limit], raw_outputs, "rpm-index-blocks" if points else "bacrp"
+
+
 def _enrich_points_with_bacrp_names(
     config: AgentConfig,
     env: dict[str, str],
@@ -773,27 +814,16 @@ def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tupl
         return _deferred_result(normalized, config), BACNET_RUNTIME_BUSY
 
     try:
-        full_args = build_bacnet_load_points_args(config, normalized)
-        full_completed, full_error = _run_bacrp(full_args, config, env, "BACnet object-list read")
-        points: list[dict[str, object]] = []
-        raw_outputs: list[str] = []
-        object_count: int | None = None
-        read_mode = "full"
+        points, raw_outputs, read_mode = _read_object_list_with_rpm_blocks(config, env, normalized)
+        object_count: int | None = len(points) if points else None
 
-        if full_completed is not None:
-            raw_outputs.append(full_completed.stdout)
-            if full_error is None:
-                points = parse_bacnet_object_list(full_completed.stdout)
-                object_count = len(points)
-
-        if full_error is not None or not points:
+        if not points:
             read_mode = "indexed"
             count_args = build_bacnet_load_points_args(config, normalized, array_index=0)
             count_completed, count_error = _run_bacrp(count_args, config, env, "BACnet object-list count read")
             if count_error is not None:
                 raw_output = _combined_output(count_completed) if count_completed is not None else ""
-                error = count_error if full_error is None else f"{full_error}; {count_error}"
-                return _failure_result(normalized, error, raw_output or None), error
+                return _failure_result(normalized, count_error, raw_output or None), count_error
 
             assert count_completed is not None
             raw_outputs = [count_completed.stdout]
@@ -819,6 +849,7 @@ def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tupl
             allowed = set(normalized["object_types"])
             points = [point for point in points if point["object_type"] in allowed]
         points = points[: int(normalized["limit"])]
+        object_count = len(points)
 
         enrichment_mode = "none"
         if normalized["include_object_names"]:

@@ -173,11 +173,10 @@ def test_bacnet_load_points_success_with_mocked_command(tmp_path: Path, monkeypa
     assert result["job_type"] == "bacnet_load_points"
     assert result["bacnet_port"] == 47814
     assert result["object_count"] == 3
-    assert result["read_mode"] == "full"
+    assert result["read_mode"] == "indexed"
     assert result["point_count"] == 3
     assert result["points"][0]["object_name"] == "binary-input 3"
-    assert ["bacrp", "1", "device", "1", "76"] in calls
-    assert ["bacrp", "1", "device", "1", "76", "0"] not in calls
+    assert ["bacrp", "1", "device", "1", "76", "0"] in calls
     assert ["bacrp", "1", "device", "1", "76", "-2"] not in calls
     assert ["bacrp", "1", "binary-input", "3", "77"] in calls
 
@@ -211,7 +210,7 @@ def test_bacnet_load_points_falls_back_to_indexed_reads(tmp_path: Path, monkeypa
     assert error is None
     assert result is not None
     assert result["read_mode"] == "indexed"
-    assert result["object_count"] == 2
+    assert result["object_count"] == 1
     assert result["point_count"] == 1
     assert ["bacrp", "1", "device", "1", "76", "0"] in calls
     assert ["bacrp", "1", "device", "1", "76", "-2"] not in calls
@@ -225,24 +224,28 @@ def test_bacnet_load_points_uses_rpm_batch_when_available(tmp_path: Path, monkey
     def fake_run(*args, **kwargs):
         calls.append(args[0])
         assert kwargs["env"]["BACNET_IP_PORT"] == "47814"
-        if args[0] == ["bacrp", "1", "device", "1", "76"]:
+        if args[0] == [
+            str(bacrpm_path),
+            "1",
+            "device",
+            "1",
+            "76[1],76[2],76[3],76[4],76[5],76[6],76[7],76[8],76[9],76[10]",
+        ]:
             return subprocess.CompletedProcess(
                 args[0],
                 0,
-                stdout="object-list: (analog-input, 1)\nobject-list: (analog-input, 2)\n",
+                stdout="object-list: [1] (analog-input, 1)\nobject-list: [2] (analog-input, 2)\n",
                 stderr="",
             )
-        if args[0] == [str(bacrpm_path), "1", "analog-input", "1", "77,85", "analog-input", "2", "77,85"]:
+        if args[0] == [str(bacrpm_path), "1", "analog-input", "1", "77", "analog-input", "2", "77"]:
             return subprocess.CompletedProcess(
                 args[0],
                 0,
                 stdout=(
-                    "object-identifier: analog-input, 1\n"
+                    "analog-input 1\n"
                     "object-name: SPACE_SENSOR\n"
-                    "present-value: Real: 72.5\n"
-                    "object-identifier: analog-input, 2\n"
+                    "analog-input 2\n"
                     "object-name: REMOTE_SENSOR\n"
-                    "present-value: Real: 70.0\n"
                 ),
                 stderr="",
             )
@@ -258,13 +261,14 @@ def test_bacnet_load_points_uses_rpm_batch_when_available(tmp_path: Path, monkey
     assert status == "completed"
     assert error is None
     assert result is not None
+    assert result["read_mode"] == "rpm-index-blocks"
     assert result["enrichment_mode"] == "rpm"
     assert result["batch_size"] == 40
     assert result["points"][0]["object_name"] == "SPACE_SENSOR"
-    assert result["points"][0]["present_value"] == 72.5
+    assert result["points"][0]["present_value"] is None
     assert result["points"][1]["object_name"] == "REMOTE_SENSOR"
-    assert result["points"][1]["present_value"] == 70.0
-    assert [str(bacrpm_path), "1", "analog-input", "1", "77,85", "analog-input", "2", "77,85"] in calls
+    assert result["points"][1]["present_value"] is None
+    assert [str(bacrpm_path), "1", "analog-input", "1", "77", "analog-input", "2", "77"] in calls
 
 
 def test_bacnet_load_points_deferred_when_lock_is_held(tmp_path: Path, monkeypatch) -> None:
