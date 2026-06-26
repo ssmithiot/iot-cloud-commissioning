@@ -79,6 +79,17 @@ def normalize_bacnet_load_points_request(request: dict[str, object]) -> dict[str
             raise ValueError("limit must be an integer between 1 and 1000")
         normalized["limit"] = limit
 
+    if "name_limit" in request:
+        name_limit = request["name_limit"]
+        if (
+            isinstance(name_limit, bool)
+            or not isinstance(name_limit, int)
+            or name_limit < 0
+            or name_limit > int(normalized["limit"])
+        ):
+            raise ValueError("name_limit must be an integer between 0 and limit")
+        normalized["name_limit"] = name_limit
+
     if "include_object_names" in request:
         include_object_names = request["include_object_names"]
         if not isinstance(include_object_names, bool):

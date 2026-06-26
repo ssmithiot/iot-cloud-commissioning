@@ -555,7 +555,8 @@ def ui_load_device_points(
             "device_instance": device.device_instance,
             "saved_device_id": str(device.id),
             "bacnet_port": 47814,
-            "limit": 250,
+            "limit": 80,
+            "name_limit": 40,
             "include_object_names": True,
         },
     )

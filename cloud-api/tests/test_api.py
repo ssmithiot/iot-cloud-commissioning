@@ -909,6 +909,8 @@ def test_ui_operator_can_queue_point_load_for_saved_device() -> None:
     assert body["status"] == "queued"
     assert body["request_json"]["device_instance"] == 1001
     assert body["request_json"]["bacnet_port"] == 47814
+    assert body["request_json"]["limit"] == 80
+    assert body["request_json"]["name_limit"] == 40
     assert body["request_json"]["include_object_names"] is True
     assert "47808" not in response.text
 

@@ -635,7 +635,7 @@ APP_SCRIPT = r"""
 
   async function pollDiscoveryJob(jobId, label = "Discovery") {
     const startedAt = Date.now();
-    while (Date.now() - startedAt < 120000) {
+    while (Date.now() - startedAt < 300000) {
       const jobs = await api("/api/edge/jobs?limit=50");
       const job = jobs.find((item) => item.job_id === jobId);
       const progress = progressForJob(job);
