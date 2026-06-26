@@ -349,13 +349,57 @@ Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an act
 
 Response fields include `site_id`, `name`, `external_ip`, `address`, `store_hours_mf`, `store_hours_sat`, and `store_hours_sun`.
 
+MVP-014 fields also include `cradlepoint_ip`, `direct_connect_host`, `direct_connect_port`, `gateway_ui_port`, `store_hours_monday_friday`, `store_hours_saturday`, `store_hours_sunday`, and `network_status_notes`.
+
 ## PATCH /api/ui/sites/{site_id}
 
 Purpose: create or update operator-facing site metadata such as site name, external IP, address, and store hours.
 
-Authentication: requires an active Supabase user with `admin` or `operator` role, or the server-side admin token for automation.
+Authentication: requires an active Supabase user with `admin` role, or the server-side admin token for automation. Operators and viewers are read-only by default.
 
-The `external_ip` field is stored as site metadata only. Gateway configuration traffic uses the outbound tunnel instead of Cradlepoint port forwarding.
+Direct Connect host fields are stored as host/IP values only. The API rejects schemes, paths, query strings, credentials, unsafe characters, invalid ports, and `javascript:` URL injection. The cloud constructs Direct Connect URLs as `http://<direct_connect_host>:<direct_connect_port>`.
+
+`external_ip` is retained as older site metadata. New Direct Connect configuration should use `direct_connect_host` or `cradlepoint_ip`.
+
+## GET /api/ui/gateways/{gateway_id}/direct-connect
+
+Purpose: return Direct Connect availability and the generated new-tab URL for a gateway's site.
+
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin`, `operator`, or `viewer` role. UI defaults show the clickable link only to admin/operator; viewer is read-only.
+
+Configured response:
+
+```json
+{
+  "available": true,
+  "url": "http://10.20.30.40:5002",
+  "host": "10.20.30.40",
+  "port": 5002,
+  "label": "Direct Connect",
+  "reason": null
+}
+```
+
+Unavailable response:
+
+```json
+{
+  "available": false,
+  "url": null,
+  "host": null,
+  "port": null,
+  "label": "Direct Connect",
+  "reason": "Direct connect is not configured for this site or gateway."
+}
+```
+
+Direct Connect is a browser link, not a cloud proxy. It does not store gateway UI passwords and does not change heartbeat status, job polling, Cloud Tunnel status, or BACnet job architecture.
+
+## GET /api/ui/gateways/{gateway_id}/tunnel-status
+
+Purpose: report whether the gateway has an active outbound Cloud Tunnel connection.
+
+Authentication: requires `Authorization: Bearer <IOT_ADMIN_API_TOKEN>` or an active Supabase user with `admin`, `operator`, or `viewer` role.
 
 ## WEBSOCKET /api/edge/tunnels/{gateway_id}
 

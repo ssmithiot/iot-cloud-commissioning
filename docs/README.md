@@ -39,13 +39,17 @@ effective gateway status: heartbeat-age derived online/stale/offline
 cloud role: fleet, users, jobs, templates, reports, future graphics/trends
 edge UI role: BACnet commissioning workstation for discovery, point selection, validation
 remote console bridge: future controlled launcher for cloud-authenticated edge UI access
+direct connect: optional new-tab link to configured Cradlepoint/cellular host on port 5002
+site info: name, address, direct-connect host/ports, M-F/Sat/Sun store hours, network status notes
+network status note: rest of the boxes on the two known networks are online as well
 template flow: edge builds approved devices/groups/points, cloud imports the template
 imported commissioning model: cloud stores imported gateway groups, BACnet devices, BACnet points
 edge export: /devices/export/{device_profile_id}.json from the edge UI
 cloud import: POST /api/ui/gateways/{gateway_id}/commissioning-template/import
 remove behavior: soft-disable saved devices/points; preserve history
 viewer role: read-only UI state
-operator/admin roles: can queue safe jobs, import templates, and edit metadata
+operator role: can view site info and Direct Connect when configured
+admin role: can edit site info and Direct Connect metadata
 BACnet writes: out of scope
 fake point data: out of scope
 ```

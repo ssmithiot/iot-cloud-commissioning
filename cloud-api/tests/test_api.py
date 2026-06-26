@@ -329,6 +329,13 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert "Imported Commissioning Model" in response.text
     assert "Last Import" in response.text
     assert "Use the edge commissioning UI for BACnet discovery and point selection" in response.text
+    assert "Site Information" in response.text
+    assert 'id="site-info-form"' in response.text
+    assert 'id="direct-connect-link"' in response.text
+    assert 'id="tunnel-status"' in response.text
+    assert "Direct Connect" in response.text
+    assert "GATEWAY_API_TOKEN" not in response.text
+    assert "IOT_ADMIN_API_TOKEN" not in response.text
     assert 'id="import-template-form"' in response.text
     assert 'id="import-result"' in response.text
     assert 'id="template-file"' in response.text
@@ -416,34 +423,170 @@ def test_configure_gateway_redirects_to_cloud_tunnel() -> None:
     assert response.headers["location"] == "/gateways/GW001/tunnel/"
 
 
-def test_ui_site_metadata_can_be_stored() -> None:
-    user_id = create_operator_user("operator@example.com", role="operator", status="active")
-    headers = user_headers("operator@example.com", user_id)
-
+def test_admin_can_update_site_metadata_and_direct_connect() -> None:
     response = client.patch(
         "/api/ui/sites/demo-site",
-        headers=headers,
+        headers=admin_headers(),
         json={
             "name": "Demo Store",
-            "external_ip": "203.0.113.10",
+            "cradlepoint_ip": "10.20.30.40",
+            "direct_connect_host": "10.20.30.40",
+            "direct_connect_port": 5002,
+            "gateway_ui_port": 5000,
             "address": "123 Main St, Springfield, IL",
-            "store_hours_mf": "8:00 AM - 6:00 PM",
-            "store_hours_sat": "9:00 AM - 5:00 PM",
-            "store_hours_sun": "10:00 AM - 4:00 PM",
+            "store_hours_monday_friday": "8:00 AM - 6:00 PM",
+            "store_hours_saturday": "9:00 AM - 5:00 PM",
+            "store_hours_sunday": "10:00 AM - 4:00 PM",
+            "network_status_notes": "The rest of the boxes on these two networks are online as well.",
         },
     )
-    sites = client.get("/api/ui/sites", headers=headers)
+    sites = client.get("/api/ui/sites", headers=admin_headers())
 
     assert response.status_code == 200
     assert response.json()["site_id"] == "demo-site"
     assert response.json()["name"] == "Demo Store"
-    assert response.json()["external_ip"] == "203.0.113.10"
+    assert response.json()["direct_connect_host"] == "10.20.30.40"
+    assert response.json()["direct_connect_port"] == 5002
+    assert response.json()["gateway_ui_port"] == 5000
     assert response.json()["address"] == "123 Main St, Springfield, IL"
-    assert response.json()["store_hours_mf"] == "8:00 AM - 6:00 PM"
-    assert response.json()["store_hours_sat"] == "9:00 AM - 5:00 PM"
-    assert response.json()["store_hours_sun"] == "10:00 AM - 4:00 PM"
+    assert response.json()["store_hours_monday_friday"] == "8:00 AM - 6:00 PM"
+    assert response.json()["store_hours_saturday"] == "9:00 AM - 5:00 PM"
+    assert response.json()["store_hours_sunday"] == "10:00 AM - 4:00 PM"
+    assert response.json()["network_status_notes"] == "The rest of the boxes on these two networks are online as well."
     assert sites.status_code == 200
     assert sites.json()[0]["site_id"] == "demo-site"
+
+
+def test_operator_and_viewer_cannot_update_site_metadata() -> None:
+    operator_id = create_operator_user("operator@example.com", role="operator", status="active")
+    viewer_id = create_operator_user("viewer@example.com", role="viewer", status="active")
+
+    operator_response = client.patch(
+        "/api/ui/sites/demo-site",
+        headers=user_headers("operator@example.com", operator_id),
+        json={"name": "Operator Edit"},
+    )
+    viewer_response = client.patch(
+        "/api/ui/sites/demo-site",
+        headers=user_headers("viewer@example.com", viewer_id),
+        json={"name": "Viewer Edit"},
+    )
+
+    assert operator_response.status_code == 403
+    assert viewer_response.status_code == 403
+
+
+def test_operator_can_read_site_metadata() -> None:
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    client.patch("/api/ui/sites/demo-site", headers=admin_headers(), json={"name": "Demo Store"})
+
+    response = client.get("/api/ui/sites/demo-site", headers=user_headers("operator@example.com", user_id))
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Demo Store"
+
+
+def test_gateway_list_includes_site_info_and_direct_connect_availability() -> None:
+    create_gateway_token("GW001")
+    client.patch(
+        "/api/ui/sites/demo-site",
+        headers=admin_headers(),
+        json={
+            "name": "Demo Store",
+            "address": "123 Main St",
+            "direct_connect_host": "10.20.30.40",
+            "network_status_notes": "The rest of the boxes on these two networks are online as well.",
+        },
+    )
+
+    response = client.get("/api/ui/gateways", headers=admin_headers())
+    gateway = response.json()[0]
+
+    assert response.status_code == 200
+    assert gateway["site_name"] == "Demo Store"
+    assert gateway["site_address"] == "123 Main St"
+    assert gateway["direct_connect_available"] is True
+    assert gateway["direct_connect_host"] == "10.20.30.40"
+    assert gateway["direct_connect_port"] == 5002
+    assert gateway["network_status_notes"] == "The rest of the boxes on these two networks are online as well."
+
+
+def test_gateway_detail_site_endpoint_includes_site_info() -> None:
+    create_gateway_token("GW001")
+    client.patch(
+        "/api/ui/gateways/GW001/site",
+        headers=admin_headers(),
+        json={"name": "Demo Store", "address": "123 Main St"},
+    )
+
+    response = client.get("/api/ui/gateways/GW001/site", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Demo Store"
+    assert response.json()["address"] == "123 Main St"
+
+
+def test_direct_connect_hidden_when_not_configured() -> None:
+    create_gateway_token("GW001")
+
+    response = client.get("/api/ui/gateways/GW001/direct-connect", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json()["available"] is False
+    assert response.json()["url"] is None
+    assert response.json()["reason"] == "Direct connect is not configured for this site or gateway."
+
+
+def test_direct_connect_url_generated_when_configured() -> None:
+    create_gateway_token("GW001")
+    client.patch(
+        "/api/ui/sites/demo-site",
+        headers=admin_headers(),
+        json={"direct_connect_host": "10.20.30.40", "direct_connect_port": 5002},
+    )
+
+    response = client.get("/api/ui/gateways/GW001/direct-connect", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "available": True,
+        "url": "http://10.20.30.40:5002",
+        "host": "10.20.30.40",
+        "port": 5002,
+        "label": "Direct Connect",
+        "reason": None,
+    }
+
+
+def test_direct_connect_rejects_unsafe_host_and_port() -> None:
+    unsafe_host = client.patch(
+        "/api/ui/sites/demo-site",
+        headers=admin_headers(),
+        json={"direct_connect_host": "javascript:alert(1)"},
+    )
+    unsafe_path = client.patch(
+        "/api/ui/sites/demo-site",
+        headers=admin_headers(),
+        json={"direct_connect_host": "10.20.30.40/path"},
+    )
+    unsafe_port = client.patch(
+        "/api/ui/sites/demo-site",
+        headers=admin_headers(),
+        json={"direct_connect_port": 70000},
+    )
+
+    assert unsafe_host.status_code == 422
+    assert unsafe_path.status_code == 422
+    assert unsafe_port.status_code == 422
+
+
+def test_tunnel_status_remains_friendly_when_disconnected() -> None:
+    create_gateway_token("GW001")
+
+    response = client.get("/api/ui/gateways/GW001/tunnel-status", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"connected": False, "status": "not_connected"}
 
 
 def test_admin_gateways_reject_missing_auth() -> None:

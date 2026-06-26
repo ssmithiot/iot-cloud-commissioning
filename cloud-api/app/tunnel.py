@@ -116,5 +116,8 @@ class TunnelManager:
             raise TunnelUnavailable("Gateway tunnel is not connected")
         return tunnel
 
+    def is_connected(self, gateway_id: str) -> bool:
+        return gateway_id in self._tunnels
+
 
 tunnel_manager = TunnelManager()

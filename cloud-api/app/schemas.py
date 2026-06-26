@@ -138,6 +138,14 @@ class SiteOut(BaseModel):
     store_hours_mf: str | None
     store_hours_sat: str | None
     store_hours_sun: str | None
+    cradlepoint_ip: str | None = None
+    direct_connect_host: str | None = None
+    direct_connect_port: int | None = None
+    gateway_ui_port: int | None = None
+    store_hours_monday_friday: str | None = None
+    store_hours_saturday: str | None = None
+    store_hours_sunday: str | None = None
+    network_status_notes: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -149,6 +157,28 @@ class SiteUpdate(BaseModel):
     store_hours_mf: str | None = Field(default=None, max_length=120)
     store_hours_sat: str | None = Field(default=None, max_length=120)
     store_hours_sun: str | None = Field(default=None, max_length=120)
+    cradlepoint_ip: str | None = Field(default=None, max_length=255)
+    direct_connect_host: str | None = Field(default=None, max_length=255)
+    direct_connect_port: int | None = Field(default=None, ge=1, le=65535)
+    gateway_ui_port: int | None = Field(default=None, ge=1, le=65535)
+    store_hours_monday_friday: str | None = Field(default=None, max_length=120)
+    store_hours_saturday: str | None = Field(default=None, max_length=120)
+    store_hours_sunday: str | None = Field(default=None, max_length=120)
+    network_status_notes: str | None = Field(default=None, max_length=500)
+
+
+class DirectConnectOut(BaseModel):
+    available: bool
+    url: str | None = None
+    host: str | None = None
+    port: int | None = None
+    label: str = "Direct Connect"
+    reason: str | None = None
+
+
+class TunnelStatusOut(BaseModel):
+    connected: bool
+    status: str
 
 
 class GatewayOut(BaseModel):
@@ -168,6 +198,15 @@ class GatewayOut(BaseModel):
     heartbeat_age_seconds: int | None = None
     is_online: bool | None = None
     is_stale: bool | None = None
+    site_name: str | None = None
+    site_address: str | None = None
+    store_hours_monday_friday: str | None = None
+    store_hours_saturday: str | None = None
+    store_hours_sunday: str | None = None
+    network_status_notes: str | None = None
+    direct_connect_available: bool | None = None
+    direct_connect_host: str | None = None
+    direct_connect_port: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

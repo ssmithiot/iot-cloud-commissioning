@@ -317,10 +317,18 @@ MVP-014B direction:
 MVP-014C direction:
 
 - Cloud UI may offer a Configure gateway action.
-- Configure starts a role-protected, time-limited remote edge console session.
-- Gateway should initiate outbound connectivity to a controlled relay; the cloud should not depend on direct browser access to private LAN addresses.
+- Configure starts a role-protected remote edge console path.
+- Gateway should initiate outbound connectivity to a controlled relay for Cloud Tunnel access; the cloud tunnel is separate from Direct Connect.
+- Direct Connect is an optional browser link, not a cloud proxy, to `http://<direct_connect_host>:<direct_connect_port>` when site metadata is configured.
+- Direct Connect defaults are external port `5002` and informational gateway UI port `5000`.
+- Direct Connect must open in a new tab and must not store gateway UI passwords in the cloud.
+- Direct Connect host/port must be validated server-side to prevent arbitrary schemes, open redirects, or `javascript:` URLs.
+- Site information includes site name, site address, Cradlepoint/direct-connect host, Direct Connect port, gateway UI port, store hours for Monday-Friday/Saturday/Sunday, and network status notes.
+- Current network status note: the rest of the boxes on the two known networks are online as well.
+- Admin users can edit site information; operators and viewers are read-only unless explicitly changed later.
 - Remote console sessions must be audited and expire automatically.
 - Remote console design must not expose cloud/admin/Supabase/Postgres/service-role/server-pepper secrets to gateways or browsers.
+- Direct Connect does not change heartbeat status, job polling, Cloud Tunnel status, or BACnet job architecture.
 
 Not included in MVP-014A:
 
