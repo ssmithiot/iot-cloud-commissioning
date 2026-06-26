@@ -302,6 +302,23 @@ MVP-014A foundation:
 - Completed point-load results can be saved as BACnet points under the saved device.
 - Point data must come from edge-agent BACnet job results; point data must not be faked.
 
+MVP-014B direction:
+
+- Edge UI is the primary BACnet commissioning workstation.
+- Edge UI performs device discovery, point discovery, point selection, local validation, and template export.
+- Cloud UI is the operations platform for fleet, users, jobs, templates, reports, and future graphics/trends.
+- Cloud stores imported commissioning templates as gateway groups, BACnet devices, and BACnet points.
+- Cloud template import should be idempotent and should update/re-enable existing matching rows where practical.
+- Cloud may queue safe follow-up jobs, but it should not duplicate the full edge commissioning workstation.
+
+MVP-014C direction:
+
+- Cloud UI may offer a Configure gateway action.
+- Configure starts a role-protected, time-limited remote edge console session.
+- Gateway should initiate outbound connectivity to a controlled relay; the cloud should not depend on direct browser access to private LAN addresses.
+- Remote console sessions must be audited and expire automatically.
+- Remote console design must not expose cloud/admin/Supabase/Postgres/service-role/server-pepper secrets to gateways or browsers.
+
 Not included in MVP-014A:
 
 - BACnet writes.

@@ -428,21 +428,38 @@ The live admin smoke test passes only when:
 - Existing `IOT_ADMIN_API_TOKEN` retained for scripts and emergency automation.
 - The admin users page uses the logged-in Supabase session/JWT instead of manual token paste for normal use.
 
-### MVP-014 Candidate: Commissioning Job Workflows
+### MVP-014 Candidate: Edge-Led Commissioning Model
 
 - Operator dashboard links to per-gateway workspaces.
 - Gateway status uses heartbeat age, so stale or missing heartbeats are not shown as active just because `latest_status` was previously `online`.
-- Gateway workspace shows saved groups, devices, and points.
-- Operators can create groups and queue safe BACnet device discovery from an online gateway.
-- Completed discovery results can be saved as devices into the gateway tree.
+- The cloud UI is the operations platform for fleet, users, jobs, templates, reports, and future graphics/trends.
+- The edge UI is the BACnet commissioning workstation for device discovery, point discovery, point selection, local validation, and template export.
+- Gateway workspace shows imported or saved groups, devices, and points.
+- Completed edge commissioning templates can be imported into the cloud gateway tree.
 - Saved devices render under groups with BACnet object-type folders generated from saved point `object_type`.
 - Operator/admin users can remove saved devices and points from the default tree by soft-disabling them.
-- Saved devices can queue a real edge-agent `bacnet_load_points` job that reads BACnet object-list data through `bacrp` on UDP `47814`.
-- Completed point-load results can be saved into the gateway tree as BACnet points.
-- Discovery jobs use `request.bacnet_port = 47814`.
+- Cloud-queued BACnet jobs remain available for safe runtime checks and targeted follow-up reads, but cloud should not duplicate the full edge commissioning workstation.
 - Viewers can read gateway UI state but cannot create groups, save devices/points, or queue jobs.
 - No BACnet write workflow is included.
-- Point data must come from completed edge-agent BACnet jobs; point data must not be faked.
+- Point and device data must come from edge commissioning exports or completed edge-agent BACnet jobs; point data must not be faked.
+
+### MVP-014B Candidate: Edge Template Export And Cloud Import
+
+- Define a versioned commissioning template JSON format for site, gateway, groups, devices, and selected BACnet points.
+- Add edge UI export for approved commissioned devices/groups/points.
+- Add cloud import preview/apply flow for a gateway.
+- Imports are idempotent: existing groups/devices/points are updated or re-enabled; missing ones are created.
+- Template import does not require cloud direct BACnet execution.
+- Template import does not expose Supabase, Postgres, service-role, admin-token, or server-pepper secrets to the edge gateway.
+
+### MVP-014C Candidate: Remote Edge Console Launcher
+
+- Cloud UI provides a Configure action for a gateway.
+- Cloud verifies operator/admin role before creating a temporary remote-console session.
+- Gateway opens an outbound tunnel/session to a controlled cloud relay.
+- Operator opens the edge UI through a cloud-authenticated, time-limited URL.
+- Sessions are audited and expire automatically.
+- The design must not expose the edge UI directly to the public internet and must not require inbound access to private LAN IPs such as `192.168.1.200`.
 
 ### MVP-014 Later: Commissioning Job Workflows
 

@@ -533,7 +533,21 @@ Represents a commissioning effort for a site.
 
 ### 7.6 `commissioning_templates`
 
-Stores reusable point/job templates.
+Stores reusable commissioning templates produced by the edge UI and imported into the cloud.
+
+Planned template content:
+
+- schema/version marker
+- source gateway or edge UI metadata
+- site/gateway identity references
+- approved groups
+- approved BACnet devices
+- selected BACnet points
+- optional commissioning notes/evidence references
+
+The edge UI remains the primary BACnet commissioning workstation. The cloud stores imported templates as the operations system of record and may later use them for graphics, trends, reports, and safe follow-up jobs.
+
+Template import must not require the edge gateway to receive Supabase/Postgres credentials, service-role keys, `IOT_ADMIN_API_TOKEN`, or `GATEWAY_AUTH_PEPPER`.
 
 ### 7.7 `commissioning_runs`
 

@@ -36,14 +36,14 @@ operator dashboard: /app
 gateway workspace: /gateways/{gateway_id}
 gateway UI API prefix: /api/ui
 effective gateway status: heartbeat-age derived online/stale/offline
-saved tree: gateway groups, BACnet devices, BACnet points
-safe discovery action: queues bacnet_discover with { "bacnet_port": 47814 }
-discovery results: render as saveable devices
-object folders: generated from saved point object_type
+cloud role: fleet, users, jobs, templates, reports, future graphics/trends
+edge UI role: BACnet commissioning workstation for discovery, point selection, validation
+remote console bridge: future controlled launcher for cloud-authenticated edge UI access
+template flow: edge builds approved devices/groups/points, cloud imports the template
+saved tree: cloud stores imported gateway groups, BACnet devices, BACnet points
 remove behavior: soft-disable saved devices/points; preserve history
-point loading: saved devices queue bacnet_load_points on UDP 47814 and save returned object-list points
 viewer role: read-only UI state
-operator/admin roles: can queue safe jobs and edit saved tree metadata
+operator/admin roles: can queue safe jobs, import templates, and edit metadata
 BACnet writes: out of scope
 fake point data: out of scope
 ```
