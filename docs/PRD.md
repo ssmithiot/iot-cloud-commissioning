@@ -257,6 +257,7 @@ The cloud API must provide:
 | `POST /api/ui/gateways/{gateway_id}/groups` | Create saved gateway group | Operator/admin auth |
 | `POST /api/ui/gateways/{gateway_id}/devices` | Save discovered BACnet device metadata | Operator/admin auth |
 | `POST /api/ui/devices/{device_id}/points` | Save BACnet point metadata | Operator/admin auth |
+| `POST /api/ui/gateways/{gateway_id}/commissioning-template/import` | Import an edge-exported commissioning template into the cloud saved tree | Operator/admin auth |
 | `POST /api/ui/gateways/{gateway_id}/discover-devices` | Queue safe BACnet discovery job | Operator/admin auth |
 
 ### 7.2 Admin / Operator Auth
@@ -451,6 +452,7 @@ The live admin smoke test passes only when:
 - Imports are idempotent: existing groups/devices/points are updated or re-enabled; missing ones are created.
 - Template import does not require cloud direct BACnet execution.
 - Template import does not expose Supabase, Postgres, service-role, admin-token, or server-pepper secrets to the edge gateway.
+- First implementation slice: edge saved live devices can download a cloud template JSON, and cloud gateway workspaces can import that JSON into the saved tree.
 
 ### MVP-014C Candidate: Remote Edge Console Launcher
 

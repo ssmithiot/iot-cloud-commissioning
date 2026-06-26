@@ -812,6 +812,7 @@ APP_SCRIPT = r"""
     }
     currentUser = me;
     const groupForm = byId("group-form");
+    const importTemplateForm = byId("import-template-form");
     const discoverButton = byId("discover-devices");
     const saveSelectedPointsButton = byId("save-selected-points");
     const selectAllPointsButton = byId("select-all-point-candidates");
@@ -832,6 +833,27 @@ APP_SCRIPT = r"""
         byId("group-name").value = "";
         setText("status", "Group saved.");
         await loadGatewayWorkspace();
+      } catch (error) {
+        setText("status", error.message, true);
+      }
+    });
+    importTemplateForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const file = byId("template-file").files?.[0];
+      if (!file) {
+        setText("status", "Choose an edge commissioning template JSON file first.", true);
+        return;
+      }
+      setText("status", `Importing ${file.name}...`);
+      try {
+        const template = JSON.parse(await file.text());
+        const result = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/commissioning-template/import`, {
+          method: "POST",
+          body: JSON.stringify(template)
+        });
+        byId("template-file").value = "";
+        await loadGatewayWorkspace();
+        setText("status", `Imported template: ${result.created_devices} device(s) created, ${result.updated_devices} updated, ${result.created_points} point(s) created, ${result.updated_points} updated.`);
       } catch (error) {
         setText("status", error.message, true);
       }
@@ -1397,6 +1419,15 @@ def gateway_workspace_html(gateway_id: str) -> str:
     </section>
     <section>
       <h2>Saved Tree</h2>
+      <form id="import-template-form" class="grid">
+        <div class="span-6">
+          <label for="template-file">Edge commissioning template JSON</label>
+          <input id="template-file" type="file" accept="application/json,.json" required>
+        </div>
+        <div class="span-3">
+          <button type="submit">Import template</button>
+        </div>
+      </form>
       <div class="tree-shell">
         <div id="tree" class="tree-panel">Loading...</div>
         <aside>

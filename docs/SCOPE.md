@@ -310,6 +310,8 @@ MVP-014B direction:
 - Cloud stores imported commissioning templates as gateway groups, BACnet devices, and BACnet points.
 - Cloud template import should be idempotent and should update/re-enable existing matching rows where practical.
 - Cloud may queue safe follow-up jobs, but it should not duplicate the full edge commissioning workstation.
+- Edge saved live devices expose a cloud-template JSON download route.
+- Cloud gateway workspaces expose a template import form backed by `POST /api/ui/gateways/{gateway_id}/commissioning-template/import`.
 
 MVP-014C direction:
 

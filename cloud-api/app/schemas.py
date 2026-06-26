@@ -331,6 +331,79 @@ class SavedPointsBulkRemoveOut(BaseModel):
     missing_ids: list[str]
 
 
+class CommissioningTemplateGroupIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class CommissioningTemplatePointIn(BaseModel):
+    object_type: str = Field(min_length=1, max_length=80)
+    object_instance: int | None = Field(default=None, ge=0)
+    instance: int | None = Field(default=None, ge=0)
+    object_name: str | None = Field(default=None, max_length=255)
+    property: str = Field(default="present-value", max_length=80)
+    units: str | None = Field(default=None, max_length=80)
+    writable: bool | None = None
+
+    @model_validator(mode="after")
+    def normalize_point(self) -> "CommissioningTemplatePointIn":
+        if self.object_instance is None:
+            self.object_instance = self.instance
+        if self.object_instance is None:
+            raise ValueError("object_instance is required")
+        self.object_type = self.object_type.strip().lower()
+        self.property = (self.property or "present-value").strip() or "present-value"
+        return self
+
+
+class CommissioningTemplateDeviceIn(BaseModel):
+    device_instance: int | None = Field(default=None, ge=0)
+    device_id: int | str | None = None
+    device_name: str | None = Field(default=None, max_length=255)
+    vendor_name: str | None = Field(default=None, max_length=255)
+    vendor: str | None = Field(default=None, max_length=255)
+    network_number: int | None = None
+    mac_address: str | None = Field(default=None, max_length=255)
+    mac: str | None = Field(default=None, max_length=255)
+    group_name: str | None = Field(default=None, max_length=120)
+    points: list[CommissioningTemplatePointIn] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def normalize_device(self) -> "CommissioningTemplateDeviceIn":
+        if self.device_instance is None and self.device_id is not None:
+            try:
+                self.device_instance = int(self.device_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("device_id must be numeric when device_instance is omitted") from exc
+        if self.device_instance is None:
+            raise ValueError("device_instance is required")
+        if self.vendor_name is None and self.vendor is not None:
+            self.vendor_name = self.vendor
+        if self.mac_address is None and self.mac is not None:
+            self.mac_address = self.mac
+        return self
+
+
+class CommissioningTemplateIn(BaseModel):
+    schema_version: str = Field(default="iot-cx-commissioning-template/v1", max_length=80)
+    source: str | None = Field(default=None, max_length=120)
+    site_id: str | None = Field(default=None, max_length=120)
+    gateway_id: str | None = Field(default=None, max_length=120)
+    groups: list[CommissioningTemplateGroupIn] = Field(default_factory=list)
+    devices: list[CommissioningTemplateDeviceIn] = Field(default_factory=list)
+
+
+class CommissioningTemplateImportOut(BaseModel):
+    group_count: int
+    device_count: int
+    point_count: int
+    created_groups: int
+    updated_groups: int
+    created_devices: int
+    updated_devices: int
+    created_points: int
+    updated_points: int
+
+
 class SavedPointOut(BaseModel):
     id: str
     gateway_id: str

@@ -341,6 +341,65 @@ Failure behavior: missing or invalid admin credentials return HTTP 401. Database
 
 Future compatibility notes: when Supabase Auth and RLS are active, this can be served through a portal API using user-scoped access. Gateway-facing endpoints should remain gateway-authenticated.
 
+## POST /api/ui/gateways/{gateway_id}/commissioning-template/import
+
+Purpose: import an edge-exported commissioning template into a cloud gateway saved tree.
+
+Authentication: requires an active Supabase user with `admin` or `operator` role, or the server-side admin token for automation.
+
+Request:
+
+```json
+{
+  "schema_version": "iot-cx-commissioning-template/v1",
+  "source": "edge-bacnet-ui-v2",
+  "gateway_id": "GW777",
+  "groups": [
+    { "name": "HVAC" }
+  ],
+  "devices": [
+    {
+      "device_id": "1",
+      "device_name": "Device 1",
+      "vendor_name": "Example Vendor",
+      "network_number": 2001,
+      "mac_address": "C0:A8:01:66:BA:C6 sadr 01",
+      "group_name": "HVAC",
+      "points": [
+        {
+          "object_type": "analog-input",
+          "object_instance": 1,
+          "object_name": "SPACE_SENSOR",
+          "property": "present-value"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "group_count": 1,
+  "device_count": 1,
+  "point_count": 1,
+  "created_groups": 1,
+  "updated_groups": 0,
+  "created_devices": 1,
+  "updated_devices": 0,
+  "created_points": 1,
+  "updated_points": 0
+}
+```
+
+Success behavior: creates or updates/re-enables matching groups, devices, and points. Matching uses group name, gateway/device instance, and device/object/property identity.
+
+Failure behavior: viewer users return HTTP 403. A template `gateway_id` that does not match the URL target returns HTTP 400.
+
+Future compatibility notes: the edge UI remains the BACnet commissioning workstation. Cloud imports approved metadata and should not require direct cloud BACnet execution.
+
 ## POST /api/admin/gateways/provision
 
 Purpose: create or update the cloud-side site and gateway identity, then issue a gateway API token for office provisioning.

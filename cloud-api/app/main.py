@@ -38,6 +38,8 @@ from app.models import (
     utc_now,
 )
 from app.schemas import (
+    CommissioningTemplateImportOut,
+    CommissioningTemplateIn,
     CurrentOperatorOut,
     EdgeJobClaimOut,
     GatewayGroupIn,
@@ -670,6 +672,134 @@ def ui_patch_point(
     db.commit()
     db.refresh(point)
     return _point_out(point)
+
+
+@app.post("/api/ui/gateways/{gateway_id}/commissioning-template/import", response_model=CommissioningTemplateImportOut)
+def ui_import_commissioning_template(
+    gateway_id: str,
+    payload: CommissioningTemplateIn,
+    _: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> CommissioningTemplateImportOut:
+    _get_gateway_or_404(db, gateway_id)
+    if payload.gateway_id and payload.gateway_id != gateway_id:
+        raise HTTPException(status_code=400, detail="Template gateway_id does not match target gateway")
+
+    now = utc_now()
+    groups_by_name = {
+        group.name: group
+        for group in db.scalars(select(GatewayGroup).where(GatewayGroup.gateway_id == gateway_id)).all()
+    }
+    created_groups = 0
+    updated_groups = 0
+    touched_group_names: set[str] = set()
+
+    def ensure_group(name: str | None) -> GatewayGroup | None:
+        nonlocal created_groups, updated_groups
+        group_name = (name or "").strip()
+        if not group_name:
+            return None
+        existing = groups_by_name.get(group_name)
+        if existing is not None:
+            if group_name not in touched_group_names:
+                existing.updated_at = now
+                updated_groups += 1
+                touched_group_names.add(group_name)
+            return existing
+        group = GatewayGroup(gateway_id=gateway_id, name=group_name)
+        db.add(group)
+        db.flush()
+        groups_by_name[group_name] = group
+        touched_group_names.add(group_name)
+        created_groups += 1
+        return group
+
+    for group_payload in payload.groups:
+        ensure_group(group_payload.name)
+
+    created_devices = 0
+    updated_devices = 0
+    created_points = 0
+    updated_points = 0
+
+    for device_payload in payload.devices:
+        group = ensure_group(device_payload.group_name)
+        device = db.scalar(
+            select(SavedBacnetDevice).where(
+                SavedBacnetDevice.gateway_id == gateway_id,
+                SavedBacnetDevice.device_instance == device_payload.device_instance,
+            )
+        )
+        if device is None:
+            device = SavedBacnetDevice(
+                gateway_id=gateway_id,
+                group_id=group.id if group is not None else None,
+                device_instance=int(device_payload.device_instance),
+                device_name=device_payload.device_name,
+                vendor_name=device_payload.vendor_name,
+                network_number=device_payload.network_number,
+                mac_address=device_payload.mac_address,
+                latest_discovered_at=now,
+                enabled=True,
+            )
+            db.add(device)
+            db.flush()
+            created_devices += 1
+        else:
+            device.group_id = group.id if group is not None else device.group_id
+            device.device_name = device_payload.device_name or device.device_name
+            device.vendor_name = device_payload.vendor_name or device.vendor_name
+            device.network_number = device_payload.network_number if device_payload.network_number is not None else device.network_number
+            device.mac_address = device_payload.mac_address or device.mac_address
+            device.latest_discovered_at = now
+            device.enabled = True
+            device.updated_at = now
+            updated_devices += 1
+
+        for point_payload in device_payload.points:
+            point = db.scalar(
+                select(SavedBacnetPoint).where(
+                    SavedBacnetPoint.saved_device_id == device.id,
+                    SavedBacnetPoint.object_type == point_payload.object_type,
+                    SavedBacnetPoint.object_instance == point_payload.object_instance,
+                    SavedBacnetPoint.property_name == point_payload.property,
+                )
+            )
+            if point is None:
+                point = SavedBacnetPoint(
+                    gateway_id=gateway_id,
+                    saved_device_id=device.id,
+                    device_instance=device.device_instance,
+                    object_type=point_payload.object_type,
+                    object_instance=int(point_payload.object_instance),
+                    object_name=point_payload.object_name,
+                    property_name=point_payload.property,
+                    units=point_payload.units,
+                    writable=point_payload.writable,
+                    enabled=True,
+                )
+                db.add(point)
+                created_points += 1
+            else:
+                point.object_name = point_payload.object_name or point.object_name
+                point.units = point_payload.units if point_payload.units is not None else point.units
+                point.writable = point_payload.writable if point_payload.writable is not None else point.writable
+                point.enabled = True
+                point.updated_at = now
+                updated_points += 1
+
+    db.commit()
+    return CommissioningTemplateImportOut(
+        group_count=len(groups_by_name),
+        device_count=len(payload.devices),
+        point_count=sum(len(device.points) for device in payload.devices),
+        created_groups=created_groups,
+        updated_groups=updated_groups,
+        created_devices=created_devices,
+        updated_devices=updated_devices,
+        created_points=created_points,
+        updated_points=updated_points,
+    )
 
 
 @app.post("/api/ui/gateways/{gateway_id}/discover-devices", response_model=JobOut)

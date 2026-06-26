@@ -326,6 +326,10 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert "renderDiscoveredDevices" in response.text
     assert "Load points" in response.text
     assert "Saved Tree" in response.text
+    assert 'id="import-template-form"' in response.text
+    assert 'id="template-file"' in response.text
+    assert "Import template" in response.text
+    assert "/commissioning-template/import" in response.text
     assert 'id="selected-points-panel"' in response.text
     assert 'id="selected-points-list"' in response.text
     assert "Remove selected points" in response.text
@@ -693,9 +697,15 @@ def test_ui_tree_write_routes_reject_viewer() -> None:
         headers=user_headers("viewer@example.com", user_id),
         json={"device_instance": 1001},
     )
+    import_response = client.post(
+        "/api/ui/gateways/GW001/commissioning-template/import",
+        headers=user_headers("viewer@example.com", user_id),
+        json={"devices": [{"device_id": "1001", "points": []}]},
+    )
 
     assert group_response.status_code == 403
     assert device_response.status_code == 403
+    assert import_response.status_code == 403
 
 
 def test_ui_gateway_tree_can_store_group_device_and_point() -> None:
@@ -741,6 +751,69 @@ def test_ui_gateway_tree_can_store_group_device_and_point() -> None:
     assert tree["devices"][0]["device_instance"] == 1001
     assert tree["points"][0]["object_type"] == "analog-input"
     assert tree["points"][0]["property"] == "present-value"
+
+
+def test_ui_operator_can_import_edge_commissioning_template() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    template = {
+        "schema_version": "iot-cx-commissioning-template/v1",
+        "source": "edge-bacnet-ui-v2",
+        "gateway_id": "GW001",
+        "groups": [{"name": "HVAC"}],
+        "devices": [
+            {
+                "device_id": "1001",
+                "device_name": "AHU-1",
+                "vendor": "Test Vendor",
+                "network_number": 2001,
+                "mac": "C0:A8:01:66:BA:C6 sadr 01",
+                "group_name": "HVAC",
+                "points": [
+                    {"object_type": "analog-input", "instance": 1, "object_name": "Space Temp"},
+                    {"object_type": "binary-output", "instance": 7, "object_name": "Fan Command"},
+                ],
+            }
+        ],
+    }
+
+    import_response = client.post("/api/ui/gateways/GW001/commissioning-template/import", headers=headers, json=template)
+    second_import_response = client.post("/api/ui/gateways/GW001/commissioning-template/import", headers=headers, json=template)
+    tree_response = client.get("/api/ui/gateways/GW001/tree", headers=headers)
+
+    assert import_response.status_code == 200
+    assert import_response.json()["created_groups"] == 1
+    assert import_response.json()["created_devices"] == 1
+    assert import_response.json()["created_points"] == 2
+    assert second_import_response.status_code == 200
+    assert second_import_response.json()["created_devices"] == 0
+    assert second_import_response.json()["updated_devices"] == 1
+    assert second_import_response.json()["created_points"] == 0
+    assert second_import_response.json()["updated_points"] == 2
+    tree = tree_response.json()
+    assert tree["groups"][0]["name"] == "HVAC"
+    assert tree["devices"][0]["device_instance"] == 1001
+    assert tree["devices"][0]["device_name"] == "AHU-1"
+    assert tree["devices"][0]["vendor_name"] == "Test Vendor"
+    assert tree["points"][0]["object_type"] == "analog-input"
+    assert tree["points"][0]["object_instance"] == 1
+    assert tree["points"][1]["object_type"] == "binary-output"
+
+
+def test_ui_import_template_rejects_gateway_mismatch() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+
+    response = client.post(
+        "/api/ui/gateways/GW001/commissioning-template/import",
+        headers=headers,
+        json={"gateway_id": "GW002", "devices": [{"device_id": "1001", "points": []}]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Template gateway_id does not match target gateway"
 
 
 def test_ui_duplicate_group_returns_clean_json_error() -> None:
