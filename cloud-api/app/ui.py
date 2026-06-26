@@ -9,6 +9,7 @@ APP_SCRIPT = r"""
   let currentGatewayTree = null;
   let currentUser = null;
   let currentPointCandidateDevice = null;
+  let selectedSavedPointIds = new Set();
 
   const statePaths = {
     login: "/login",
@@ -340,6 +341,72 @@ APP_SCRIPT = r"""
     return currentUser && ["admin", "operator"].includes(currentUser.role);
   }
 
+  function savedPointLabel(point) {
+    return `[${point.object_type} ${point.object_instance}] ${point.object_name || "unnamed"}`;
+  }
+
+  function selectedSavedPoints() {
+    const points = currentGatewayTree?.points || [];
+    return points.filter((point) => selectedSavedPointIds.has(point.id));
+  }
+
+  function renderSelectedSavedPoints() {
+    const panel = byId("selected-points-panel");
+    const count = byId("selected-points-count");
+    const list = byId("selected-points-list");
+    const removeButton = byId("remove-selected-points");
+    if (!panel || !count || !list || !removeButton) {
+      return;
+    }
+    const selected = selectedSavedPoints();
+    panel.hidden = false;
+    count.textContent = selected.length
+      ? `${selected.length} saved point(s) selected.`
+      : "No saved points selected.";
+    list.textContent = "";
+    for (const point of selected) {
+      const item = document.createElement("li");
+      item.textContent = savedPointLabel(point);
+      list.appendChild(item);
+    }
+    removeButton.disabled = !selected.length || !canEditTree();
+  }
+
+  function setSavedPointSelected(point, checked) {
+    if (checked) {
+      selectedSavedPointIds.add(point.id);
+    } else {
+      selectedSavedPointIds.delete(point.id);
+    }
+    renderSelectedSavedPoints();
+  }
+
+  async function removeSelectedSavedPoints() {
+    if (!canEditTree()) {
+      setText("status", "Your role is read-only.", true);
+      return;
+    }
+    const selected = selectedSavedPoints();
+    if (!selected.length) {
+      setText("status", "Select at least one saved point first.", true);
+      return;
+    }
+    const removeButton = byId("remove-selected-points");
+    removeButton.disabled = true;
+    try {
+      for (const point of selected) {
+        await api(`/api/ui/points/${encodeURIComponent(point.id)}`, { method: "DELETE" });
+      }
+      const removedCount = selected.length;
+      selectedSavedPointIds = new Set();
+      await loadGatewayWorkspace();
+      setText("status", `Removed ${removedCount} selected saved point(s).`);
+    } catch (error) {
+      setText("status", error.message, true);
+      renderSelectedSavedPoints();
+    }
+  }
+
   async function removeTreeItem(kind, id, label) {
     if (!canEditTree()) {
       setText("status", "Your role is read-only.", true);
@@ -375,6 +442,38 @@ APP_SCRIPT = r"""
         button.addEventListener("click", () => actions[Number(button.dataset.treeAction)].handler());
       });
     }
+  }
+
+  function pointSelectionRow(point, label, meta = "", depth = 0) {
+    const row = document.createElement("div");
+    row.className = "tree-row point-select-row";
+    row.dataset.kind = "point";
+    row.style.setProperty("--depth", String(depth));
+    row.innerHTML = `
+      <input type="checkbox" data-role="saved-point-select" aria-label="Select ${escapeHtml(label)}">
+      <span class="node-icon">-></span>
+      <span class="node-label">${escapeHtml(label)}</span>
+      <span class="node-meta">${escapeHtml(meta)}</span>
+    `;
+    const checkbox = row.querySelector('[data-role="saved-point-select"]');
+    checkbox.checked = selectedSavedPointIds.has(point.id);
+    checkbox.addEventListener("change", (event) => {
+      event.stopPropagation();
+      setSavedPointSelected(point, checkbox.checked);
+    });
+    row.addEventListener("click", (event) => {
+      if (event.target === checkbox) {
+        return;
+      }
+      setTreeDetails(label, {
+        property: point.property,
+        value: point.present_value,
+        units: point.units,
+        writable: point.writable,
+        latest_read_at: point.latest_read_at
+      });
+    });
+    return row;
   }
 
   async function saveLoadedPoints(device, points) {
@@ -485,10 +584,12 @@ APP_SCRIPT = r"""
 
   function renderTree(tree) {
     currentGatewayTree = tree;
+    selectedSavedPointIds = new Set([...selectedSavedPointIds].filter((id) => tree.points.some((point) => point.id === id)));
     const target = byId("tree");
     target.textContent = "";
     if (!tree.groups.length && !tree.devices.length) {
       target.textContent = "No saved devices or points yet.";
+      renderSelectedSavedPoints();
       return;
     }
     const groupNames = new Map(tree.groups.map((group) => [group.id, group.name]));
@@ -526,19 +627,8 @@ APP_SCRIPT = r"""
       addCollapsible(container, row, [], showDeviceDetails);
       for (const [folderLabel, folderPoints] of pointGroups.entries()) {
         const pointRows = folderPoints.map((point) => {
-          const pointLabel = `[${point.object_type} ${point.object_instance}] ${point.object_name || "unnamed"}`;
-          const pointRow = leafRow("point", pointLabel, point.present_value ?? "", depth + 2);
-          pointRow.addEventListener("click", () => setTreeDetails(pointLabel, {
-            property: point.property,
-            value: point.present_value,
-            units: point.units,
-            writable: point.writable,
-            latest_read_at: point.latest_read_at
-          }, {
-            label: "Remove point",
-            handler: () => removeTreeItem("point", point.id, pointLabel)
-          }));
-          return pointRow;
+          const pointLabel = savedPointLabel(point);
+          return pointSelectionRow(point, pointLabel, point.present_value ?? "", depth + 2);
         });
         addCollapsible(container.querySelector(".tree-children"), treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1), pointRows);
       }
@@ -565,6 +655,7 @@ APP_SCRIPT = r"""
       addCollapsible(root, treeRow("folder", "Ungrouped", `${ungroupedDevices.length}`, 0), ungroupedDevices.map((device) => deviceNode(device, 1)));
     }
     target.appendChild(root);
+    renderSelectedSavedPoints();
   }
 
   function groupOptions() {
@@ -721,6 +812,7 @@ APP_SCRIPT = r"""
     const saveSelectedPointsButton = byId("save-selected-points");
     const selectAllPointsButton = byId("select-all-point-candidates");
     const deselectAllPointsButton = byId("deselect-all-point-candidates");
+    const removeSelectedPointsButton = byId("remove-selected-points");
     const gatewayId = document.body.dataset.gatewayId;
     const technicalSection = byId("technical-section");
     if (technicalSection && me.role === "admin") {
@@ -769,6 +861,7 @@ APP_SCRIPT = r"""
         checkbox.checked = false;
       });
     });
+    removeSelectedPointsButton.addEventListener("click", removeSelectedSavedPoints);
     saveSelectedPointsButton.addEventListener("click", async () => {
       if (!currentPointCandidateDevice) {
         setText("status", "Load points for a saved device first.", true);
@@ -1034,6 +1127,14 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       overflow: auto;
       padding: 10px;
     }}
+    .tree-shell > aside {{
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }}
+    .tree-shell > aside .detail-panel {{
+      min-height: 0;
+    }}
     .tree-view {{
       display: grid;
       gap: 2px;
@@ -1057,6 +1158,16 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .tree-row:hover {{
       background: #e8eef5;
+    }}
+    .point-select-row {{
+      grid-template-columns: 28px 34px minmax(0, 1fr) auto;
+      cursor: pointer;
+    }}
+    .point-select-row input {{
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      cursor: pointer;
     }}
     .tree-row[data-kind="point"] .node-icon {{
       color: var(--accent);
@@ -1087,6 +1198,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .detail-panel dd {{
       margin: 0;
       word-break: break-word;
+    }}
+    .selected-point-list {{
+      max-height: 180px;
+      margin: 10px 0;
+      padding-left: 20px;
+      overflow: auto;
+      font-size: 13px;
     }}
     .toolbar {{
       display: flex;
@@ -1274,10 +1392,18 @@ def gateway_workspace_html(gateway_id: str) -> str:
       <div id="status" class="notice"></div>
     </section>
     <section>
-      <h2>Saved Groups, Devices, And Points</h2>
+      <h2>Saved Tree</h2>
       <div class="tree-shell">
         <div id="tree" class="tree-panel">Loading...</div>
-        <aside id="tree-details" class="detail-panel" hidden></aside>
+        <aside>
+          <div id="tree-details" class="detail-panel" hidden></div>
+          <div id="selected-points-panel" class="detail-panel" hidden>
+            <h2>Selected Saved Points</h2>
+            <div id="selected-points-count" class="notice">No saved points selected.</div>
+            <ul id="selected-points-list" class="selected-point-list"></ul>
+            <button id="remove-selected-points" class="secondary" type="button" disabled>Remove selected points</button>
+          </div>
+        </aside>
       </div>
       <form id="group-form" class="grid">
         <div class="span-4">

@@ -325,6 +325,11 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'id="tree-details"' in response.text
     assert "renderDiscoveredDevices" in response.text
     assert "Load points" in response.text
+    assert "Saved Tree" in response.text
+    assert 'id="selected-points-panel"' in response.text
+    assert 'id="selected-points-list"' in response.text
+    assert "Remove selected points" in response.text
+    assert "saved-point-select" in response.text
     assert 'id="point-candidates-panel"' in response.text
     assert 'id="point-candidates"' in response.text
     assert "Save selected points" in response.text
