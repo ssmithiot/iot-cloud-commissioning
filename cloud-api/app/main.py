@@ -107,6 +107,9 @@ TUNNEL_HTML_ATTR_PATTERN = re.compile(r"""(?P<attr>\b(?:href|src|action|formacti
 TUNNEL_JSON_REWRITABLE_PATH_PATTERN = re.compile(
     r"^/(?:device-ping|route-check)/(?:status|results)/[^?#]+(?:[?#].*)?$"
 )
+TUNNEL_JS_ROOT_RELATIVE_PATH_PATTERN = re.compile(
+    r"(?P<quote>[\"'`])(?P<url>/(?:device-ping|route-check)/(?:status|results)(?:/[^\"'`]*)?)(?P=quote)"
+)
 
 
 def _aware_utc(value: datetime | None) -> datetime | None:
@@ -275,6 +278,20 @@ def _rewrite_tunnel_json_body(body: bytes, redirect_prefix: str) -> bytes:
     return json.dumps(rewritten, separators=(",", ":")).encode("utf-8")
 
 
+def _rewrite_tunnel_javascript_body(body: bytes, redirect_prefix: str) -> bytes:
+    try:
+        script = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return body
+
+    def replace(match: re.Match[str]) -> str:
+        url = match.group("url")
+        rewritten = _rewrite_tunnel_session_root_relative_url(url, redirect_prefix)
+        return f"{match.group('quote')}{rewritten}{match.group('quote')}"
+
+    return TUNNEL_JS_ROOT_RELATIVE_PATH_PATTERN.sub(replace, script).encode("utf-8")
+
+
 def _tunnel_fetch_xhr_helper_script(redirect_prefix: str) -> str:
     prefix_json = json.dumps(redirect_prefix)
     return f"""<script>
@@ -380,6 +397,7 @@ def _rewrite_tunnel_html_body(body: bytes, redirect_prefix: str) -> bytes:
         return f"{match.group('attr')}{match.group('quote')}{rewritten}{match.group('quote')}"
 
     html = TUNNEL_HTML_ATTR_PATTERN.sub(replace, html)
+    html = _rewrite_tunnel_javascript_body(html.encode("utf-8"), redirect_prefix).decode("utf-8")
     if not re.search(r"</?(?:html|head|body|script|a|form|img|link|button)\b", html, re.IGNORECASE):
         return html.encode("utf-8")
 
@@ -1010,12 +1028,18 @@ async def _proxy_gateway_tunnel_request(
     response_body = tunnel_response.body
     html_rewritten = False
     json_rewritten = False
+    javascript_rewritten = False
     if rewrite_html_body and "text/html" in content_type.lower():
         response_body = _rewrite_tunnel_html_body(tunnel_response.body, redirect_prefix)
         html_rewritten = response_body != tunnel_response.body
     elif rewrite_html_body and "application/json" in content_type.lower():
         response_body = _rewrite_tunnel_json_body(tunnel_response.body, redirect_prefix)
         json_rewritten = response_body != tunnel_response.body
+    elif rewrite_html_body and (
+        "javascript" in content_type.lower() or "ecmascript" in content_type.lower()
+    ):
+        response_body = _rewrite_tunnel_javascript_body(tunnel_response.body, redirect_prefix)
+        javascript_rewritten = response_body != tunnel_response.body
 
     response_header_names = {key.lower() for key in response_headers}
     upstream_location = next((value for key, value in tunnel_response.headers.items() if key.lower() == "location"), None)
@@ -1023,7 +1047,7 @@ async def _proxy_gateway_tunnel_request(
     logger.warning(
         "TUNNEL_PROXY_DEBUG response gateway=%s method=%s path=%s status=%s content_type=%s body_bytes=%s "
         "upstream_location_shape=%s response_location_shape=%s response_location_session_slash=%s "
-        "set_cookie_received=%s set_cookie_forwarded=%s html_rewritten=%s json_rewritten=%s",
+        "set_cookie_received=%s set_cookie_forwarded=%s html_rewritten=%s json_rewritten=%s javascript_rewritten=%s",
         gateway_id,
         request.method,
         upstream_path,
@@ -1037,6 +1061,7 @@ async def _proxy_gateway_tunnel_request(
         "set-cookie" in response_header_names,
         html_rewritten,
         json_rewritten,
+        javascript_rewritten,
     )
 
     return Response(
