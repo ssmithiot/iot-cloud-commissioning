@@ -23,6 +23,7 @@ os.environ["GATEWAY_AUTH_PEPPER"] = "test-pepper"
 os.environ["IOT_ADMIN_API_TOKEN"] = "test-admin-token"
 os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-jwt-secret"
 
+from app import main as main_module
 from app.auth import hash_gateway_token
 from app.config import Settings
 from app.database import Base, SessionLocal, engine
@@ -1204,6 +1205,84 @@ def test_tunnel_session_rewrites_html_root_relative_and_gateway_local_urls() -> 
     assert f'src="{prefix}/static/app.js"' in response.text
     assert 'href="https://example.com/help"' in response.text
     assert 'href="#local"' in response.text
+    assert "window.fetch = function" in response.text
+    assert "window.XMLHttpRequest.prototype.open = function" in response.text
+    assert f"var tunnelPrefix = \"{prefix}\"" in response.text
+
+
+def test_tunnel_session_helper_rewrites_root_relative_fetch_url() -> None:
+    prefix = "/gateways/GW777/tunnel/session/session-1"
+
+    rewritten = main_module._rewrite_tunnel_session_root_relative_url("/device-ping/status/abc", prefix)
+
+    assert rewritten == "/gateways/GW777/tunnel/session/session-1/device-ping/status/abc"
+
+
+def test_tunnel_session_helper_rewrites_root_relative_xhr_url() -> None:
+    prefix = "/gateways/GW777/tunnel/session/session-1"
+
+    rewritten = main_module._rewrite_tunnel_session_root_relative_url("/device-ping/status/abc?poll=1", prefix)
+
+    assert rewritten == "/gateways/GW777/tunnel/session/session-1/device-ping/status/abc?poll=1"
+
+
+def test_tunnel_session_helper_does_not_double_prefix_urls() -> None:
+    prefix = "/gateways/GW777/tunnel/session/session-1"
+    url = "/gateways/GW777/tunnel/session/session-1/device-ping/status/abc"
+
+    assert main_module._rewrite_tunnel_session_root_relative_url(url, prefix) == url
+
+
+def test_tunnel_session_helper_does_not_rewrite_external_urls() -> None:
+    prefix = "/gateways/GW777/tunnel/session/session-1"
+
+    assert main_module._rewrite_tunnel_session_root_relative_url("https://example.com/api", prefix) == "https://example.com/api"
+    assert main_module._rewrite_tunnel_session_root_relative_url("//example.com/api", prefix) == "//example.com/api"
+
+
+def test_tunnel_session_device_ping_start_and_status_proxy_through_session() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW777", token_prefix="gw77701")
+    captured: list[dict[str, object]] = []
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            captured.append(kwargs)
+            if kwargs["path"] == "/device-ping/start":
+                return TunnelResponse(
+                    status_code=200,
+                    headers={"content-type": "text/html"},
+                    body=b"<html><head></head><body>started</body></html>",
+                )
+            if kwargs["path"] == "/device-ping/status/abc":
+                return TunnelResponse(
+                    status_code=200,
+                    headers={"content-type": "application/json"},
+                    body=b'{"status":"done"}',
+                )
+            return TunnelResponse(status_code=404, headers={"content-type": "text/plain"}, body=b"not found")
+
+    tunnel_manager._tunnels["GW777"] = FakeTunnel()
+    session_id = ""
+    try:
+        created = client.post("/api/ui/gateways/GW777/tunnel-session", headers=admin_headers())
+        session_url = created.json()["url"]
+        session_id = session_url.rstrip("/").split("/")[-1]
+        start = client.get(f"{session_url}device-ping/start?run=1&read_metadata=no")
+        status = client.get(f"{session_url}device-ping/status/abc")
+        escaped_status = client.get("/device-ping/status/abc")
+    finally:
+        tunnel_manager._tunnels.pop("GW777", None)
+        if session_id:
+            tunnel_session_manager._sessions.pop(session_id, None)
+
+    assert start.status_code == 200
+    assert status.status_code == 200
+    assert escaped_status.status_code == 404
+    assert captured[0]["path"] == "/device-ping/start"
+    assert captured[0]["query_string"] == "run=1&read_metadata=no"
+    assert captured[1]["path"] == "/device-ping/status/abc"
 
 
 def test_tunnel_proxy_does_not_rewrite_html_body() -> None:

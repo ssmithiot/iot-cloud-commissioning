@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import ipaddress
+import json
 import logging
 import re
 from urllib.parse import parse_qsl, quote, urlsplit
@@ -233,6 +234,63 @@ def _tunnel_session_prefix(gateway_id: str, session_id: str) -> str:
     return f"/gateways/{quote(gateway_id, safe='')}/tunnel/session/{quote(session_id, safe='')}"
 
 
+def _rewrite_tunnel_session_root_relative_url(url: str, redirect_prefix: str) -> str:
+    if not url.startswith("/") or url.startswith("//"):
+        return url
+    if url == redirect_prefix or url.startswith(f"{redirect_prefix}/"):
+        return url
+    return f"{redirect_prefix}{url}"
+
+
+def _tunnel_fetch_xhr_helper_script(redirect_prefix: str) -> str:
+    prefix_json = json.dumps(redirect_prefix)
+    return f"""<script>
+(function () {{
+    "use strict";
+    var tunnelPrefix = {prefix_json};
+    function rewriteRootRelativeUrl(value) {{
+        if (typeof value !== "string") {{
+            return value;
+        }}
+        if (value.charAt(0) !== "/" || value.charAt(1) === "/") {{
+            return value;
+        }}
+        if (value === tunnelPrefix || value.indexOf(tunnelPrefix + "/") === 0) {{
+            return value;
+        }}
+        return tunnelPrefix + value;
+    }}
+    function rewriteSameOriginUrl(value) {{
+        if (typeof value === "string") {{
+            return rewriteRootRelativeUrl(value);
+        }}
+        if (value instanceof URL && value.origin === window.location.origin) {{
+            var originalPath = value.pathname + value.search + value.hash;
+            var rewrittenPath = rewriteRootRelativeUrl(originalPath);
+            if (rewrittenPath !== originalPath) {{
+                return new URL(rewrittenPath, window.location.origin);
+            }}
+        }}
+        return value;
+    }}
+    if (window.fetch) {{
+        var originalFetch = window.fetch;
+        window.fetch = function (input, init) {{
+            return originalFetch.call(this, rewriteSameOriginUrl(input), init);
+        }};
+    }}
+    if (window.XMLHttpRequest && window.XMLHttpRequest.prototype.open) {{
+        var originalOpen = window.XMLHttpRequest.prototype.open;
+        window.XMLHttpRequest.prototype.open = function (method, url) {{
+            var args = Array.prototype.slice.call(arguments);
+            args[1] = rewriteSameOriginUrl(url);
+            return originalOpen.apply(this, args);
+        }};
+    }}
+}})();
+</script>"""
+
+
 def _rewrite_tunnel_redirect_location(redirect_prefix: str, location: str) -> str:
     location = location.strip()
     if not location or "\r" in location or "\n" in location:
@@ -288,7 +346,18 @@ def _rewrite_tunnel_html_body(body: bytes, redirect_prefix: str) -> bytes:
                 rewritten = url
         return f"{match.group('attr')}{match.group('quote')}{rewritten}{match.group('quote')}"
 
-    return TUNNEL_HTML_ATTR_PATTERN.sub(replace, html).encode("utf-8")
+    html = TUNNEL_HTML_ATTR_PATTERN.sub(replace, html)
+    if not re.search(r"</?(?:html|head|body|script|a|form|img|link|button)\b", html, re.IGNORECASE):
+        return html.encode("utf-8")
+
+    helper = _tunnel_fetch_xhr_helper_script(redirect_prefix)
+    if re.search(r"</head\s*>", html, re.IGNORECASE):
+        html = re.sub(r"</head\s*>", f"{helper}</head>", html, count=1, flags=re.IGNORECASE)
+    elif re.search(r"</body\s*>", html, re.IGNORECASE):
+        html = re.sub(r"</body\s*>", f"{helper}</body>", html, count=1, flags=re.IGNORECASE)
+    else:
+        html = f"{html}{helper}"
+    return html.encode("utf-8")
 
 
 def _safe_tunnel_query_keys(query_string: str) -> str:
