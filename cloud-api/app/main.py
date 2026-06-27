@@ -104,11 +104,28 @@ logger = logging.getLogger("iot-cloud-api.tunnel")
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
 TUNNEL_HTML_ATTR_PATTERN = re.compile(r"""(?P<attr>\b(?:href|src|action|formaction)=)(?P<quote>["'])(?P<url>[^"']+)(?P=quote)""", re.IGNORECASE)
-TUNNEL_JSON_REWRITABLE_PATH_PATTERN = re.compile(
-    r"^/(?:device-ping|route-check)/(?:status|results)/[^?#]+(?:[?#].*)?$"
+TUNNEL_GATEWAY_LOCAL_ROUTE_PREFIXES = (
+    "/captures",
+    "/device-ping",
+    "/devices",
+    "/discover",
+    "/exports",
+    "/health",
+    "/login",
+    "/logout",
+    "/packet",
+    "/points",
+    "/programs",
+    "/route-check",
+    "/schedules",
+    "/static",
+    "/template",
+    "/templates",
+    "/view",
+    "/write-pv",
 )
 TUNNEL_JS_ROOT_RELATIVE_PATH_PATTERN = re.compile(
-    r"(?P<quote>[\"'`])(?P<url>/(?:device-ping|route-check)/(?:status|results)(?:/[^\"'`]*)?)(?P=quote)"
+    r"(?P<quote>[\"'`])(?P<url>/(?!/)[^\"'`]*)(?P=quote)"
 )
 
 
@@ -248,10 +265,20 @@ def _rewrite_tunnel_session_root_relative_url(url: str, redirect_prefix: str) ->
     return f"{redirect_prefix}{url}"
 
 
+def _is_tunnel_gateway_local_url(url: str) -> bool:
+    if not url.startswith("/") or url.startswith("//"):
+        return False
+    try:
+        path = urlsplit(url).path or "/"
+    except ValueError:
+        return False
+    return any(path == prefix or path.startswith(f"{prefix}/") for prefix in TUNNEL_GATEWAY_LOCAL_ROUTE_PREFIXES)
+
+
 def _rewrite_tunnel_session_json_url(url: str, redirect_prefix: str) -> str:
     if url == redirect_prefix or url.startswith(f"{redirect_prefix}/"):
         return url
-    if not TUNNEL_JSON_REWRITABLE_PATH_PATTERN.fullmatch(url):
+    if not _is_tunnel_gateway_local_url(url):
         return url
     return _rewrite_tunnel_session_root_relative_url(url, redirect_prefix)
 
@@ -286,6 +313,8 @@ def _rewrite_tunnel_javascript_body(body: bytes, redirect_prefix: str) -> bytes:
 
     def replace(match: re.Match[str]) -> str:
         url = match.group("url")
+        if not _is_tunnel_gateway_local_url(url):
+            return match.group(0)
         rewritten = _rewrite_tunnel_session_root_relative_url(url, redirect_prefix)
         return f"{match.group('quote')}{rewritten}{match.group('quote')}"
 

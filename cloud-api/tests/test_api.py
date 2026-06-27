@@ -1365,6 +1365,139 @@ def test_tunnel_session_rewrites_external_javascript_asset_result_navigation() -
     assert response.text == f'location.assign("{prefix}/device-ping/results/" + jobId);'
 
 
+def test_tunnel_session_rewrites_discover_start_status_and_results_paths() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW777", token_prefix="gw77701")
+    captured: list[dict[str, object]] = []
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            captured.append(kwargs)
+            if kwargs["path"] == "/discover/start":
+                return TunnelResponse(
+                    status_code=200,
+                    headers={"content-type": "text/html"},
+                    body=b"""
+                    <html><head></head><body>
+                    <script>
+                    const statusUrl = "/discover/status/abc";
+                    const resultsUrl = "/discover/results/abc";
+                    fetch(statusUrl).then(function () { window.location.href = resultsUrl; });
+                    </script>
+                    </body></html>
+                    """,
+                )
+            if kwargs["path"] == "/discover/status/abc":
+                return TunnelResponse(
+                    status_code=200,
+                    headers={"content-type": "application/json"},
+                    body=b'{"ok":true,"done":true}',
+                )
+            if kwargs["path"] == "/discover/results/abc":
+                return TunnelResponse(
+                    status_code=200,
+                    headers={"content-type": "text/html"},
+                    body=b"<html><head></head><body>discovered</body></html>",
+                )
+            return TunnelResponse(status_code=404, headers={"content-type": "text/plain"}, body=b"not found")
+
+    tunnel_manager._tunnels["GW777"] = FakeTunnel()
+    session_id = ""
+    try:
+        created = client.post("/api/ui/gateways/GW777/tunnel-session", headers=admin_headers())
+        session_url = created.json()["url"]
+        session_id = session_url.rstrip("/").split("/")[-1]
+        start = client.post(f"{session_url}discover/start")
+        prefix = f"/gateways/GW777/tunnel/session/{session_id}"
+        status = client.get(f"{prefix}/discover/status/abc")
+        results = client.get(f"{prefix}/discover/results/abc")
+        escaped_results = client.get("/discover/results/abc")
+    finally:
+        tunnel_manager._tunnels.pop("GW777", None)
+        if session_id:
+            tunnel_session_manager._sessions.pop(session_id, None)
+
+    prefix = f"/gateways/GW777/tunnel/session/{session_id}"
+    assert start.status_code == 200
+    assert f'const statusUrl = "{prefix}/discover/status/abc"' in start.text
+    assert f'const resultsUrl = "{prefix}/discover/results/abc"' in start.text
+    assert status.status_code == 200
+    assert results.status_code == 200
+    assert escaped_results.status_code == 404
+    assert captured[0]["path"] == "/discover/start"
+    assert captured[1]["path"] == "/discover/status/abc"
+    assert captured[2]["path"] == "/discover/results/abc"
+
+
+def test_tunnel_session_rewrites_template_and_live_point_refresh_urls() -> None:
+    prefix = "/gateways/GW777/tunnel/session/session-1"
+    html = b"""
+    <html><head></head><body>
+    <script>
+    const response = await fetch(`/template/scan/status/${jobId}`, {cache: "no-store"});
+    const start = await fetch("/template/scan/start", {method: "POST"});
+    const refreshUrl = "/devices/live/profile-1/refresh";
+    const resp = await fetch(refreshUrl + "?read_method=" + encodeURIComponent(method), {method: "POST"});
+    document.getElementById("pvFullPageLink").href = "/write-pv?device=" + encodeURIComponent(device);
+    </script>
+    </body></html>
+    """
+
+    rewritten = main_module._rewrite_tunnel_html_body(html, prefix).decode()
+
+    assert f"fetch(`{prefix}/template/scan/status/${{jobId}}`" in rewritten
+    assert f'fetch("{prefix}/template/scan/start"' in rewritten
+    assert f'const refreshUrl = "{prefix}/devices/live/profile-1/refresh"' in rewritten
+    assert f'pvFullPageLink").href = "{prefix}/write-pv?device="' in rewritten
+
+
+def test_tunnel_session_rewrites_packet_capture_urls() -> None:
+    prefix = "/gateways/GW777/tunnel/session/session-1"
+    html = b"""
+    <html><head></head><body>
+    <form method="post" action="/captures/start"></form>
+    <form method="post" action="/captures/stop/job-1"></form>
+    <a href="/captures/download/capture.pcap">Download</a>
+    <script>
+    fetch('/captures/jobs').then(function (r) { return r.json(); });
+    </script>
+    </body></html>
+    """
+
+    rewritten = main_module._rewrite_tunnel_html_body(html, prefix).decode()
+
+    assert f'action="{prefix}/captures/start"' in rewritten
+    assert f'action="{prefix}/captures/stop/job-1"' in rewritten
+    assert f'href="{prefix}/captures/download/capture.pcap"' in rewritten
+    assert f"fetch('{prefix}/captures/jobs')" in rewritten
+
+
+def test_tunnel_session_json_rewrites_gateway_local_allowlist_urls() -> None:
+    prefix = "/gateways/GW777/tunnel/session/session-1"
+    payload = {
+        "discover": "/discover/results/abc",
+        "template": "/template/scan/status/abc",
+        "live": "/devices/live/profile-1/refresh?read_method=rpm",
+        "capture": "/captures/jobs",
+        "write": "/write-pv/apply",
+        "external": "https://example.com/discover/results/abc",
+        "cloud": "/api/ui/gateways",
+        "ordinary": "discover/results/abc",
+    }
+
+    rewritten = json.loads(main_module._rewrite_tunnel_json_body(json.dumps(payload).encode(), prefix))
+
+    assert rewritten["discover"] == f"{prefix}/discover/results/abc"
+    assert rewritten["template"] == f"{prefix}/template/scan/status/abc"
+    assert rewritten["live"] == f"{prefix}/devices/live/profile-1/refresh?read_method=rpm"
+    assert rewritten["capture"] == f"{prefix}/captures/jobs"
+    assert rewritten["write"] == f"{prefix}/write-pv/apply"
+    assert rewritten["external"] == payload["external"]
+    assert rewritten["cloud"] == payload["cloud"]
+    assert rewritten["ordinary"] == payload["ordinary"]
+
+
 def test_tunnel_session_device_ping_start_status_and_results_proxy_through_session() -> None:
     from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
 
