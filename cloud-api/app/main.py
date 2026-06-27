@@ -104,6 +104,9 @@ logger = logging.getLogger("iot-cloud-api.tunnel")
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
 TUNNEL_HTML_ATTR_PATTERN = re.compile(r"""(?P<attr>\b(?:href|src|action|formaction)=)(?P<quote>["'])(?P<url>[^"']+)(?P=quote)""", re.IGNORECASE)
+TUNNEL_JSON_REWRITABLE_PATH_PATTERN = re.compile(
+    r"^/(?:device-ping|route-check)/(?:status|results)/[^?#]+(?:[?#].*)?$"
+)
 
 
 def _aware_utc(value: datetime | None) -> datetime | None:
@@ -240,6 +243,36 @@ def _rewrite_tunnel_session_root_relative_url(url: str, redirect_prefix: str) ->
     if url == redirect_prefix or url.startswith(f"{redirect_prefix}/"):
         return url
     return f"{redirect_prefix}{url}"
+
+
+def _rewrite_tunnel_session_json_url(url: str, redirect_prefix: str) -> str:
+    if url == redirect_prefix or url.startswith(f"{redirect_prefix}/"):
+        return url
+    if not TUNNEL_JSON_REWRITABLE_PATH_PATTERN.fullmatch(url):
+        return url
+    return _rewrite_tunnel_session_root_relative_url(url, redirect_prefix)
+
+
+def _rewrite_tunnel_json_value(value: object, redirect_prefix: str) -> object:
+    if isinstance(value, str):
+        return _rewrite_tunnel_session_json_url(value, redirect_prefix)
+    if isinstance(value, list):
+        return [_rewrite_tunnel_json_value(item, redirect_prefix) for item in value]
+    if isinstance(value, dict):
+        return {key: _rewrite_tunnel_json_value(item, redirect_prefix) for key, item in value.items()}
+    return value
+
+
+def _rewrite_tunnel_json_body(body: bytes, redirect_prefix: str) -> bytes:
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return body
+
+    rewritten = _rewrite_tunnel_json_value(parsed, redirect_prefix)
+    if rewritten == parsed:
+        return body
+    return json.dumps(rewritten, separators=(",", ":")).encode("utf-8")
 
 
 def _tunnel_fetch_xhr_helper_script(redirect_prefix: str) -> str:
@@ -975,8 +1008,14 @@ async def _proxy_gateway_tunnel_request(
     )
     content_type = next((value for key, value in response_headers.items() if key.lower() == "content-type"), "")
     response_body = tunnel_response.body
+    html_rewritten = False
+    json_rewritten = False
     if rewrite_html_body and "text/html" in content_type.lower():
         response_body = _rewrite_tunnel_html_body(tunnel_response.body, redirect_prefix)
+        html_rewritten = response_body != tunnel_response.body
+    elif rewrite_html_body and "application/json" in content_type.lower():
+        response_body = _rewrite_tunnel_json_body(tunnel_response.body, redirect_prefix)
+        json_rewritten = response_body != tunnel_response.body
 
     response_header_names = {key.lower() for key in response_headers}
     upstream_location = next((value for key, value in tunnel_response.headers.items() if key.lower() == "location"), None)
@@ -984,7 +1023,7 @@ async def _proxy_gateway_tunnel_request(
     logger.warning(
         "TUNNEL_PROXY_DEBUG response gateway=%s method=%s path=%s status=%s content_type=%s body_bytes=%s "
         "upstream_location_shape=%s response_location_shape=%s response_location_session_slash=%s "
-        "set_cookie_received=%s set_cookie_forwarded=%s html_rewritten=%s",
+        "set_cookie_received=%s set_cookie_forwarded=%s html_rewritten=%s json_rewritten=%s",
         gateway_id,
         request.method,
         upstream_path,
@@ -996,7 +1035,8 @@ async def _proxy_gateway_tunnel_request(
         f"{redirect_prefix}/" in response_location if response_location else False,
         any(key.lower() == "set-cookie" for key in tunnel_response.headers),
         "set-cookie" in response_header_names,
-        response_body != tunnel_response.body,
+        html_rewritten,
+        json_rewritten,
     )
 
     return Response(

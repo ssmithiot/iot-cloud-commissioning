@@ -1,5 +1,6 @@
 import os
 import base64
+import json
 import logging
 import sys
 from datetime import datetime, timedelta, timezone
@@ -1240,7 +1241,78 @@ def test_tunnel_session_helper_does_not_rewrite_external_urls() -> None:
     assert main_module._rewrite_tunnel_session_root_relative_url("//example.com/api", prefix) == "//example.com/api"
 
 
-def test_tunnel_session_device_ping_start_and_status_proxy_through_session() -> None:
+def test_tunnel_session_rewrites_json_device_ping_results_url() -> None:
+    from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
+
+    create_gateway_token("GW777", token_prefix="gw77701")
+
+    class FakeTunnel:
+        async def request(self, **kwargs):
+            return TunnelResponse(
+                status_code=200,
+                headers={"content-type": "application/json", "content-length": "42"},
+                body=b'{"results_url":"/device-ping/results/abc"}',
+            )
+
+    tunnel_manager._tunnels["GW777"] = FakeTunnel()
+    session_id = ""
+    try:
+        created = client.post("/api/ui/gateways/GW777/tunnel-session", headers=admin_headers())
+        session_url = created.json()["url"]
+        session_id = session_url.rstrip("/").split("/")[-1]
+        response = client.get(f"{session_url}device-ping/status/abc")
+    finally:
+        tunnel_manager._tunnels.pop("GW777", None)
+        if session_id:
+            tunnel_session_manager._sessions.pop(session_id, None)
+
+    prefix = f"/gateways/GW777/tunnel/session/{session_id}"
+    assert response.status_code == 200
+    assert response.json()["results_url"] == f"{prefix}/device-ping/results/abc"
+    assert response.headers["content-length"] == str(len(response.content))
+
+
+def test_tunnel_session_rewrites_json_device_ping_status_url() -> None:
+    prefix = "/gateways/GW777/tunnel/session/session-1"
+
+    body = main_module._rewrite_tunnel_json_body(b'{"status_url":"/device-ping/status/abc?poll=1"}', prefix)
+
+    assert json.loads(body)["status_url"] == f"{prefix}/device-ping/status/abc?poll=1"
+
+
+def test_tunnel_session_rewrites_nested_json_and_arrays() -> None:
+    prefix = "/gateways/GW777/tunnel/session/session-1"
+    payload = {
+        "next": {"url": "/route-check/status/abc"},
+        "links": ["/route-check/results/abc", "/device-ping/results/def?download=1"],
+    }
+
+    body = main_module._rewrite_tunnel_json_body(json.dumps(payload).encode(), prefix)
+
+    rewritten = json.loads(body)
+    assert rewritten["next"]["url"] == f"{prefix}/route-check/status/abc"
+    assert rewritten["links"] == [
+        f"{prefix}/route-check/results/abc",
+        f"{prefix}/device-ping/results/def?download=1",
+    ]
+
+
+def test_tunnel_session_json_rewrite_preserves_prefixed_external_and_non_url_strings() -> None:
+    prefix = "/gateways/GW777/tunnel/session/session-1"
+    payload = {
+        "already": f"{prefix}/device-ping/results/abc",
+        "external": "https://example.com/device-ping/results/abc",
+        "protocol_relative": "//example.com/device-ping/results/abc",
+        "ordinary": "device-ping/results/abc",
+        "other_root": "/api/cloud-route",
+    }
+
+    body = main_module._rewrite_tunnel_json_body(json.dumps(payload).encode(), prefix)
+
+    assert json.loads(body) == payload
+
+
+def test_tunnel_session_device_ping_start_status_and_results_proxy_through_session() -> None:
     from app.tunnel import TunnelResponse, tunnel_manager, tunnel_session_manager
 
     create_gateway_token("GW777", token_prefix="gw77701")
@@ -1259,7 +1331,13 @@ def test_tunnel_session_device_ping_start_and_status_proxy_through_session() -> 
                 return TunnelResponse(
                     status_code=200,
                     headers={"content-type": "application/json"},
-                    body=b'{"status":"done"}',
+                    body=b'{"status":"done","results_url":"/device-ping/results/abc"}',
+                )
+            if kwargs["path"] == "/device-ping/results/abc":
+                return TunnelResponse(
+                    status_code=200,
+                    headers={"content-type": "text/html"},
+                    body=b"<html><head></head><body>results</body></html>",
                 )
             return TunnelResponse(status_code=404, headers={"content-type": "text/plain"}, body=b"not found")
 
@@ -1271,18 +1349,26 @@ def test_tunnel_session_device_ping_start_and_status_proxy_through_session() -> 
         session_id = session_url.rstrip("/").split("/")[-1]
         start = client.get(f"{session_url}device-ping/start?run=1&read_metadata=no")
         status = client.get(f"{session_url}device-ping/status/abc")
+        result_url = status.json()["results_url"]
+        results = client.get(result_url)
         escaped_status = client.get("/device-ping/status/abc")
+        escaped_results = client.get("/device-ping/results/abc")
     finally:
         tunnel_manager._tunnels.pop("GW777", None)
         if session_id:
             tunnel_session_manager._sessions.pop(session_id, None)
 
+    prefix = f"/gateways/GW777/tunnel/session/{session_id}"
     assert start.status_code == 200
     assert status.status_code == 200
+    assert status.json()["results_url"] == f"{prefix}/device-ping/results/abc"
+    assert results.status_code == 200
     assert escaped_status.status_code == 404
+    assert escaped_results.status_code == 404
     assert captured[0]["path"] == "/device-ping/start"
     assert captured[0]["query_string"] == "run=1&read_metadata=no"
     assert captured[1]["path"] == "/device-ping/status/abc"
+    assert captured[2]["path"] == "/device-ping/results/abc"
 
 
 def test_tunnel_proxy_does_not_rewrite_html_body() -> None:
