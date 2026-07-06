@@ -299,6 +299,7 @@ def test_auth_ui_pages_load(path: str, expected: str) -> None:
 
     assert response.status_code == 200
     assert expected in response.text
+    assert '<a class="button secondary home-link" href="/app">Home</a>' in response.text
 
 
 def test_admin_users_page_uses_session_api_not_manual_token_paste() -> None:
@@ -324,6 +325,29 @@ def test_protected_ui_contains_unauthenticated_redirect() -> None:
     assert response.status_code == 200
     assert 'window.location.assign(statePaths.login)' in response.text
     assert "/api/auth/me" in response.text
+
+
+def test_dashboard_highlights_online_gateway_status() -> None:
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert ".status-online" in response.text
+    assert 'return \'<span class="status-online">ONLINE</span>\';' in response.text
+    assert "return escapeHtml(statusLabel(gateway));" in response.text
+    assert "<td>${dashboardStatusCell(gateway)}</td>" in response.text
+
+
+def test_dashboard_gateway_table_supports_search_and_sort() -> None:
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert 'id="gateway-search"' in response.text
+    assert "setupGatewaySearch" in response.text
+    assert "gatewaySearchText" in response.text
+    assert "sortedDashboardGateways" in response.text
+    assert 'data-sort="gateway_id"' in response.text
+    assert 'data-sort="status"' in response.text
+    assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
 
 
 def test_gateway_workspace_contains_discovery_progress_ui() -> None:

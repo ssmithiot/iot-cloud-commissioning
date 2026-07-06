@@ -10,6 +10,9 @@ APP_SCRIPT = r"""
   let currentUser = null;
   let currentPointCandidateDevice = null;
   let selectedSavedPointIds = new Set();
+  let dashboardGateways = [];
+  let dashboardSort = { key: "gateway_id", direction: "asc" };
+  let dashboardSearch = "";
 
   const statePaths = {
     login: "/login",
@@ -269,9 +272,12 @@ APP_SCRIPT = r"""
       const summary = await api("/api/ui/gateways/summary");
       const gateways = await api("/api/ui/gateways");
       const jobs = await api("/api/edge/jobs?limit=10");
+      dashboardGateways = gateways;
       byId("gateway-count").textContent = `${summary.total} total\n${summary.online} online\n${summary.stale} stale\n${summary.offline} offline`;
       byId("job-count").textContent = String(jobs.length);
-      renderGatewayList(gateways);
+      setupGatewaySearch();
+      setupGatewaySortHeaders();
+      renderGatewayList();
       byId("job-list").textContent = jobs.map((job) => (
         `${job.job_id} | ${job.gateway_id} | ${job.job_type} | ${job.status}`
       )).join("\n") || "No jobs found.";
@@ -300,9 +306,104 @@ APP_SCRIPT = r"""
     return `${gateway.effective_status} | heartbeat ${gateway.heartbeat_age_seconds}s ago`;
   }
 
-  function renderGatewayList(gateways) {
+  function dashboardStatusCell(gateway) {
+    if (gateway.effective_status === "online") {
+      return '<span class="status-online">ONLINE</span>';
+    }
+    return escapeHtml(statusLabel(gateway));
+  }
+
+  function gatewaySortValue(gateway, key) {
+    const values = {
+      gateway_id: gateway.gateway_id,
+      site: `${gateway.site_name || ""} ${gateway.site_id || ""}`,
+      address: gateway.site_compact_address || gateway.site_address || "",
+      hostname: gateway.hostname,
+      status: statusLabel(gateway),
+      network_status_notes: gateway.network_status_notes || "",
+      direct: gateway.direct_connect_available ? "configured" : "not configured",
+      configure: gateway.gateway_id
+    };
+    return String(values[key] ?? "").toLowerCase();
+  }
+
+  function gatewaySearchText(gateway) {
+    return [
+      gateway.gateway_id,
+      gateway.site_name,
+      gateway.site_id,
+      gateway.site_compact_address,
+      gateway.site_address,
+      gateway.hostname,
+      statusLabel(gateway),
+      gateway.network_status_notes,
+      gateway.direct_connect_available ? "configured" : "not configured"
+    ].map((value) => String(value ?? "").toLowerCase()).join(" ");
+  }
+
+  function sortedDashboardGateways() {
+    const direction = dashboardSort.direction === "desc" ? -1 : 1;
+    const search = dashboardSearch.trim().toLowerCase();
+    const gateways = search
+      ? dashboardGateways.filter((gateway) => gatewaySearchText(gateway).includes(search))
+      : dashboardGateways;
+    return [...gateways].sort((left, right) => {
+      const leftValue = gatewaySortValue(left, dashboardSort.key);
+      const rightValue = gatewaySortValue(right, dashboardSort.key);
+      const compared = leftValue.localeCompare(rightValue, undefined, { numeric: true, sensitivity: "base" });
+      if (compared !== 0) {
+        return compared * direction;
+      }
+      return gatewaySortValue(left, "gateway_id").localeCompare(gatewaySortValue(right, "gateway_id"), undefined, { numeric: true, sensitivity: "base" });
+    });
+  }
+
+  function updateGatewaySortHeaders() {
+    document.querySelectorAll("[data-sort]").forEach((button) => {
+      const isActive = button.dataset.sort === dashboardSort.key;
+      button.dataset.direction = isActive ? dashboardSort.direction : "";
+      button.setAttribute("aria-sort", isActive ? (dashboardSort.direction === "asc" ? "ascending" : "descending") : "none");
+      const label = button.dataset.label || button.textContent;
+      button.textContent = isActive ? `${label} (${dashboardSort.direction})` : label;
+    });
+  }
+
+  function setupGatewaySortHeaders() {
+    document.querySelectorAll("[data-sort]").forEach((button) => {
+      if (button.dataset.sortReady === "true") {
+        return;
+      }
+      button.dataset.label = button.textContent;
+      button.dataset.sortReady = "true";
+      button.addEventListener("click", () => {
+        const key = button.dataset.sort;
+        if (dashboardSort.key === key) {
+          dashboardSort = { key, direction: dashboardSort.direction === "asc" ? "desc" : "asc" };
+        } else {
+          dashboardSort = { key, direction: "asc" };
+        }
+        renderGatewayList();
+      });
+    });
+    updateGatewaySortHeaders();
+  }
+
+  function setupGatewaySearch() {
+    const search = byId("gateway-search");
+    if (!search || search.dataset.searchReady === "true") {
+      return;
+    }
+    search.dataset.searchReady = "true";
+    search.addEventListener("input", () => {
+      dashboardSearch = search.value;
+      renderGatewayList();
+    });
+  }
+
+  function renderGatewayList() {
     const table = byId("gateway-list");
     table.textContent = "";
+    const gateways = sortedDashboardGateways();
     if (!gateways.length) {
       const row = document.createElement("tr");
       row.innerHTML = `<td colspan="8">No gateways found.</td>`;
@@ -316,7 +417,7 @@ APP_SCRIPT = r"""
         <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
         <td>${escapeHtml(gateway.site_compact_address || gateway.site_address || "")}</td>
         <td>${escapeHtml(gateway.hostname)}</td>
-        <td>${statusLabel(gateway)}</td>
+        <td>${dashboardStatusCell(gateway)}</td>
         <td>${escapeHtml(gateway.network_status_notes || "")}</td>
         <td>${directConnectCell(gateway)}</td>
         <td><a class="button secondary" href="/gateways/${encodeURIComponent(gateway.gateway_id)}/configure">Configure</a></td>
@@ -339,6 +440,7 @@ APP_SCRIPT = r"""
         }
       });
     });
+    updateGatewaySortHeaders();
   }
 
   function objectFolderLabel(objectType) {
@@ -1330,6 +1432,44 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       color: var(--muted);
     }}
     .notice.error {{ color: var(--danger); }}
+    .sort-header {{
+      min-height: 0;
+      border: 0;
+      padding: 0;
+      color: inherit;
+      background: transparent;
+      font: inherit;
+      font-weight: 700;
+      text-transform: inherit;
+      cursor: pointer;
+    }}
+    .sort-header:hover {{
+      color: var(--accent);
+    }}
+    .table-actions {{
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: end;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }}
+    .search-field {{
+      width: min(340px, 100%);
+    }}
+    .home-link {{
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      z-index: 10;
+      box-shadow: 0 1px 3px rgba(23, 32, 44, 0.16);
+    }}
+    .status-online {{
+      color: #0066ff;
+      font-weight: 800;
+      font-size: 1.25rem;
+      letter-spacing: 0.03em;
+    }}
     progress {{
       width: min(420px, 100%);
       height: 18px;
@@ -1457,6 +1597,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
   </style>
 </head>
 <body data-page="{page}" {body_attrs}>
+  <a class="button secondary home-link" href="/app">Home</a>
   {body}
   {APP_SCRIPT}
 </body>
@@ -1586,17 +1727,23 @@ def app_html() -> str:
     </section>
     <section>
       <h2>Gateways</h2>
+      <div class="table-actions">
+        <div class="search-field">
+          <label for="gateway-search">Search</label>
+          <input id="gateway-search" type="search" autocomplete="off">
+        </div>
+      </div>
       <table>
         <thead>
           <tr>
-            <th>Gateway</th>
-            <th>Site</th>
-            <th>Address</th>
-            <th>Hostname</th>
-            <th>Status</th>
-            <th>Network Notes</th>
-            <th>Direct</th>
-            <th>Configure</th>
+            <th><button class="sort-header" type="button" data-sort="gateway_id">Gateway</button></th>
+            <th><button class="sort-header" type="button" data-sort="site">Site</button></th>
+            <th><button class="sort-header" type="button" data-sort="address">Address</button></th>
+            <th><button class="sort-header" type="button" data-sort="hostname">Hostname</button></th>
+            <th><button class="sort-header" type="button" data-sort="status">Status</button></th>
+            <th><button class="sort-header" type="button" data-sort="network_status_notes">Network Notes</button></th>
+            <th><button class="sort-header" type="button" data-sort="direct">Direct</button></th>
+            <th><button class="sort-header" type="button" data-sort="configure">Configure</button></th>
           </tr>
         </thead>
         <tbody id="gateway-list"></tbody>
