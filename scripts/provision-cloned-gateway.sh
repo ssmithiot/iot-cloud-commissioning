@@ -67,8 +67,8 @@ if [[ -z "${GATEWAY_ID}" || -z "${SITE_ID}" || -z "${CLOUD_URL}" || -z "${TOKEN_
   exit 1
 fi
 
-if [[ ! "${GATEWAY_ID}" =~ ^GW[0-9]{3}$ ]]; then
-  echo "--gateway-id must look like GW007." >&2
+if [[ ! "${GATEWAY_ID}" =~ ^[A-Z]{2,5}[0-9]{3}$ ]]; then
+  echo "--gateway-id must look like GW007 or NCS001." >&2
   exit 1
 fi
 
