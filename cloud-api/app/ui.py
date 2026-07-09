@@ -383,7 +383,7 @@ APP_SCRIPT = r"""
 
   function setMapZoom(nextZoom, anchor = null) {
     const oldZoom = mapZoom;
-    const newZoom = Math.max(1, Math.min(10, Math.round(nextZoom * 10) / 10));
+    const newZoom = Math.max(1, Math.min(30, Math.round(nextZoom * 10) / 10));
     if (newZoom === oldZoom) {
       return;
     }
@@ -403,6 +403,9 @@ APP_SCRIPT = r"""
       viewport.scrollLeft = ((viewport.scrollLeft + offsetX) * ratio) - offsetX;
       viewport.scrollTop = ((viewport.scrollTop + offsetY) * ratio) - offsetY;
     }
+    if (dashboardGateways.length) {
+      renderGatewayMap(sortedDashboardGateways());
+    }
   }
 
   function setupMapControls() {
@@ -414,11 +417,11 @@ APP_SCRIPT = r"""
     const shark = byId("bermuda-shark");
     if (zoomIn && zoomIn.dataset.zoomReady !== "true") {
       zoomIn.dataset.zoomReady = "true";
-      zoomIn.addEventListener("click", () => setMapZoom(mapZoom + 2.5));
+      zoomIn.addEventListener("click", () => setMapZoom(mapZoom + 5));
     }
     if (zoomOut && zoomOut.dataset.zoomReady !== "true") {
       zoomOut.dataset.zoomReady = "true";
-      zoomOut.addEventListener("click", () => setMapZoom(mapZoom - 2.5));
+      zoomOut.addEventListener("click", () => setMapZoom(mapZoom - 5));
     }
     if (zoomReset && zoomReset.dataset.zoomReady !== "true") {
       zoomReset.dataset.zoomReady = "true";
@@ -726,6 +729,41 @@ APP_SCRIPT = r"""
     return siteId || siteName || "Unassigned site";
   }
 
+  function clusterStatusClass(gateways) {
+    if (gateways.some((gateway) => gatewayStatusClass(gateway) === "online")) {
+      return "online";
+    }
+    if (gateways.some((gateway) => gatewayStatusClass(gateway) === "stale")) {
+      return "stale";
+    }
+    return "offline";
+  }
+
+  function clusteredGatewayMapEntries(gateways) {
+    const threshold = Math.max(0.1, 2.4 / mapZoom);
+    const clusters = [];
+    for (const gateway of gateways) {
+      const [x, y] = gatewayMapPosition(gateway);
+      let matched = null;
+      for (const cluster of clusters) {
+        const distance = Math.hypot(cluster.x - x, cluster.y - y);
+        if (distance <= threshold) {
+          matched = cluster;
+          break;
+        }
+      }
+      if (!matched) {
+        clusters.push({ x, y, gateways: [gateway] });
+        continue;
+      }
+      const nextCount = matched.gateways.length + 1;
+      matched.x = ((matched.x * matched.gateways.length) + x) / nextCount;
+      matched.y = ((matched.y * matched.gateways.length) + y) / nextCount;
+      matched.gateways.push(gateway);
+    }
+    return clusters;
+  }
+
   function renderGatewayMap(gateways) {
     const layer = byId("gateway-map-nodes");
     const count = byId("map-node-count");
@@ -736,17 +774,36 @@ APP_SCRIPT = r"""
     if (count) {
       count.textContent = `${gateways.length} visible node${gateways.length === 1 ? "" : "s"}`;
     }
-    for (const gateway of gateways) {
-      const [x, y] = gatewayMapPosition(gateway);
+    for (const cluster of clusteredGatewayMapEntries(gateways)) {
+      const isCluster = cluster.gateways.length > 1;
+      const gateway = cluster.gateways[0];
       const button = document.createElement("button");
       button.type = "button";
-      button.className = `map-node ${gatewayStatusClass(gateway)}${gateway.gateway_id === selectedDashboardGatewayId ? " selected" : ""}`;
-      button.style.left = `${x}%`;
-      button.style.top = `${y}%`;
+      const statusClass = isCluster ? clusterStatusClass(cluster.gateways) : gatewayStatusClass(gateway);
+      const selected = cluster.gateways.some((item) => item.gateway_id === selectedDashboardGatewayId);
+      button.className = `map-node ${isCluster ? "map-cluster" : ""} ${statusClass}${selected ? " selected" : ""}`;
+      button.style.left = `${cluster.x}%`;
+      button.style.top = `${cluster.y}%`;
       const siteLabel = gatewaySiteLabel(gateway);
-      button.title = `${siteLabel} - ${gateway.gateway_id}`;
-      button.innerHTML = `<span></span><em>${escapeHtml(siteLabel)}</em>`;
-      button.addEventListener("click", () => selectDashboardGateway(gateway.gateway_id));
+      if (isCluster) {
+        const clusterTitle = `${cluster.gateways.length} sites near ${siteLabel}`;
+        button.title = clusterTitle;
+        button.innerHTML = `<span>${escapeHtml(cluster.gateways.length)}</span><em>${escapeHtml(clusterTitle)}</em>`;
+        button.addEventListener("click", (event) => {
+          selectedDashboardGatewayId = gateway.gateway_id;
+          setMapZoom(mapZoom + 5, {
+            viewport: document.querySelector(".usa-map"),
+            clientX: event.clientX,
+            clientY: event.clientY
+          });
+          renderGatewayInspector();
+          renderGatewayList();
+        });
+      } else {
+        button.title = `${siteLabel} - ${gateway.gateway_id}`;
+        button.innerHTML = `<span></span><em>${escapeHtml(siteLabel)}</em>`;
+        button.addEventListener("click", () => selectDashboardGateway(gateway.gateway_id));
+      }
       layer.appendChild(button);
     }
   }
@@ -2491,6 +2548,22 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       background: var(--accent-strong);
       box-shadow: 0 0 16px var(--accent-strong), 0 0 0 6px rgba(118, 247, 166, 0.1);
     }}
+    .map-node.map-cluster {{
+      width: 28px;
+      height: 28px;
+      min-height: 28px;
+    }}
+    .map-node.map-cluster span {{
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(236, 254, 255, 0.78);
+      color: #031314;
+      font: 900 10px/1 "JetBrains Mono", Consolas, monospace;
+      background: var(--accent-strong);
+      box-shadow: 0 0 20px var(--accent-strong), 0 0 0 8px rgba(118, 247, 166, 0.14);
+    }}
     .map-node.stale span {{
       background: var(--warning);
       box-shadow: 0 0 16px var(--warning), 0 0 0 6px rgba(245, 197, 66, 0.1);
@@ -2498,6 +2571,12 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .map-node.offline span {{
       background: var(--danger);
       box-shadow: 0 0 16px var(--danger), 0 0 0 6px rgba(255, 107, 107, 0.1);
+    }}
+    .map-node.map-cluster.stale span {{
+      box-shadow: 0 0 20px var(--warning), 0 0 0 8px rgba(245, 197, 66, 0.14);
+    }}
+    .map-node.map-cluster.offline span {{
+      box-shadow: 0 0 20px var(--danger), 0 0 0 8px rgba(255, 107, 107, 0.14);
     }}
     .map-node.selected {{
       outline: 1px solid rgba(255, 255, 255, 0.9);
