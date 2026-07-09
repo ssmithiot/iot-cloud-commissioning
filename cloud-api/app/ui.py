@@ -403,6 +403,7 @@ APP_SCRIPT = r"""
     const zoomIn = byId("map-zoom-in");
     const zoomOut = byId("map-zoom-out");
     const zoomReset = byId("map-zoom-reset");
+    const shark = byId("bermuda-shark");
     if (zoomIn && zoomIn.dataset.zoomReady !== "true") {
       zoomIn.dataset.zoomReady = "true";
       zoomIn.addEventListener("click", () => setMapZoom(mapZoom + 0.2));
@@ -426,6 +427,13 @@ APP_SCRIPT = r"""
           clientY: event.clientY
         });
       }, { passive: false });
+    }
+    if (shark && shark.dataset.sharkReady !== "true") {
+      shark.dataset.sharkReady = "true";
+      shark.addEventListener("click", (event) => {
+        event.stopPropagation();
+        window.alert("Get back to work.");
+      });
     }
   }
 
@@ -2283,29 +2291,35 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .bermuda-shark {{
       position: absolute;
-      left: 85%;
-      top: 76%;
-      width: 56px;
-      height: 32px;
-      pointer-events: none;
+      left: 86%;
+      top: 75%;
+      width: 32px;
+      height: 24px;
+      min-width: 32px;
+      min-height: 24px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      cursor: pointer;
       z-index: 1;
       opacity: 0.88;
-      animation: shark-swim 8s ease-in-out infinite;
+      animation: shark-swim 14s ease-in-out infinite;
       filter: drop-shadow(0 0 8px rgba(34, 211, 197, 0.22));
     }}
     .bermuda-shark::before {{
       content: "";
       position: absolute;
       left: 10px;
-      top: 0;
-      width: 44px;
-      height: 30px;
+      top: 5px;
+      width: 11px;
+      height: 8px;
       background:
         linear-gradient(126deg, transparent 0 20%, rgba(245, 252, 252, 0.92) 22% 27%, transparent 30% 100%),
         linear-gradient(135deg, rgba(176, 190, 190, 0.98), rgba(75, 86, 89, 0.98));
-      clip-path: path("M 2 29 C 8 10 25 -3 43 4 C 36 10 32 18 33 30 C 24 32 12 31 2 29 Z");
+      clip-path: path("M 0.5 7.5 C 2 2.6 6.2 -0.8 10.8 1 C 9 2.6 8.1 4.9 8.3 8 C 6.1 8.5 3 8.4 0.5 7.5 Z");
       border-radius: 60% 44% 38% 24%;
-      box-shadow: inset -4px -1px 0 rgba(5, 9, 11, 0.82), inset 2px 0 0 rgba(255, 255, 255, 0.16);
+      box-shadow: inset -1px -0.5px 0 rgba(5, 9, 11, 0.82), inset 0.5px 0 0 rgba(255, 255, 255, 0.16);
       filter:
         drop-shadow(1px 0 0 rgba(5, 9, 11, 0.82))
         drop-shadow(-1px 0 0 rgba(5, 9, 11, 0.72))
@@ -2313,20 +2327,24 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       transform-origin: 50% 100%;
       animation: shark-fin-wobble 2.2s ease-in-out infinite;
     }}
+    .bermuda-shark:focus-visible {{
+      outline: 1px solid rgba(34, 211, 197, 0.78);
+      outline-offset: 3px;
+    }}
     .bermuda-shark::after {{
       content: "";
       position: absolute;
-      left: 2px;
-      right: 0;
-      bottom: 4px;
-      height: 5px;
+      left: 7px;
+      right: 7px;
+      bottom: 9px;
+      height: 2px;
       border-radius: 999px;
       background:
         radial-gradient(ellipse at 15% 50%, rgba(34, 211, 197, 0.3), transparent 58%),
         radial-gradient(ellipse at 55% 50%, rgba(34, 211, 197, 0.22), transparent 62%),
         rgba(34, 211, 197, 0.12);
-      box-shadow: 0 0 22px rgba(34, 211, 197, 0.16);
-      animation: shark-wake 2s ease-in-out infinite;
+      box-shadow: 0 0 10px rgba(34, 211, 197, 0.16);
+      animation: shark-wake 1.8s ease-in-out infinite;
     }}
     body[data-page="app"][data-theme="light"] .bermuda-shark {{
       opacity: 0.74;
@@ -2336,11 +2354,14 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       background: linear-gradient(135deg, rgba(77, 125, 133, 0.9), rgba(12, 84, 93, 0.82));
     }}
     @keyframes shark-swim {{
-      0% {{ transform: translateX(-18px) scaleX(-1) rotate(-2deg); }}
-      45% {{ transform: translateX(46px) scaleX(-1) rotate(2deg); }}
-      50% {{ transform: translateX(46px) scaleX(1) rotate(2deg); }}
-      95% {{ transform: translateX(-18px) scaleX(1) rotate(-2deg); }}
-      100% {{ transform: translateX(-18px) scaleX(-1) rotate(-2deg); }}
+      0% {{ transform: translate(0, 0) scaleX(1) rotate(-2deg); }}
+      18% {{ transform: translate(6px, 48px) scaleX(1) rotate(5deg); }}
+      24% {{ transform: translate(6px, 48px) scaleX(1) rotate(5deg); }}
+      30% {{ transform: translate(6px, 48px) scaleX(1) rotate(1deg); }}
+      68% {{ transform: translate(-230px, 62px) scaleX(1) rotate(-3deg); }}
+      74% {{ transform: translate(-230px, 62px) scaleX(-1) rotate(-3deg); }}
+      92% {{ transform: translate(6px, 48px) scaleX(-1) rotate(4deg); }}
+      100% {{ transform: translate(0, 0) scaleX(-1) rotate(-2deg); }}
     }}
     @keyframes shark-fin-wobble {{
       0%, 100% {{ transform: rotate(-1deg) scaleY(0.99); }}
@@ -2842,7 +2863,7 @@ def app_html() -> str:
                 <path class="usa-line" d="M625 142 L642 423"></path>
               </g>
             </svg>
-            <div class="bermuda-shark" aria-hidden="true"></div>
+            <button id="bermuda-shark" class="bermuda-shark" type="button" aria-label="Get back to work" title="Get back to work"></button>
             <div id="gateway-map-nodes" class="map-node-layer"></div>
           </div>
         </div>
