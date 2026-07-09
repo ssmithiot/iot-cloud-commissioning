@@ -19,6 +19,7 @@ APP_SCRIPT = r"""
   let mapProjection = null;
   let roadMap = null;
   let roadMarkerLayer = null;
+  let roadSharkMarker = null;
   let leafletLoadPromise = null;
   let roadMapFitted = false;
   const mapSvgFrame = {
@@ -76,6 +77,25 @@ APP_SCRIPT = r"""
     return leafletLoadPromise;
   }
 
+  function addRoadMapShark() {
+    if (!roadMap || roadSharkMarker || !window.L) {
+      return;
+    }
+    const icon = window.L.divIcon({
+      className: "road-shark-marker",
+      html: '<button class="road-shark-fin" type="button" aria-label="Get back to work" title="Get back to work"></button>',
+      iconSize: [116, 92],
+      iconAnchor: [58, 46]
+    });
+    roadSharkMarker = window.L.marker([24.9, -76.4], {
+      icon,
+      interactive: true,
+      keyboard: true,
+      zIndexOffset: 600
+    }).addTo(roadMap);
+    roadSharkMarker.on("click", () => window.alert("Get back to work."));
+  }
+
   async function initRoadMap() {
     const container = byId("road-map");
     const mapShell = document.querySelector(".usa-map");
@@ -96,6 +116,7 @@ APP_SCRIPT = r"""
         attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
       }).addTo(roadMap);
       roadMarkerLayer = window.L.layerGroup().addTo(roadMap);
+      addRoadMapShark();
       roadMap.on("zoomend moveend", () => renderGatewayMap(sortedDashboardGateways()));
       roadMap.invalidateSize();
       applyMapZoom();
@@ -2674,7 +2695,8 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       display: block;
     }}
     .usa-map.roads-active svg,
-    .usa-map.roads-active .map-node-layer {{
+    .usa-map.roads-active .map-node-layer,
+    .usa-map.roads-active .bermuda-shark {{
       display: none;
     }}
     .usa-map .leaflet-container {{
@@ -2736,6 +2758,34 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       box-shadow: none;
       font: 700 11px/1 "JetBrains Mono", Consolas, monospace;
     }}
+    .road-shark-marker {{
+      width: 116px !important;
+      height: 92px !important;
+      margin: 0 !important;
+      border: 0 !important;
+      background: transparent !important;
+      pointer-events: none;
+    }}
+    .road-shark-fin {{
+      position: absolute;
+      left: 42px;
+      top: 34px;
+      width: 32px;
+      height: 24px;
+      min-width: 32px;
+      min-height: 24px;
+      padding: 0;
+      border: 0 !important;
+      border-radius: 0;
+      background: transparent !important;
+      box-shadow: none;
+      appearance: none;
+      cursor: pointer;
+      opacity: 0.88;
+      filter: drop-shadow(0 0 8px rgba(34, 211, 197, 0.22));
+      animation: road-shark-circle 88s ease-in-out infinite;
+      pointer-events: auto;
+    }}
     body[data-page="app"] .bermuda-shark {{
       position: absolute;
       left: 62%;
@@ -2756,7 +2806,8 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       animation: shark-swim 96s ease-in-out infinite;
       filter: drop-shadow(0 0 8px rgba(34, 211, 197, 0.22));
     }}
-    .bermuda-shark::before {{
+    .bermuda-shark::before,
+    .road-shark-fin::before {{
       content: "";
       position: absolute;
       left: 10px;
@@ -2776,11 +2827,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       transform-origin: 50% 100%;
       animation: shark-fin-wobble 2.2s ease-in-out infinite;
     }}
-    .bermuda-shark:focus-visible {{
+    .bermuda-shark:focus-visible,
+    .road-shark-fin:focus-visible {{
       outline: 1px solid rgba(34, 211, 197, 0.78);
       outline-offset: 3px;
     }}
-    .bermuda-shark::after {{
+    .bermuda-shark::after,
+    .road-shark-fin::after {{
       content: "";
       position: absolute;
       left: 7px;
@@ -2799,8 +2852,17 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       opacity: 0.74;
       filter: drop-shadow(0 0 10px rgba(8, 127, 134, 0.18));
     }}
-    body[data-page="app"][data-theme="light"] .bermuda-shark::before {{
+    body[data-page="app"][data-theme="light"] .bermuda-shark::before,
+    body[data-page="app"][data-theme="light"] .road-shark-fin::before {{
       background: linear-gradient(135deg, rgba(77, 125, 133, 0.9), rgba(12, 84, 93, 0.82));
+    }}
+    @keyframes road-shark-circle {{
+      0% {{ transform: translate(0, -18px) scaleX(1) rotate(-8deg); }}
+      20% {{ transform: translate(34px, -6px) scaleX(1) rotate(2deg); }}
+      40% {{ transform: translate(24px, 20px) scaleX(-1) rotate(9deg); }}
+      60% {{ transform: translate(-24px, 22px) scaleX(-1) rotate(2deg); }}
+      80% {{ transform: translate(-36px, -4px) scaleX(1) rotate(-10deg); }}
+      100% {{ transform: translate(0, -18px) scaleX(1) rotate(-8deg); }}
     }}
     @keyframes shark-swim {{
       0% {{ transform: translate(0, 0) scaleX(1) rotate(-4deg); }}
