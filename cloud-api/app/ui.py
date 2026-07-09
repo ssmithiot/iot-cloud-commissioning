@@ -15,6 +15,7 @@ APP_SCRIPT = r"""
   let selectedDashboardGatewayId = null;
   let dashboardSort = { key: "gateway_id", direction: "desc" };
   let dashboardSearch = "";
+  let mapZoom = 1;
   const themeStorageKey = "iot-cloud-command-theme";
 
   const statePaths = {
@@ -345,6 +346,44 @@ APP_SCRIPT = r"""
     return Math.abs(hash);
   }
 
+  function applyMapZoom() {
+    const content = byId("map-zoom-content");
+    const label = byId("map-zoom-label");
+    if (!content) {
+      return;
+    }
+    const zoom = Math.round(mapZoom * 100);
+    content.style.width = `${zoom}%`;
+    content.style.height = `${zoom}%`;
+    if (label) {
+      label.textContent = `${zoom}%`;
+    }
+  }
+
+  function setMapZoom(nextZoom) {
+    mapZoom = Math.max(1, Math.min(2.5, Math.round(nextZoom * 10) / 10));
+    applyMapZoom();
+  }
+
+  function setupMapControls() {
+    applyMapZoom();
+    const zoomIn = byId("map-zoom-in");
+    const zoomOut = byId("map-zoom-out");
+    const zoomReset = byId("map-zoom-reset");
+    if (zoomIn && zoomIn.dataset.zoomReady !== "true") {
+      zoomIn.dataset.zoomReady = "true";
+      zoomIn.addEventListener("click", () => setMapZoom(mapZoom + 0.2));
+    }
+    if (zoomOut && zoomOut.dataset.zoomReady !== "true") {
+      zoomOut.dataset.zoomReady = "true";
+      zoomOut.addEventListener("click", () => setMapZoom(mapZoom - 0.2));
+    }
+    if (zoomReset && zoomReset.dataset.zoomReady !== "true") {
+      zoomReset.dataset.zoomReady = "true";
+      zoomReset.addEventListener("click", () => setMapZoom(1));
+    }
+  }
+
   async function renderUsaMapBase() {
     const svg = byId("usa-map-base");
     if (!svg || svg.dataset.loaded === "true") {
@@ -444,6 +483,7 @@ APP_SCRIPT = r"""
 
   async function initDashboard() {
     initThemeToggle();
+    setupMapControls();
     renderUsaMapBase();
     const me = await initProtectedPage(null);
     if (!me) {
@@ -2090,7 +2130,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .map-panel,
     .inspector-panel,
-    .fleet-panel,
+    .gateway-panel,
     .ticker-panel {{
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -2099,13 +2139,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     body[data-page="app"][data-theme="light"] .map-panel,
     body[data-page="app"][data-theme="light"] .inspector-panel,
-    body[data-page="app"][data-theme="light"] .fleet-panel,
+    body[data-page="app"][data-theme="light"] .gateway-panel,
     body[data-page="app"][data-theme="light"] .ticker-panel {{
       background: rgba(255, 255, 255, 0.82);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 18px 44px rgba(23, 42, 49, 0.12);
     }}
     .map-panel,
-    .fleet-panel,
+    .gateway-panel,
     .ticker-panel {{
       padding: 18px;
     }}
@@ -2117,18 +2157,40 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       gap: 16px;
       margin-bottom: 14px;
     }}
+    .map-toolbar {{
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }}
+    .map-tool-button {{
+      min-height: 30px;
+      border-radius: 5px;
+      padding: 5px 9px;
+      font: 800 11px/1 "JetBrains Mono", Consolas, monospace;
+    }}
     .usa-map {{
       position: relative;
       min-height: 430px;
       height: 56vh;
       max-height: 680px;
-      overflow: hidden;
+      overflow: auto;
       border: 1px solid rgba(34, 211, 197, 0.16);
       border-radius: 8px;
       background:
         repeating-linear-gradient(0deg, rgba(34, 211, 197, 0.055) 0 1px, transparent 1px 54px),
         repeating-linear-gradient(90deg, rgba(34, 211, 197, 0.045) 0 1px, transparent 1px 54px),
         rgba(4, 12, 14, 0.82);
+      scrollbar-color: rgba(34, 211, 197, 0.7) rgba(4, 12, 14, 0.9);
+      scrollbar-width: thin;
+    }}
+    .map-zoom-content {{
+      position: relative;
+      min-width: 100%;
+      min-height: 100%;
+      width: 100%;
+      height: 100%;
     }}
     body[data-page="app"][data-theme="light"] .usa-map {{
       border-color: rgba(8, 127, 134, 0.2);
@@ -2307,7 +2369,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       color: var(--muted);
       text-align: center;
     }}
-    .fleet-toolbar {{
+    .gateway-toolbar {{
       display: grid;
       grid-template-columns: minmax(260px, 520px) minmax(0, 1fr);
       gap: 14px;
@@ -2455,7 +2517,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       table {{ display: block; overflow-x: auto; white-space: nowrap; }}
       .tree-shell {{ grid-template-columns: 1fr; }}
       .command-strip,
-      .fleet-toolbar {{
+      .gateway-toolbar {{
         grid-template-columns: 1fr;
       }}
       .usa-map {{
@@ -2611,40 +2673,48 @@ def app_html() -> str:
             <span class="eyebrow">USA Gateway Mesh</span>
             <h2>Cloud Service Monitor</h2>
           </div>
-          <span id="map-node-count" class="panel-counter">0 visible nodes</span>
+          <div class="map-toolbar" aria-label="Map zoom controls">
+            <button id="map-zoom-out" class="map-tool-button" type="button" title="Zoom out">-</button>
+            <span id="map-zoom-label" class="panel-counter">100%</span>
+            <button id="map-zoom-in" class="map-tool-button" type="button" title="Zoom in">+</button>
+            <button id="map-zoom-reset" class="map-tool-button" type="button" title="Reset zoom">Reset</button>
+            <span id="map-node-count" class="panel-counter">0 visible nodes</span>
+          </div>
         </div>
         <div class="usa-map" aria-label="USA gateway map">
-          <svg id="usa-map-base" viewBox="0 0 960 560" role="img" aria-hidden="true">
-            <g class="usa-fallback">
-              <path class="usa-mainland" d="M113 184 L143 145 L196 136 L245 118 L302 92 L368 96 L426 116 L497 124 L554 148 L625 142 L690 162 L744 201 L781 218 L825 224 L852 255 L833 291 L806 312 L793 344 L758 356 L726 381 L683 395 L642 423 L586 430 L536 455 L464 450 L404 430 L348 418 L292 392 L239 359 L197 344 L174 315 L160 270 L129 235 Z"></path>
-              <path class="usa-florida" d="M676 395 L704 420 L726 459 L747 512 L733 530 L708 488 L680 445 L656 418 Z"></path>
-              <path class="usa-new-england" d="M817 224 L842 187 L876 203 L866 238 L847 265 L831 254 Z"></path>
-              <path class="usa-great-lakes" d="M552 149 C574 128 607 128 626 145 C604 153 582 161 562 177 Z"></path>
-              <path class="usa-inset" d="M118 407 L157 386 L205 396 L244 426 L226 460 L176 470 L131 451 Z"></path>
-              <path class="usa-inset" d="M292 455 L314 448 L340 458 L360 474 L344 489 L313 480 Z"></path>
-              <path class="usa-line" d="M189 348 C259 310 333 302 397 322 C461 342 514 386 582 382 C660 378 712 333 804 340"></path>
-              <path class="usa-line" d="M300 94 C284 167 300 249 360 314 C392 349 420 390 464 450"></path>
-              <path class="usa-line" d="M497 124 C478 206 509 295 582 382"></path>
-              <path class="usa-line" d="M238 359 L244 118"></path>
-              <path class="usa-line" d="M625 142 L642 423"></path>
-            </g>
-          </svg>
-          <div id="gateway-map-nodes" class="map-node-layer"></div>
+          <div id="map-zoom-content" class="map-zoom-content">
+            <svg id="usa-map-base" viewBox="0 0 960 560" role="img" aria-hidden="true">
+              <g class="usa-fallback">
+                <path class="usa-mainland" d="M113 184 L143 145 L196 136 L245 118 L302 92 L368 96 L426 116 L497 124 L554 148 L625 142 L690 162 L744 201 L781 218 L825 224 L852 255 L833 291 L806 312 L793 344 L758 356 L726 381 L683 395 L642 423 L586 430 L536 455 L464 450 L404 430 L348 418 L292 392 L239 359 L197 344 L174 315 L160 270 L129 235 Z"></path>
+                <path class="usa-florida" d="M676 395 L704 420 L726 459 L747 512 L733 530 L708 488 L680 445 L656 418 Z"></path>
+                <path class="usa-new-england" d="M817 224 L842 187 L876 203 L866 238 L847 265 L831 254 Z"></path>
+                <path class="usa-great-lakes" d="M552 149 C574 128 607 128 626 145 C604 153 582 161 562 177 Z"></path>
+                <path class="usa-inset" d="M118 407 L157 386 L205 396 L244 426 L226 460 L176 470 L131 451 Z"></path>
+                <path class="usa-inset" d="M292 455 L314 448 L340 458 L360 474 L344 489 L313 480 Z"></path>
+                <path class="usa-line" d="M189 348 C259 310 333 302 397 322 C461 342 514 386 582 382 C660 378 712 333 804 340"></path>
+                <path class="usa-line" d="M300 94 C284 167 300 249 360 314 C392 349 420 390 464 450"></path>
+                <path class="usa-line" d="M497 124 C478 206 509 295 582 382"></path>
+                <path class="usa-line" d="M238 359 L244 118"></path>
+                <path class="usa-line" d="M625 142 L642 423"></path>
+              </g>
+            </svg>
+            <div id="gateway-map-nodes" class="map-node-layer"></div>
+          </div>
         </div>
       </div>
       <aside id="gateway-inspector" class="inspector-panel">
         <div class="empty-state">Loading gateway telemetry...</div>
       </aside>
     </section>
-    <section class="fleet-panel">
+    <section class="gateway-panel">
       <div class="panel-title">
         <div>
-          <span class="eyebrow">Fleet Registry</span>
+          <span class="eyebrow">Gateway Registry</span>
           <h2>Gateways</h2>
         </div>
         <span id="gateway-result-count" class="panel-counter">0 gateways</span>
       </div>
-      <div class="fleet-toolbar">
+      <div class="gateway-toolbar">
         <input id="gateway-search" type="search" placeholder="Search gateway, site, status, address, host, notes">
         <div id="status" class="notice"></div>
       </div>
@@ -2967,3 +3037,4 @@ def admin_users_html() -> str:
     </section>
   </main>"""
     return _layout("Users - IOT Cloud Commissioning", body, "admin-users")
+
