@@ -383,7 +383,7 @@ APP_SCRIPT = r"""
 
   function setMapZoom(nextZoom, anchor = null) {
     const oldZoom = mapZoom;
-    const newZoom = Math.max(1, Math.min(5, Math.round(nextZoom * 10) / 10));
+    const newZoom = Math.max(1, Math.min(10, Math.round(nextZoom * 10) / 10));
     if (newZoom === oldZoom) {
       return;
     }
@@ -414,11 +414,11 @@ APP_SCRIPT = r"""
     const shark = byId("bermuda-shark");
     if (zoomIn && zoomIn.dataset.zoomReady !== "true") {
       zoomIn.dataset.zoomReady = "true";
-      zoomIn.addEventListener("click", () => setMapZoom(mapZoom + 0.4));
+      zoomIn.addEventListener("click", () => setMapZoom(mapZoom + 2.5));
     }
     if (zoomOut && zoomOut.dataset.zoomReady !== "true") {
       zoomOut.dataset.zoomReady = "true";
-      zoomOut.addEventListener("click", () => setMapZoom(mapZoom - 0.4));
+      zoomOut.addEventListener("click", () => setMapZoom(mapZoom - 2.5));
     }
     if (zoomReset && zoomReset.dataset.zoomReady !== "true") {
       zoomReset.dataset.zoomReady = "true";
