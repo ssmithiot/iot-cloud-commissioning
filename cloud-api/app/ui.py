@@ -2281,6 +2281,63 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       height: 90%;
       filter: drop-shadow(0 0 18px rgba(34, 211, 197, 0.12));
     }}
+    .bermuda-shark {{
+      position: absolute;
+      left: 83%;
+      top: 68%;
+      width: 76px;
+      height: 38px;
+      pointer-events: none;
+      z-index: 1;
+      opacity: 0.88;
+      animation: shark-swim 9s ease-in-out infinite;
+      filter: drop-shadow(0 0 12px rgba(34, 211, 197, 0.24));
+    }}
+    .bermuda-shark::before {{
+      content: "";
+      position: absolute;
+      left: 18px;
+      top: 3px;
+      width: 32px;
+      height: 28px;
+      background: linear-gradient(135deg, rgba(148, 207, 208, 0.94), rgba(38, 83, 90, 0.94));
+      clip-path: polygon(6% 96%, 48% 4%, 96% 96%, 58% 72%, 31% 96%);
+      transform-origin: 50% 100%;
+      animation: shark-fin-wobble 1.8s ease-in-out infinite;
+    }}
+    .bermuda-shark::after {{
+      content: "";
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 5px;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(34, 211, 197, 0.26);
+      box-shadow: 0 0 22px rgba(34, 211, 197, 0.18);
+      animation: shark-wake 1.8s ease-in-out infinite;
+    }}
+    body[data-page="app"][data-theme="light"] .bermuda-shark {{
+      opacity: 0.74;
+      filter: drop-shadow(0 0 10px rgba(8, 127, 134, 0.18));
+    }}
+    body[data-page="app"][data-theme="light"] .bermuda-shark::before {{
+      background: linear-gradient(135deg, rgba(77, 125, 133, 0.9), rgba(12, 84, 93, 0.82));
+    }}
+    @keyframes shark-swim {{
+      0% {{ transform: translate(-10px, 5px) rotate(-5deg); }}
+      35% {{ transform: translate(34px, -8px) rotate(3deg); }}
+      68% {{ transform: translate(8px, 10px) rotate(-2deg); }}
+      100% {{ transform: translate(-10px, 5px) rotate(-5deg); }}
+    }}
+    @keyframes shark-fin-wobble {{
+      0%, 100% {{ transform: skewX(-4deg) scaleY(0.98); }}
+      50% {{ transform: skewX(5deg) scaleY(1.04); }}
+    }}
+    @keyframes shark-wake {{
+      0%, 100% {{ opacity: 0.32; transform: scaleX(0.78); }}
+      50% {{ opacity: 0.72; transform: scaleX(1.08); }}
+    }}
     .usa-map .usa-mainland,
     .usa-map .usa-florida,
     .usa-map .usa-new-england,
@@ -2773,6 +2830,7 @@ def app_html() -> str:
                 <path class="usa-line" d="M625 142 L642 423"></path>
               </g>
             </svg>
+            <div class="bermuda-shark" aria-hidden="true"></div>
             <div id="gateway-map-nodes" class="map-node-layer"></div>
           </div>
         </div>
