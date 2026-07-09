@@ -2075,6 +2075,48 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       top: 0;
       z-index: 10;
       padding: 18px clamp(18px, 3vw, 38px);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      align-items: center;
+      gap: 18px;
+    }}
+    body[data-page="app"] .cloud-title {{
+      min-width: 0;
+    }}
+    body[data-page="app"] .cloud-header .toolbar {{
+      justify-content: flex-end;
+      min-width: 0;
+    }}
+    .fifth-third-logo {{
+      justify-self: center;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 13px 7px 8px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.06);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      color: #f7ffff;
+      font: 800 13px/1 "Inter", "Segoe UI", Arial, sans-serif;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }}
+    .fifth-third-logo-mark {{
+      width: 34px;
+      height: 25px;
+      border-radius: 5px;
+      display: grid;
+      place-items: center;
+      color: #ffffff;
+      background: linear-gradient(135deg, #1f4390 0 58%, #25aa68 58% 100%);
+      font: 900 15px/1 "Inter", "Segoe UI", Arial, sans-serif;
+      letter-spacing: -0.04em;
+    }}
+    body[data-page="app"][data-theme="light"] .fifth-third-logo {{
+      border-color: rgba(31, 67, 144, 0.18);
+      background: rgba(255, 255, 255, 0.7);
+      color: #1f4390;
     }}
     body[data-page="app"] h1 {{
       font-size: clamp(24px, 3vw, 38px);
@@ -2289,7 +2331,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       height: 90%;
       filter: drop-shadow(0 0 18px rgba(34, 211, 197, 0.12));
     }}
-    .bermuda-shark {{
+    body[data-page="app"] .bermuda-shark {{
       position: absolute;
       left: 86%;
       top: 75%;
@@ -2298,13 +2340,15 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       min-width: 32px;
       min-height: 24px;
       padding: 0;
-      border: 0;
-      background: transparent;
+      border: 0 !important;
+      border-radius: 0;
+      background: transparent !important;
       box-shadow: none;
+      appearance: none;
       cursor: pointer;
       z-index: 1;
       opacity: 0.88;
-      animation: shark-swim 14s ease-in-out infinite;
+      animation: shark-swim 62s ease-in-out infinite;
       filter: drop-shadow(0 0 8px rgba(34, 211, 197, 0.22));
     }}
     .bermuda-shark::before {{
@@ -2677,6 +2721,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     @media (max-width: 760px) {{
       main {{ padding: 16px; }}
       header {{ align-items: flex-start; flex-direction: column; }}
+      body[data-page="app"] .cloud-header {{
+        grid-template-columns: 1fr;
+      }}
+      body[data-page="app"] .cloud-header .toolbar,
+      .fifth-third-logo {{
+        justify-self: start;
+      }}
       .grid {{ grid-template-columns: 1fr; }}
       .span-2, .span-3, .span-4, .span-6, .span-12 {{ grid-column: span 1; }}
       table {{ display: block; overflow-x: auto; white-space: nowrap; }}
@@ -2812,9 +2863,13 @@ def unauthorized_html() -> str:
 def app_html() -> str:
     body = """
   <header class="cloud-header">
-    <div>
+    <div class="cloud-title">
       <span class="eyebrow">Edge to Cloud Operations</span>
-      <h1>IOT Edge to Cloud Command</h1>
+      <h1>IOT Edge to Cloud</h1>
+    </div>
+    <div class="fifth-third-logo" aria-label="Fifth Third">
+      <span class="fifth-third-logo-mark">53</span>
+      <span>Fifth Third</span>
     </div>
     <div class="toolbar">
       <span id="identity"></span>
