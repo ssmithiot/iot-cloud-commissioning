@@ -316,21 +316,6 @@ APP_SCRIPT = r"""
     ].filter(Boolean).join(", ");
   }
 
-  function gatewaySearchText(gateway) {
-    return [
-      gateway.gateway_id,
-      gateway.site_id,
-      gateway.site_name,
-      gateway.hostname,
-      gateway.effective_status,
-      gatewayAddress(gateway),
-      gateway.network_status_notes,
-      gateway.lan_ip,
-      gateway.agent_version,
-      gateway.ui_version
-    ].filter(Boolean).join(" ").toLowerCase();
-  }
-
   function stateSeed(gateway) {
     const explicit = (gateway.site_address_state || "").trim().toUpperCase();
     if (explicit) {
