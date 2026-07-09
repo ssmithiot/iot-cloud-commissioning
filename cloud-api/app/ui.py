@@ -103,6 +103,7 @@ APP_SCRIPT = r"""
     } catch (error) {
       console.warn(error);
       mapShell?.classList.remove("roads-active");
+      await renderUsaMapBase();
       return false;
     }
   }
@@ -748,7 +749,6 @@ APP_SCRIPT = r"""
   async function initDashboard() {
     initThemeToggle();
     setupMapControls();
-    renderUsaMapBase();
     const me = await initProtectedPage(null);
     if (!me) {
       return;
@@ -2674,8 +2674,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       display: block;
     }}
     .usa-map.roads-active svg,
-    .usa-map.roads-active .map-node-layer,
-    .usa-map.roads-active .bermuda-shark {{
+    .usa-map.roads-active .map-node-layer {{
       display: none;
     }}
     .usa-map .leaflet-container {{
@@ -2739,8 +2738,8 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     body[data-page="app"] .bermuda-shark {{
       position: absolute;
-      left: 86%;
-      top: 75%;
+      left: 62%;
+      top: 70%;
       width: 32px;
       height: 24px;
       min-width: 32px;
@@ -2752,9 +2751,9 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       box-shadow: none;
       appearance: none;
       cursor: pointer;
-      z-index: 1;
+      z-index: 2;
       opacity: 0.88;
-      animation: shark-swim 62s ease-in-out infinite;
+      animation: shark-swim 96s ease-in-out infinite;
       filter: drop-shadow(0 0 8px rgba(34, 211, 197, 0.22));
     }}
     .bermuda-shark::before {{
@@ -2804,14 +2803,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       background: linear-gradient(135deg, rgba(77, 125, 133, 0.9), rgba(12, 84, 93, 0.82));
     }}
     @keyframes shark-swim {{
-      0% {{ transform: translate(0, 0) scaleX(1) rotate(-2deg); }}
-      18% {{ transform: translate(10px, 92px) scaleX(1) rotate(7deg); }}
-      26% {{ transform: translate(-18px, 112px) scaleX(1) rotate(3deg); }}
-      34% {{ transform: translate(-62px, 120px) scaleX(1) rotate(-1deg); }}
-      68% {{ transform: translate(-250px, 120px) scaleX(1) rotate(-3deg); }}
-      74% {{ transform: translate(-250px, 120px) scaleX(-1) rotate(-3deg); }}
-      90% {{ transform: translate(-18px, 112px) scaleX(-1) rotate(4deg); }}
-      100% {{ transform: translate(0, 0) scaleX(-1) rotate(-2deg); }}
+      0% {{ transform: translate(0, 0) scaleX(1) rotate(-4deg); }}
+      16% {{ transform: translate(46px, -18px) scaleX(1) rotate(-9deg); }}
+      32% {{ transform: translate(86px, 8px) scaleX(1) rotate(5deg); }}
+      48% {{ transform: translate(58px, 42px) scaleX(-1) rotate(8deg); }}
+      64% {{ transform: translate(4px, 50px) scaleX(-1) rotate(2deg); }}
+      82% {{ transform: translate(-30px, 20px) scaleX(-1) rotate(-7deg); }}
+      100% {{ transform: translate(0, 0) scaleX(1) rotate(-4deg); }}
     }}
     @keyframes shark-fin-wobble {{
       0%, 100% {{ transform: rotate(-1deg) scaleY(0.99); }}
@@ -3369,7 +3367,7 @@ def app_html() -> str:
             <span id="map-node-count" class="panel-counter">0 visible nodes</span>
           </div>
         </div>
-        <div class="usa-map" aria-label="USA gateway map">
+        <div class="usa-map roads-active" aria-label="USA gateway map">
           <div id="map-zoom-content" class="map-zoom-content">
             <div id="road-map" class="road-map" aria-hidden="true"></div>
             <svg id="usa-map-base" viewBox="0 0 960 560" preserveAspectRatio="none" role="img" aria-hidden="true">
