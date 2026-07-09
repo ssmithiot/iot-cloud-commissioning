@@ -2684,6 +2684,9 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       background: rgba(4, 12, 14, 0.82);
       font-family: "Inter", "Segoe UI", Arial, sans-serif;
     }}
+    .usa-map .leaflet-tile {{
+      filter: brightness(1.45) contrast(0.9) saturate(1.12);
+    }}
     .road-marker {{
       width: 18px !important;
       height: 18px !important;
