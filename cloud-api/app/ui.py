@@ -676,7 +676,7 @@ APP_SCRIPT = r"""
         <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
         <td>${escapeHtml(gatewayAddress(gateway) || "")}</td>
         <td>${escapeHtml(gateway.hostname)}</td>
-        <td><span class="status-text">${escapeHtml(statusLabel(gateway))}</span></td>
+        <td><span class="status-text">${dashboardStatusCell(gateway)}</span></td>
         <td>${escapeHtml(gateway.network_status_notes || "")}</td>
         <td>${directConnectCell(gateway)}</td>
         <td><a class="button table-command secondary" href="/gateways/${encodeURIComponent(gateway.gateway_id)}/configure">Configure</a></td>
@@ -1736,10 +1736,35 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       box-shadow: 0 1px 3px rgba(23, 32, 44, 0.16);
     }}
     .status-online {{
-      color: #0066ff;
-      font-weight: 800;
-      font-size: 1.25rem;
-      letter-spacing: 0.03em;
+      min-height: 30px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 1px solid rgba(118, 247, 166, 0.62);
+      border-radius: 999px;
+      padding: 6px 11px;
+      color: #93ffb6;
+      background: rgba(24, 148, 90, 0.14);
+      box-shadow: 0 0 0 1px rgba(118, 247, 166, 0.1), 0 0 18px rgba(118, 247, 166, 0.3);
+      font: 900 0.9rem/1 "JetBrains Mono", Consolas, monospace;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      text-shadow: 0 0 14px rgba(118, 247, 166, 0.78);
+    }}
+    .status-online::before {{
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #76f7a6;
+      box-shadow: 0 0 10px #76f7a6, 0 0 18px rgba(118, 247, 166, 0.72);
+    }}
+    body[data-page="app"][data-theme="light"] .status-online {{
+      color: #09683f;
+      background: rgba(12, 139, 95, 0.12);
+      border-color: rgba(12, 139, 95, 0.34);
+      box-shadow: 0 0 0 1px rgba(12, 139, 95, 0.08), 0 0 16px rgba(12, 139, 95, 0.18);
+      text-shadow: none;
     }}
     progress {{
       width: min(420px, 100%);
