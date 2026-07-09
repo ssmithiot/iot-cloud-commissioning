@@ -17,6 +17,14 @@ APP_SCRIPT = r"""
   let dashboardSearch = "";
   let mapZoom = 1;
   let mapProjection = null;
+  const mapSvgFrame = {
+    left: 3,
+    top: 5,
+    width: 94,
+    height: 90,
+    viewBoxWidth: 960,
+    viewBoxHeight: 560
+  };
   const themeStorageKey = "iot-cloud-command-theme";
 
   const statePaths = {
@@ -454,7 +462,7 @@ APP_SCRIPT = r"""
       const atlas = await response.json();
       const states = feature(atlas, atlas.objects.states).features;
       const nation = feature(atlas, atlas.objects.nation);
-      const projection = geoAlbersUsa().fitSize([900, 500], nation);
+      const projection = geoAlbersUsa().fitSize([mapSvgFrame.viewBoxWidth, mapSvgFrame.viewBoxHeight], nation);
       const path = geoPath(projection);
       mapProjection = projection;
       const nationD = path(nation);
@@ -491,8 +499,8 @@ APP_SCRIPT = r"""
       const projected = mapProjection([coordinates.longitude, coordinates.latitude]);
       if (projected) {
         return [
-          Math.max(2, Math.min(98, (projected[0] / 960) * 100)),
-          Math.max(2, Math.min(98, (projected[1] / 560) * 100))
+          Math.max(2, Math.min(98, mapSvgFrame.left + ((projected[0] / mapSvgFrame.viewBoxWidth) * mapSvgFrame.width))),
+          Math.max(2, Math.min(98, mapSvgFrame.top + ((projected[1] / mapSvgFrame.viewBoxHeight) * mapSvgFrame.height)))
         ];
       }
     }
@@ -726,7 +734,7 @@ APP_SCRIPT = r"""
       button.className = `map-node ${gatewayStatusClass(gateway)}${gateway.gateway_id === selectedDashboardGatewayId ? " selected" : ""}`;
       button.style.left = `${x}%`;
       button.style.top = `${y}%`;
-      button.title = `${gateway.gateway_id} - ${gateway.site_name || gateway.site_id}`;
+      button.title = `${gateway.site_id || gateway.site_name || "Unassigned site"} - ${gateway.gateway_id}`;
       button.innerHTML = `<span></span><em>${escapeHtml(gateway.gateway_id)}</em>`;
       button.addEventListener("click", () => selectDashboardGateway(gateway.gateway_id));
       layer.appendChild(button);
