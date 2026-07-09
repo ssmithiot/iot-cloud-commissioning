@@ -2283,33 +2283,33 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .bermuda-shark {{
       position: absolute;
-      left: 78%;
-      top: 78%;
-      width: 104px;
-      height: 56px;
+      left: 85%;
+      top: 76%;
+      width: 56px;
+      height: 32px;
       pointer-events: none;
       z-index: 1;
       opacity: 0.88;
-      animation: shark-swim 10s ease-in-out infinite;
-      filter: drop-shadow(0 0 12px rgba(34, 211, 197, 0.24));
+      animation: shark-swim 8s ease-in-out infinite;
+      filter: drop-shadow(0 0 8px rgba(34, 211, 197, 0.22));
     }}
     .bermuda-shark::before {{
       content: "";
       position: absolute;
-      left: 22px;
+      left: 10px;
       top: 0;
-      width: 78px;
-      height: 52px;
+      width: 44px;
+      height: 30px;
       background:
         linear-gradient(126deg, transparent 0 20%, rgba(245, 252, 252, 0.92) 22% 27%, transparent 30% 100%),
         linear-gradient(135deg, rgba(176, 190, 190, 0.98), rgba(75, 86, 89, 0.98));
-      clip-path: path("M 3 50 C 14 17 43 -5 76 7 C 63 17 57 30 58 51 C 43 55 21 54 3 50 Z");
+      clip-path: path("M 2 29 C 8 10 25 -3 43 4 C 36 10 32 18 33 30 C 24 32 12 31 2 29 Z");
       border-radius: 60% 44% 38% 24%;
-      box-shadow: inset -8px -2px 0 rgba(5, 9, 11, 0.82), inset 4px 0 0 rgba(255, 255, 255, 0.16);
+      box-shadow: inset -4px -1px 0 rgba(5, 9, 11, 0.82), inset 2px 0 0 rgba(255, 255, 255, 0.16);
       filter:
-        drop-shadow(2px 0 0 rgba(5, 9, 11, 0.82))
-        drop-shadow(-2px 0 0 rgba(5, 9, 11, 0.72))
-        drop-shadow(0 2px 0 rgba(5, 9, 11, 0.78));
+        drop-shadow(1px 0 0 rgba(5, 9, 11, 0.82))
+        drop-shadow(-1px 0 0 rgba(5, 9, 11, 0.72))
+        drop-shadow(0 1px 0 rgba(5, 9, 11, 0.78));
       transform-origin: 50% 100%;
       animation: shark-fin-wobble 2.2s ease-in-out infinite;
     }}
@@ -2318,15 +2318,15 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       position: absolute;
       left: 2px;
       right: 0;
-      bottom: 8px;
-      height: 8px;
+      bottom: 4px;
+      height: 5px;
       border-radius: 999px;
       background:
         radial-gradient(ellipse at 15% 50%, rgba(34, 211, 197, 0.3), transparent 58%),
         radial-gradient(ellipse at 55% 50%, rgba(34, 211, 197, 0.22), transparent 62%),
         rgba(34, 211, 197, 0.12);
       box-shadow: 0 0 22px rgba(34, 211, 197, 0.16);
-      animation: shark-wake 2.2s ease-in-out infinite;
+      animation: shark-wake 2s ease-in-out infinite;
     }}
     body[data-page="app"][data-theme="light"] .bermuda-shark {{
       opacity: 0.74;
@@ -2336,11 +2336,11 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       background: linear-gradient(135deg, rgba(77, 125, 133, 0.9), rgba(12, 84, 93, 0.82));
     }}
     @keyframes shark-swim {{
-      0% {{ transform: translateX(-26px) scaleX(1) rotate(-2deg); }}
-      45% {{ transform: translateX(118px) scaleX(1) rotate(2deg); }}
-      50% {{ transform: translateX(118px) scaleX(-1) rotate(2deg); }}
-      95% {{ transform: translateX(-26px) scaleX(-1) rotate(-2deg); }}
-      100% {{ transform: translateX(-26px) scaleX(1) rotate(-2deg); }}
+      0% {{ transform: translateX(-18px) scaleX(-1) rotate(-2deg); }}
+      45% {{ transform: translateX(46px) scaleX(-1) rotate(2deg); }}
+      50% {{ transform: translateX(46px) scaleX(1) rotate(2deg); }}
+      95% {{ transform: translateX(-18px) scaleX(1) rotate(-2deg); }}
+      100% {{ transform: translateX(-18px) scaleX(-1) rotate(-2deg); }}
     }}
     @keyframes shark-fin-wobble {{
       0%, 100% {{ transform: rotate(-1deg) scaleY(0.99); }}
