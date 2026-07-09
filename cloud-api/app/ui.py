@@ -17,6 +17,10 @@ APP_SCRIPT = r"""
   let dashboardSearch = "";
   let mapZoom = 1;
   let mapProjection = null;
+  let roadMap = null;
+  let roadMarkerLayer = null;
+  let leafletLoadPromise = null;
+  let roadMapFitted = false;
   const mapSvgFrame = {
     left: 3,
     top: 5,
@@ -26,6 +30,8 @@ APP_SCRIPT = r"""
     viewBoxHeight: 560
   };
   const themeStorageKey = "iot-cloud-command-theme";
+  const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+  const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
 
   const statePaths = {
     login: "/login",
@@ -39,6 +45,65 @@ APP_SCRIPT = r"""
 
   function byId(id) {
     return document.getElementById(id);
+  }
+
+  function loadStylesheet(href) {
+    if (document.querySelector(`link[href="${href}"]`)) {
+      return;
+    }
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    document.head.appendChild(link);
+  }
+
+  function loadScript(src) {
+    if (window.L) {
+      return Promise.resolve();
+    }
+    if (leafletLoadPromise) {
+      return leafletLoadPromise;
+    }
+    leafletLoadPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = src;
+      script.async = true;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("Could not load road map library."));
+      document.head.appendChild(script);
+    });
+    return leafletLoadPromise;
+  }
+
+  async function initRoadMap() {
+    const container = byId("road-map");
+    const mapShell = document.querySelector(".usa-map");
+    if (!container || roadMap) {
+      return Boolean(roadMap);
+    }
+    try {
+      loadStylesheet(leafletCssUrl);
+      await loadScript(leafletScriptUrl);
+      mapShell?.classList.add("roads-active");
+      roadMap = window.L.map(container, {
+        zoomControl: false,
+        attributionControl: true,
+        preferCanvas: true
+      }).setView([39.5, -98.35], 4);
+      window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors"
+      }).addTo(roadMap);
+      roadMarkerLayer = window.L.layerGroup().addTo(roadMap);
+      roadMap.on("zoomend moveend", () => renderGatewayMap(sortedDashboardGateways()));
+      roadMap.invalidateSize();
+      applyMapZoom();
+      return true;
+    } catch (error) {
+      console.warn(error);
+      mapShell?.classList.remove("roads-active");
+      return false;
+    }
   }
 
   function applyTheme(theme) {
@@ -374,11 +439,15 @@ APP_SCRIPT = r"""
       return;
     }
     const zoom = Math.round(mapZoom * 100);
-    content.style.width = `${zoom}%`;
-    content.style.height = `${zoom}%`;
+    content.style.width = roadMap ? "100%" : `${zoom}%`;
+    content.style.height = roadMap ? "100%" : `${zoom}%`;
     if (label) {
       label.textContent = `${zoom}%`;
     }
+  }
+
+  function roadZoomFromMapZoom(zoom) {
+    return Math.max(4, Math.min(19, Math.round(4 + (Math.log2(zoom) * 2.8))));
   }
 
   function setMapZoom(nextZoom, anchor = null) {
@@ -398,6 +467,10 @@ APP_SCRIPT = r"""
     }
     mapZoom = newZoom;
     applyMapZoom();
+    if (roadMap) {
+      roadMap.setZoom(roadZoomFromMapZoom(newZoom), { animate: true });
+      return;
+    }
     if (viewport) {
       const ratio = newZoom / oldZoom;
       viewport.scrollLeft = ((viewport.scrollLeft + offsetX) * ratio) - offsetX;
@@ -540,6 +613,47 @@ APP_SCRIPT = r"""
     ];
   }
 
+  function gatewayMapLatLng(gateway) {
+    const coordinates = gatewayCoordinates(gateway);
+    if (coordinates) {
+      return [coordinates.latitude, coordinates.longitude];
+    }
+    const jitter = hashNumber(`${gateway.gateway_id}:${gateway.hostname}`);
+    if (!hasAddressLocation(gateway)) {
+      const bermudaLatLng = [
+        [27.6, -69.7],
+        [29.3, -68.2],
+        [25.8, -67.4],
+        [24.6, -70.9],
+        [26.7, -65.9],
+        [23.7, -68.8],
+        [25.1, -72.8],
+        [22.8, -66.8]
+      ];
+      const base = bermudaLatLng[jitter % bermudaLatLng.length];
+      return [
+        base[0] + (((jitter >> 4) % 9) - 4) * 0.08,
+        base[1] + (((jitter >> 8) % 9) - 4) * 0.08
+      ];
+    }
+    const stateLatLng = {
+      AL:[32.8,-86.8], AZ:[34.2,-111.7], AR:[35.0,-92.4], CA:[37.2,-119.7], CO:[39.0,-105.5],
+      CT:[41.6,-72.7], FL:[28.4,-82.5], GA:[32.7,-83.3], IA:[42.1,-93.5], ID:[44.2,-114.5],
+      IL:[40.0,-89.2], IN:[40.0,-86.1], KS:[38.5,-98.0], KY:[37.8,-85.8], LA:[31.0,-92.0],
+      MA:[42.3,-71.8], MD:[39.0,-76.7], ME:[45.2,-69.0], MI:[44.3,-85.6], MN:[46.4,-94.6],
+      MO:[38.5,-92.5], MS:[32.7,-89.7], NC:[35.5,-79.4], ND:[47.5,-100.5], NE:[41.5,-99.8],
+      NJ:[40.1,-74.7], NM:[34.5,-106.0], NV:[39.3,-116.6], NY:[42.9,-75.0], OH:[40.3,-82.8],
+      OK:[35.6,-97.5], OR:[44.0,-120.6], PA:[41.0,-77.7], SC:[33.8,-80.9], SD:[44.4,-100.2],
+      TN:[35.8,-86.4], TX:[31.3,-99.3], UT:[39.3,-111.7], VA:[37.6,-78.6], WA:[47.4,-120.7],
+      WI:[44.5,-89.6], WV:[38.6,-80.6]
+    };
+    const base = stateLatLng[stateSeed(gateway)] || [39.5, -98.35];
+    return [
+      base[0] + (((jitter >> 4) % 9) - 4) * 0.12,
+      base[1] + (((jitter >> 8) % 9) - 4) * 0.12
+    ];
+  }
+
   function gatewayStatusClass(gateway) {
     const status = String(gateway.effective_status || gateway.latest_status || "unknown").toLowerCase();
     if (status.includes("online")) {
@@ -588,6 +702,7 @@ APP_SCRIPT = r"""
       metricCard("metric-jobs", "Recent Jobs", dashboardJobs.length, `${queuedUploads} queued uploads`);
       setupGatewaySearch();
       setupGatewaySortHeaders();
+      await initRoadMap();
       renderGatewayMap(sortedDashboardGateways());
       renderGatewayInspector();
       renderGatewayList();
@@ -764,6 +879,78 @@ APP_SCRIPT = r"""
     return clusters;
   }
 
+  function clusteredRoadMapEntries(gateways) {
+    if (!roadMap) {
+      return [];
+    }
+    const threshold = 38;
+    const clusters = [];
+    for (const gateway of gateways) {
+      const latLng = gatewayMapLatLng(gateway);
+      const point = roadMap.latLngToLayerPoint(latLng);
+      let matched = null;
+      for (const cluster of clusters) {
+        if (cluster.point.distanceTo(point) <= threshold) {
+          matched = cluster;
+          break;
+        }
+      }
+      if (!matched) {
+        clusters.push({ lat: latLng[0], lng: latLng[1], point, gateways: [gateway] });
+        continue;
+      }
+      const nextCount = matched.gateways.length + 1;
+      matched.lat = ((matched.lat * matched.gateways.length) + latLng[0]) / nextCount;
+      matched.lng = ((matched.lng * matched.gateways.length) + latLng[1]) / nextCount;
+      matched.point = roadMap.latLngToLayerPoint([matched.lat, matched.lng]);
+      matched.gateways.push(gateway);
+    }
+    return clusters;
+  }
+
+  function renderRoadMap(gateways) {
+    if (!roadMap || !roadMarkerLayer || !window.L) {
+      return false;
+    }
+    roadMarkerLayer.clearLayers();
+    const bounds = [];
+    for (const cluster of clusteredRoadMapEntries(gateways)) {
+      const isCluster = cluster.gateways.length > 1;
+      const gateway = cluster.gateways[0];
+      const statusClass = isCluster ? clusterStatusClass(cluster.gateways) : gatewayStatusClass(gateway);
+      const selected = cluster.gateways.some((item) => item.gateway_id === selectedDashboardGatewayId);
+      const siteLabel = gatewaySiteLabel(gateway);
+      const title = isCluster ? `${cluster.gateways.length} sites near ${siteLabel}` : `${siteLabel} - ${gateway.gateway_id}`;
+      const icon = window.L.divIcon({
+        className: `road-marker ${isCluster ? "road-cluster" : ""} ${statusClass}${selected ? " selected" : ""}`,
+        html: isCluster ? `<span>${escapeHtml(cluster.gateways.length)}</span>` : "<span></span>",
+        iconSize: isCluster ? [30, 30] : [18, 18],
+        iconAnchor: isCluster ? [15, 15] : [9, 9]
+      });
+      const marker = window.L.marker([cluster.lat, cluster.lng], { icon, title }).addTo(roadMarkerLayer);
+      marker.bindTooltip(title, { direction: "top", offset: [0, -10], opacity: 0.94 });
+      marker.on("click", () => {
+        selectedDashboardGatewayId = gateway.gateway_id;
+        if (isCluster) {
+          roadMap.setView([cluster.lat, cluster.lng], Math.min(19, roadMap.getZoom() + 3), { animate: true });
+          mapZoom = Math.min(30, mapZoom + 5);
+          applyMapZoom();
+        }
+        renderGatewayInspector();
+        renderGatewayList();
+        renderGatewayMap(sortedDashboardGateways());
+      });
+      bounds.push([cluster.lat, cluster.lng]);
+    }
+    if (!roadMapFitted && bounds.length) {
+      roadMapFitted = true;
+      roadMap.fitBounds(bounds, { padding: [42, 42], maxZoom: 6 });
+      mapZoom = Math.max(mapZoom, 1.6);
+      applyMapZoom();
+    }
+    return true;
+  }
+
   function renderGatewayMap(gateways) {
     const layer = byId("gateway-map-nodes");
     const count = byId("map-node-count");
@@ -773,6 +960,9 @@ APP_SCRIPT = r"""
     layer.textContent = "";
     if (count) {
       count.textContent = `${gateways.length} visible node${gateways.length === 1 ? "" : "s"}`;
+    }
+    if (renderRoadMap(gateways)) {
+      return;
     }
     for (const cluster of clusteredGatewayMapEntries(gateways)) {
       const isCluster = cluster.gateways.length > 1;
@@ -2406,6 +2596,77 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       height: 90%;
       filter: drop-shadow(0 0 18px rgba(34, 211, 197, 0.12));
     }}
+    .road-map {{
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      display: none;
+      background: rgba(4, 12, 14, 0.82);
+    }}
+    .usa-map.roads-active .road-map {{
+      display: block;
+    }}
+    .usa-map.roads-active svg,
+    .usa-map.roads-active .map-node-layer,
+    .usa-map.roads-active .bermuda-shark {{
+      display: none;
+    }}
+    .usa-map .leaflet-container {{
+      width: 100%;
+      height: 100%;
+      background: rgba(4, 12, 14, 0.82);
+      font-family: "Inter", "Segoe UI", Arial, sans-serif;
+    }}
+    .road-marker {{
+      width: 18px !important;
+      height: 18px !important;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      background: transparent;
+    }}
+    .road-marker span {{
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: #031314;
+      font: 900 10px/1 "JetBrains Mono", Consolas, monospace;
+      background: var(--accent-strong);
+      box-shadow: 0 0 16px var(--accent-strong), 0 0 0 6px rgba(118, 247, 166, 0.14);
+    }}
+    .road-marker.stale span {{
+      background: var(--warning);
+      box-shadow: 0 0 16px var(--warning), 0 0 0 6px rgba(245, 197, 66, 0.14);
+    }}
+    .road-marker.offline span {{
+      background: var(--danger);
+      box-shadow: 0 0 16px var(--danger), 0 0 0 6px rgba(255, 107, 107, 0.14);
+    }}
+    .road-marker.road-cluster {{
+      width: 30px !important;
+      height: 30px !important;
+    }}
+    .road-marker.road-cluster span {{
+      width: 26px;
+      height: 26px;
+      border: 1px solid rgba(236, 254, 255, 0.82);
+      box-shadow: 0 0 22px var(--accent-strong), 0 0 0 8px rgba(118, 247, 166, 0.16);
+    }}
+    .road-marker.selected span {{
+      outline: 1px solid rgba(255, 255, 255, 0.95);
+      outline-offset: 5px;
+    }}
+    .leaflet-tooltip {{
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 5px;
+      color: #ecfeff;
+      background: rgba(3, 13, 15, 0.88);
+      box-shadow: none;
+      font: 700 11px/1 "JetBrains Mono", Consolas, monospace;
+    }}
     body[data-page="app"] .bermuda-shark {{
       position: absolute;
       left: 86%;
@@ -3003,6 +3264,7 @@ def app_html() -> str:
         </div>
         <div class="usa-map" aria-label="USA gateway map">
           <div id="map-zoom-content" class="map-zoom-content">
+            <div id="road-map" class="road-map" aria-hidden="true"></div>
             <svg id="usa-map-base" viewBox="0 0 960 560" preserveAspectRatio="none" role="img" aria-hidden="true">
               <g class="usa-fallback">
                 <path class="usa-mainland" d="M113 184 L143 145 L196 136 L245 118 L302 92 L368 96 L426 116 L497 124 L554 148 L625 142 L690 162 L744 201 L781 218 L825 224 L852 255 L833 291 L806 312 L793 344 L758 356 L726 381 L683 395 L642 423 L586 430 L536 455 L464 450 L404 430 L348 418 L292 392 L239 359 L197 344 L174 315 L160 270 L129 235 Z"></path>
