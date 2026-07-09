@@ -2417,12 +2417,12 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     @keyframes shark-swim {{
       0% {{ transform: translate(0, 0) scaleX(1) rotate(-2deg); }}
-      18% {{ transform: translate(6px, 48px) scaleX(1) rotate(5deg); }}
-      24% {{ transform: translate(6px, 48px) scaleX(1) rotate(5deg); }}
-      30% {{ transform: translate(6px, 48px) scaleX(1) rotate(1deg); }}
-      68% {{ transform: translate(-230px, 62px) scaleX(1) rotate(-3deg); }}
-      74% {{ transform: translate(-230px, 62px) scaleX(-1) rotate(-3deg); }}
-      92% {{ transform: translate(6px, 48px) scaleX(-1) rotate(4deg); }}
+      18% {{ transform: translate(10px, 92px) scaleX(1) rotate(7deg); }}
+      26% {{ transform: translate(-18px, 112px) scaleX(1) rotate(3deg); }}
+      34% {{ transform: translate(-62px, 120px) scaleX(1) rotate(-1deg); }}
+      68% {{ transform: translate(-250px, 120px) scaleX(1) rotate(-3deg); }}
+      74% {{ transform: translate(-250px, 120px) scaleX(-1) rotate(-3deg); }}
+      90% {{ transform: translate(-18px, 112px) scaleX(-1) rotate(4deg); }}
       100% {{ transform: translate(0, 0) scaleX(-1) rotate(-2deg); }}
     }}
     @keyframes shark-fin-wobble {{
