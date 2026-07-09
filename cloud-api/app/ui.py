@@ -383,7 +383,7 @@ APP_SCRIPT = r"""
 
   function setMapZoom(nextZoom, anchor = null) {
     const oldZoom = mapZoom;
-    const newZoom = Math.max(1, Math.min(2.5, Math.round(nextZoom * 10) / 10));
+    const newZoom = Math.max(1, Math.min(5, Math.round(nextZoom * 10) / 10));
     if (newZoom === oldZoom) {
       return;
     }
@@ -414,11 +414,11 @@ APP_SCRIPT = r"""
     const shark = byId("bermuda-shark");
     if (zoomIn && zoomIn.dataset.zoomReady !== "true") {
       zoomIn.dataset.zoomReady = "true";
-      zoomIn.addEventListener("click", () => setMapZoom(mapZoom + 0.2));
+      zoomIn.addEventListener("click", () => setMapZoom(mapZoom + 0.4));
     }
     if (zoomOut && zoomOut.dataset.zoomReady !== "true") {
       zoomOut.dataset.zoomReady = "true";
-      zoomOut.addEventListener("click", () => setMapZoom(mapZoom - 0.2));
+      zoomOut.addEventListener("click", () => setMapZoom(mapZoom - 0.4));
     }
     if (zoomReset && zoomReset.dataset.zoomReady !== "true") {
       zoomReset.dataset.zoomReady = "true";
@@ -506,19 +506,19 @@ APP_SCRIPT = r"""
     }
     if (!hasAddressLocation(gateway)) {
       const bermudaTriangle = [
-        [83, 59],
-        [89, 51],
-        [91, 72],
-        [86, 66],
-        [94, 62],
-        [88, 79],
-        [80, 70],
-        [93, 82]
+        [91, 74],
+        [95, 67],
+        [97, 82],
+        [93, 88],
+        [98, 72],
+        [96, 91],
+        [89, 85],
+        [99, 88]
       ];
       const base = bermudaTriangle[jitter % bermudaTriangle.length];
       return [
-        Math.max(78, Math.min(96, base[0] + (((jitter >> 4) % 9) - 4) * 0.7)),
-        Math.max(48, Math.min(84, base[1] + (((jitter >> 8) % 9) - 4) * 0.7))
+        Math.max(88, Math.min(99, base[0] + (((jitter >> 4) % 9) - 4) * 0.35)),
+        Math.max(66, Math.min(94, base[1] + (((jitter >> 8) % 9) - 4) * 0.35))
       ];
     }
     const statePositions = {
