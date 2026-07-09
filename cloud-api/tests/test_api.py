@@ -336,7 +336,7 @@ def test_dashboard_highlights_online_gateway_status() -> None:
     assert ".status-online" in response.text
     assert 'return \'<span class="status-online">ONLINE</span>\';' in response.text
     assert "return escapeHtml(statusLabel(gateway));" in response.text
-    assert "<td>${dashboardStatusCell(gateway)}</td>" in response.text
+    assert '<td><span class="status-text">${dashboardStatusCell(gateway)}</span></td>' in response.text
 
 
 def test_dashboard_gateway_table_supports_search_and_sort() -> None:
@@ -603,6 +603,57 @@ def test_gateway_detail_site_endpoint_includes_site_info() -> None:
     assert response.json()["address_postal_code"] == "62701"
     assert response.json()["latitude"] == 39.7817
     assert response.json()["longitude"] == -89.6501
+
+
+def test_gateway_weather_fetches_and_caches_open_meteo(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_gateway_token("GW001")
+    client.patch(
+        "/api/ui/gateways/GW001/site",
+        headers=admin_headers(),
+        json={"latitude": 39.7817, "longitude": -89.6501},
+    )
+    observed: list[tuple[float, float]] = []
+
+    def fake_weather(latitude: float, longitude: float) -> dict[str, object]:
+        observed.append((latitude, longitude))
+        return {
+            "timezone": "America/Chicago",
+            "timezone_abbreviation": "CDT",
+            "utc_offset_seconds": -18000,
+            "current": {
+                "time": "2026-07-09T14:00",
+                "temperature_2m": 82.4,
+                "apparent_temperature": 85.1,
+                "relative_humidity_2m": 58,
+                "precipitation": 0.0,
+                "weather_code": 2,
+                "wind_speed_10m": 7.6,
+            },
+        }
+
+    monkeypatch.setattr(main_module, "_fetch_open_meteo_weather", fake_weather)
+
+    first = client.get("/api/ui/gateways/GW001/weather", headers=admin_headers())
+    second = client.get("/api/ui/gateways/GW001/weather", headers=admin_headers())
+
+    assert first.status_code == 200
+    assert first.json()["available"] is True
+    assert first.json()["provider"] == "open-meteo"
+    assert first.json()["temperature_f"] == 82.4
+    assert first.json()["condition"] == "Partly cloudy"
+    assert first.json()["timezone_abbreviation"] == "CDT"
+    assert second.status_code == 200
+    assert len(observed) == 1
+
+
+def test_gateway_weather_requires_site_coordinates() -> None:
+    create_gateway_token("GW001")
+
+    response = client.get("/api/ui/gateways/GW001/weather", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json()["available"] is False
+    assert "latitude and longitude" in response.json()["reason"]
 
 
 def test_direct_connect_hidden_when_not_configured() -> None:

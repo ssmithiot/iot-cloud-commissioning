@@ -179,6 +179,27 @@ class SiteUpdate(BaseModel):
     network_status_notes: str | None = Field(default=None, max_length=500)
 
 
+class SiteWeatherOut(BaseModel):
+    available: bool
+    site_id: str
+    provider: str = "open-meteo"
+    reason: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    temperature_f: float | None = None
+    apparent_temperature_f: float | None = None
+    relative_humidity_percent: int | None = None
+    precipitation_in: float | None = None
+    wind_speed_mph: float | None = None
+    weather_code: int | None = None
+    condition: str | None = None
+    timezone: str | None = None
+    timezone_abbreviation: str | None = None
+    observed_at: datetime | None = None
+    fetched_at: datetime | None = None
+    cache_age_seconds: int | None = None
+
+
 class DirectConnectOut(BaseModel):
     available: bool
     url: str | None = None

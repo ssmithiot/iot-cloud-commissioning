@@ -1,12 +1,15 @@
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import ipaddress
 import json
 import logging
 import re
 from urllib.parse import parse_qsl, quote, urlsplit
+from urllib.parse import urlencode
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 from uuid import UUID
 from uuid import uuid4
 
@@ -41,6 +44,7 @@ from app.models import (
     SavedBacnetDevice,
     SavedBacnetPoint,
     Site,
+    SiteWeather,
     utc_now,
 )
 from app.schemas import (
@@ -74,6 +78,7 @@ from app.schemas import (
     SavedPointsBulkRemoveOut,
     SiteOut,
     SiteUpdate,
+    SiteWeatherOut,
     TunnelSessionOut,
     TunnelStatusOut,
 )
@@ -98,6 +103,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if settings.auto_create_tables:
         Base.metadata.create_all(bind=engine)
     _ensure_site_coordinate_columns()
+    _ensure_site_weather_table()
     yield
 
 
@@ -117,8 +123,14 @@ def _ensure_site_coordinate_columns() -> None:
         for column in missing:
             connection.execute(text(f"ALTER TABLE sites ADD COLUMN {column} {column_type}"))
 
+def _ensure_site_weather_table() -> None:
+    SiteWeather.__table__.create(bind=engine, checkfirst=True)
+
+
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
+WEATHER_CACHE_TTL = timedelta(minutes=30)
+OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 TUNNEL_HTML_ATTR_PATTERN = re.compile(r"""(?P<attr>\b(?:href|src|action|formaction)=)(?P<quote>["'])(?P<url>[^"']+)(?P=quote)""", re.IGNORECASE)
 TUNNEL_GATEWAY_LOCAL_ROUTE_PREFIXES = (
     "/captures",
@@ -248,6 +260,175 @@ def _site_compact_address(site: Site | None) -> str | None:
     locality = ", ".join(part for part in [city, city_state_zip] if part)
     compact = ", ".join(part for part in [street, locality] if part)
     return compact or _clean_optional_text(site.address)
+
+def _weather_condition(code: int | None) -> str | None:
+    if code is None:
+        return None
+    labels = {
+        0: "Clear",
+        1: "Mostly clear",
+        2: "Partly cloudy",
+        3: "Cloudy",
+        45: "Fog",
+        48: "Freezing fog",
+        51: "Light drizzle",
+        53: "Drizzle",
+        55: "Heavy drizzle",
+        56: "Light freezing drizzle",
+        57: "Freezing drizzle",
+        61: "Light rain",
+        63: "Rain",
+        65: "Heavy rain",
+        66: "Light freezing rain",
+        67: "Freezing rain",
+        71: "Light snow",
+        73: "Snow",
+        75: "Heavy snow",
+        77: "Snow grains",
+        80: "Light showers",
+        81: "Showers",
+        82: "Heavy showers",
+        85: "Light snow showers",
+        86: "Snow showers",
+        95: "Thunderstorm",
+        96: "Thunderstorm with hail",
+        99: "Severe thunderstorm with hail",
+    }
+    return labels.get(code, f"Weather code {code}")
+
+
+def _parse_open_meteo_time(value: str | None, utc_offset_seconds: int | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone(timedelta(seconds=utc_offset_seconds or 0)))
+    return parsed.astimezone(timezone.utc)
+
+
+def _fetch_open_meteo_weather(latitude: float, longitude: float) -> dict[str, object]:
+    params = urlencode(
+        {
+            "latitude": f"{latitude:.6f}",
+            "longitude": f"{longitude:.6f}",
+            "current": ",".join(
+                [
+                    "temperature_2m",
+                    "relative_humidity_2m",
+                    "apparent_temperature",
+                    "precipitation",
+                    "weather_code",
+                    "wind_speed_10m",
+                ]
+            ),
+            "temperature_unit": "fahrenheit",
+            "wind_speed_unit": "mph",
+            "precipitation_unit": "inch",
+            "timezone": "auto",
+        }
+    )
+    request = UrlRequest(
+        f"{OPEN_METEO_FORECAST_URL}?{params}",
+        headers={"User-Agent": "iot-edge-to-cloud/0.1 weather-cache"},
+    )
+    with urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _site_weather_out(
+    site_id: str,
+    weather: SiteWeather | None,
+    *,
+    available: bool = True,
+    reason: str | None = None,
+    now: datetime | None = None,
+) -> SiteWeatherOut:
+    now = now or utc_now()
+    if weather is None:
+        return SiteWeatherOut(available=False, site_id=site_id, reason=reason or "Weather is not cached yet.")
+    fetched_at = _aware_utc(weather.fetched_at) or weather.fetched_at
+    cache_age_seconds = int((now - fetched_at).total_seconds()) if fetched_at else None
+    return SiteWeatherOut(
+        available=available,
+        reason=reason,
+        site_id=site_id,
+        provider=weather.provider,
+        latitude=weather.latitude,
+        longitude=weather.longitude,
+        temperature_f=weather.temperature_f,
+        apparent_temperature_f=weather.apparent_temperature_f,
+        relative_humidity_percent=weather.relative_humidity_percent,
+        precipitation_in=weather.precipitation_in,
+        wind_speed_mph=weather.wind_speed_mph,
+        weather_code=weather.weather_code,
+        condition=weather.condition,
+        timezone=weather.timezone,
+        timezone_abbreviation=weather.timezone_abbreviation,
+        observed_at=weather.observed_at,
+        fetched_at=weather.fetched_at,
+        cache_age_seconds=max(0, cache_age_seconds) if cache_age_seconds is not None else None,
+    )
+
+
+def _refresh_site_weather(site: Site, db: Session, now: datetime | None = None) -> SiteWeatherOut:
+    now = now or utc_now()
+    if site.latitude is None or site.longitude is None:
+        return SiteWeatherOut(
+            available=False,
+            site_id=site.site_id,
+            reason="Site latitude and longitude are required for weather.",
+        )
+    weather = db.get(SiteWeather, site.site_id)
+    if weather is not None and _aware_utc(weather.fetched_at) and now - _aware_utc(weather.fetched_at) < WEATHER_CACHE_TTL:
+        return _site_weather_out(site.site_id, weather, now=now)
+    try:
+        payload = _fetch_open_meteo_weather(site.latitude, site.longitude)
+    except Exception as exc:  # pragma: no cover - network behavior is mocked in tests
+        if weather is not None:
+            return _site_weather_out(
+                site.site_id,
+                weather,
+                available=True,
+                reason=f"Showing cached weather; refresh failed: {exc}",
+                now=now,
+            )
+        raise HTTPException(status_code=502, detail=f"Weather provider request failed: {exc}") from exc
+
+    current = payload.get("current") if isinstance(payload.get("current"), dict) else {}
+    weather_code = current.get("weather_code")
+    weather_code = int(weather_code) if isinstance(weather_code, int | float) else None
+    observed_at = _parse_open_meteo_time(
+        str(current.get("time")) if current.get("time") is not None else None,
+        int(payload.get("utc_offset_seconds") or 0),
+    )
+    if weather is None:
+        weather = SiteWeather(site_id=site.site_id, latitude=site.latitude, longitude=site.longitude)
+        db.add(weather)
+    weather.provider = "open-meteo"
+    weather.latitude = site.latitude
+    weather.longitude = site.longitude
+    weather.temperature_f = current.get("temperature_2m")
+    weather.apparent_temperature_f = current.get("apparent_temperature")
+    humidity = current.get("relative_humidity_2m")
+    weather.relative_humidity_percent = int(humidity) if isinstance(humidity, int | float) else None
+    weather.precipitation_in = current.get("precipitation")
+    weather.wind_speed_mph = current.get("wind_speed_10m")
+    weather.weather_code = weather_code
+    weather.condition = _weather_condition(weather_code)
+    weather.timezone = str(payload.get("timezone")) if payload.get("timezone") else None
+    weather.timezone_abbreviation = (
+        str(payload.get("timezone_abbreviation")) if payload.get("timezone_abbreviation") else None
+    )
+    weather.observed_at = observed_at
+    weather.fetched_at = now
+    weather.raw_json = payload
+    db.commit()
+    db.refresh(weather)
+    return _site_weather_out(site.site_id, weather, now=now)
+
 
 
 def _validate_direct_connect_host(host: str | None) -> str | None:
@@ -877,6 +1058,16 @@ def ui_get_gateway_site(
     db: Session = Depends(get_db),
 ) -> Site:
     return _get_gateway_with_site_or_404(db, gateway_id).site
+
+@app.get("/api/ui/gateways/{gateway_id}/weather", response_model=SiteWeatherOut)
+def ui_get_gateway_weather(
+    gateway_id: str,
+    _: AdminAuthContext = Depends(require_operator_auth),
+    db: Session = Depends(get_db),
+) -> SiteWeatherOut:
+    gateway = _get_gateway_with_site_or_404(db, gateway_id)
+    return _refresh_site_weather(gateway.site, db)
+
 
 
 @app.patch("/api/ui/gateways/{gateway_id}/site", response_model=SiteOut)

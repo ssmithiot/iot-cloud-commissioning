@@ -12,6 +12,7 @@ APP_SCRIPT = r"""
   let selectedSavedPointIds = new Set();
   let dashboardGateways = [];
   let dashboardJobs = [];
+  let dashboardWeather = new Map();
   let selectedDashboardGatewayId = null;
   let dashboardSort = { key: "gateway_id", direction: "desc" };
   let dashboardSearch = "";
@@ -833,6 +834,54 @@ APP_SCRIPT = r"""
     return `${Math.round(gateway.heartbeat_age_seconds / 60)}m ago`;
   }
 
+  function weatherLabel(weather) {
+    if (!weather?.available) {
+      return weather?.reason || "Weather unavailable";
+    }
+    const parts = [];
+    if (weather.temperature_f !== null && weather.temperature_f !== undefined) {
+      parts.push(`${Math.round(Number(weather.temperature_f))}F`);
+    }
+    if (weather.condition) {
+      parts.push(weather.condition);
+    }
+    if (weather.wind_speed_mph !== null && weather.wind_speed_mph !== undefined) {
+      parts.push(`${Math.round(Number(weather.wind_speed_mph))} mph wind`);
+    }
+    const suffix = weather.timezone_abbreviation ? ` ${weather.timezone_abbreviation}` : "";
+    return `${parts.join(" | ") || "Weather cached"}${suffix}`;
+  }
+
+  async function loadGatewayWeather(gateway) {
+    const weatherElement = byId("gateway-weather");
+    if (!weatherElement || !gateway?.gateway_id) {
+      return;
+    }
+    if (gateway.gateway_id !== selectedDashboardGatewayId) {
+      return;
+    }
+    if (dashboardWeather.has(gateway.gateway_id)) {
+      weatherElement.textContent = weatherLabel(dashboardWeather.get(gateway.gateway_id));
+      return;
+    }
+    if (!gateway.site_latitude || !gateway.site_longitude) {
+      weatherElement.textContent = "GPS required";
+      return;
+    }
+    weatherElement.textContent = "Loading weather...";
+    try {
+      const weather = await api(`/api/ui/gateways/${encodeURIComponent(gateway.gateway_id)}/weather`);
+      dashboardWeather.set(gateway.gateway_id, weather);
+      if (gateway.gateway_id === selectedDashboardGatewayId) {
+        weatherElement.textContent = weatherLabel(weather);
+      }
+    } catch (error) {
+      if (gateway.gateway_id === selectedDashboardGatewayId) {
+        weatherElement.textContent = errorMessage(error);
+      }
+    }
+  }
+
   async function initDashboard() {
     initThemeToggle();
     setupMapControls();
@@ -1179,6 +1228,7 @@ APP_SCRIPT = r"""
         <dt>Host</dt><dd>${escapeHtml(gateway.hostname || "")}</dd>
         <dt>LAN IP</dt><dd>${escapeHtml(gateway.lan_ip || "unknown")}</dd>
         <dt>Heartbeat</dt><dd>${escapeHtml(heartbeatLabel(gateway))}</dd>
+        <dt>Weather</dt><dd id="gateway-weather">Loading weather...</dd>
         <dt>Agent/UI</dt><dd>${escapeHtml(gateway.agent_version || "?")} / ${escapeHtml(gateway.ui_version || "?")}</dd>
         <dt>Notes</dt><dd>${escapeHtml(gateway.network_status_notes || "No network notes")}</dd>
       </dl>
@@ -1190,6 +1240,7 @@ APP_SCRIPT = r"""
       </div>
     `;
     attachDirectConnectHandlers(panel);
+    loadGatewayWeather(gateway);
   }
 
   function attachDirectConnectHandlers(root = document) {

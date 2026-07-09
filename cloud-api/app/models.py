@@ -111,6 +111,30 @@ class Site(Base):
 
     organization: Mapped[Organization | None] = relationship(back_populates="sites")
     edge_nodes: Mapped[list["EdgeNode"]] = relationship(back_populates="site")
+    weather: Mapped["SiteWeather | None"] = relationship(back_populates="site")
+
+
+class SiteWeather(Base):
+    __tablename__ = "site_weather"
+
+    site_id: Mapped[str] = mapped_column(String(120), ForeignKey("sites.site_id", ondelete="CASCADE"), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False, default="open-meteo")
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    temperature_f: Mapped[float | None] = mapped_column(Float, nullable=True)
+    apparent_temperature_f: Mapped[float | None] = mapped_column(Float, nullable=True)
+    relative_humidity_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    precipitation_in: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wind_speed_mph: Mapped[float | None] = mapped_column(Float, nullable=True)
+    weather_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    condition: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    timezone: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    timezone_abbreviation: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    raw_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+
+    site: Mapped[Site] = relationship(back_populates="weather")
 
 
 class EdgeNode(Base):
