@@ -360,13 +360,33 @@ APP_SCRIPT = r"""
     }
   }
 
-  function setMapZoom(nextZoom) {
-    mapZoom = Math.max(1, Math.min(2.5, Math.round(nextZoom * 10) / 10));
+  function setMapZoom(nextZoom, anchor = null) {
+    const oldZoom = mapZoom;
+    const newZoom = Math.max(1, Math.min(2.5, Math.round(nextZoom * 10) / 10));
+    if (newZoom === oldZoom) {
+      return;
+    }
+    let viewport = null;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (anchor && anchor.viewport) {
+      viewport = anchor.viewport;
+      const rect = viewport.getBoundingClientRect();
+      offsetX = anchor.clientX - rect.left;
+      offsetY = anchor.clientY - rect.top;
+    }
+    mapZoom = newZoom;
     applyMapZoom();
+    if (viewport) {
+      const ratio = newZoom / oldZoom;
+      viewport.scrollLeft = ((viewport.scrollLeft + offsetX) * ratio) - offsetX;
+      viewport.scrollTop = ((viewport.scrollTop + offsetY) * ratio) - offsetY;
+    }
   }
 
   function setupMapControls() {
     applyMapZoom();
+    const mapViewport = document.querySelector(".usa-map");
     const zoomIn = byId("map-zoom-in");
     const zoomOut = byId("map-zoom-out");
     const zoomReset = byId("map-zoom-reset");
@@ -381,6 +401,18 @@ APP_SCRIPT = r"""
     if (zoomReset && zoomReset.dataset.zoomReady !== "true") {
       zoomReset.dataset.zoomReady = "true";
       zoomReset.addEventListener("click", () => setMapZoom(1));
+    }
+    if (mapViewport && mapViewport.dataset.wheelZoomReady !== "true") {
+      mapViewport.dataset.wheelZoomReady = "true";
+      mapViewport.addEventListener("wheel", (event) => {
+        event.preventDefault();
+        const direction = event.deltaY < 0 ? 1 : -1;
+        setMapZoom(mapZoom + (direction * 0.15), {
+          viewport: mapViewport,
+          clientX: event.clientX,
+          clientY: event.clientY
+        });
+      }, { passive: false });
     }
   }
 
