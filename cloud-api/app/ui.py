@@ -91,7 +91,7 @@ APP_SCRIPT = r"""
         attributionControl: true,
         preferCanvas: true
       }).setView([39.5, -98.35], 4);
-      window.L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      window.L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
         maxZoom: 19,
         attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
       }).addTo(roadMap);
@@ -2685,7 +2685,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       font-family: "Inter", "Segoe UI", Arial, sans-serif;
     }}
     .usa-map .leaflet-tile {{
-      filter: brightness(1.45) contrast(0.9) saturate(1.12);
+      filter: brightness(0.82) contrast(1.05) saturate(0.9);
     }}
     .road-marker {{
       width: 18px !important;
@@ -2704,16 +2704,16 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       place-items: center;
       color: #031314;
       font: 900 10px/1 "JetBrains Mono", Consolas, monospace;
-      background: var(--accent-strong);
-      box-shadow: 0 0 18px var(--accent-strong), 0 0 0 7px rgba(118, 247, 166, 0.24), 0 0 0 1px rgba(236, 254, 255, 0.88);
+      background: #5ee7a6;
+      box-shadow: 0 0 10px rgba(94, 231, 166, 0.58), 0 0 0 5px rgba(4, 18, 20, 0.5), 0 0 0 1px rgba(236, 254, 255, 0.86);
     }}
     .road-marker.stale span {{
       background: var(--warning);
-      box-shadow: 0 0 18px var(--warning), 0 0 0 7px rgba(245, 197, 66, 0.24), 0 0 0 1px rgba(236, 254, 255, 0.78);
+      box-shadow: 0 0 10px rgba(245, 197, 66, 0.5), 0 0 0 5px rgba(32, 27, 10, 0.5), 0 0 0 1px rgba(236, 254, 255, 0.78);
     }}
     .road-marker.offline span {{
       background: var(--danger);
-      box-shadow: 0 0 18px var(--danger), 0 0 0 7px rgba(255, 107, 107, 0.24), 0 0 0 1px rgba(236, 254, 255, 0.78);
+      box-shadow: 0 0 10px rgba(255, 107, 107, 0.5), 0 0 0 5px rgba(34, 14, 16, 0.52), 0 0 0 1px rgba(236, 254, 255, 0.78);
     }}
     .road-marker.road-cluster {{
       width: 30px !important;
@@ -2723,7 +2723,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       width: 26px;
       height: 26px;
       border: 1px solid rgba(236, 254, 255, 0.82);
-      box-shadow: 0 0 24px var(--accent-strong), 0 0 0 9px rgba(118, 247, 166, 0.28), 0 0 0 1px rgba(236, 254, 255, 0.92);
+      box-shadow: 0 0 14px rgba(94, 231, 166, 0.58), 0 0 0 6px rgba(4, 18, 20, 0.58), 0 0 0 1px rgba(236, 254, 255, 0.92);
     }}
     .road-marker.selected span {{
       outline: 1px solid rgba(255, 255, 255, 0.95);
