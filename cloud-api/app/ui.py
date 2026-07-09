@@ -37,6 +37,7 @@ APP_SCRIPT = r"""
     login: "/login",
     signup: "/signup",
     checkEmail: "/auth/check-email",
+    resetPassword: "/auth/reset-password",
     waiting: "/auth/waiting-approval",
     unauthorized: "/auth/unauthorized",
     app: "/app",
@@ -90,9 +91,9 @@ APP_SCRIPT = r"""
         attributionControl: true,
         preferCanvas: true
       }).setView([39.5, -98.35], 4);
-      window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      window.L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
         maxZoom: 19,
-        attribution: "&copy; OpenStreetMap contributors"
+        attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
       }).addTo(roadMap);
       roadMarkerLayer = window.L.layerGroup().addTo(roadMap);
       roadMap.on("zoomend moveend", () => renderGatewayMap(sortedDashboardGateways()));
@@ -275,6 +276,7 @@ APP_SCRIPT = r"""
 
   async function initLogin() {
     const form = byId("login-form");
+    const resetForm = byId("password-reset-request-form");
     if (!form) {
       return;
     }
@@ -308,6 +310,24 @@ APP_SCRIPT = r"""
         setText("status", error.message, true);
       }
     });
+    if (resetForm) {
+      resetForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        setText("status", "Sending password reset email...");
+        try {
+          const client = await getSupabase();
+          const email = byId("reset-email").value.trim().toLowerCase();
+          const redirectTo = `${window.location.origin}${statePaths.resetPassword}`;
+          const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo });
+          if (error) {
+            throw error;
+          }
+          setText("status", "Password reset email sent. Check your inbox.");
+        } catch (error) {
+          setText("status", error.message, true);
+        }
+      });
+    }
   }
 
   async function initSignup() {
@@ -339,6 +359,40 @@ APP_SCRIPT = r"""
           throw error;
         }
         window.location.assign(statePaths.checkEmail);
+      } catch (error) {
+        setText("status", error.message, true);
+      }
+    });
+  }
+
+  async function initResetPassword() {
+    const form = byId("reset-password-form");
+    if (!form) {
+      return;
+    }
+    try {
+      await getSupabase();
+      setText("status", "");
+    } catch (error) {
+      setText("status", error.message, true);
+      return;
+    }
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      setText("status", "Updating password...");
+      try {
+        const password = byId("new-password").value;
+        const confirmPassword = byId("confirm-password").value;
+        if (password !== confirmPassword) {
+          throw new Error("Passwords do not match.");
+        }
+        const client = await getSupabase();
+        const { error } = await client.auth.updateUser({ password });
+        if (error) {
+          throw error;
+        }
+        setText("status", "Password updated. You can now log in.");
+        window.setTimeout(() => window.location.assign(statePaths.login), 1200);
       } catch (error) {
         setText("status", error.message, true);
       }
@@ -412,9 +466,20 @@ APP_SCRIPT = r"""
   }
 
   function gatewayCoordinates(gateway) {
-    const latitude = Number(gateway.site_latitude);
-    const longitude = Number(gateway.site_longitude);
+    const rawLatitude = gateway.site_latitude;
+    const rawLongitude = gateway.site_longitude;
+    if (
+      rawLatitude === null || rawLatitude === undefined || String(rawLatitude).trim() === "" ||
+      rawLongitude === null || rawLongitude === undefined || String(rawLongitude).trim() === ""
+    ) {
+      return null;
+    }
+    const latitude = Number(rawLatitude);
+    const longitude = Number(rawLongitude);
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return null;
+    }
+    if (latitude === 0 && longitude === 0) {
       return null;
     }
     if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
@@ -1964,6 +2029,8 @@ APP_SCRIPT = r"""
     initLogin();
   } else if (page === "signup") {
     initSignup();
+  } else if (page === "reset-password") {
+    initResetPassword();
   } else if (page === "app") {
     initDashboard();
   } else if (page === "gateway-workspace") {
@@ -2627,23 +2694,23 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       background: transparent;
     }}
     .road-marker span {{
-      width: 10px;
-      height: 10px;
+      width: 12px;
+      height: 12px;
       border-radius: 50%;
       display: grid;
       place-items: center;
       color: #031314;
       font: 900 10px/1 "JetBrains Mono", Consolas, monospace;
       background: var(--accent-strong);
-      box-shadow: 0 0 16px var(--accent-strong), 0 0 0 6px rgba(118, 247, 166, 0.14);
+      box-shadow: 0 0 18px var(--accent-strong), 0 0 0 7px rgba(118, 247, 166, 0.24), 0 0 0 1px rgba(236, 254, 255, 0.88);
     }}
     .road-marker.stale span {{
       background: var(--warning);
-      box-shadow: 0 0 16px var(--warning), 0 0 0 6px rgba(245, 197, 66, 0.14);
+      box-shadow: 0 0 18px var(--warning), 0 0 0 7px rgba(245, 197, 66, 0.24), 0 0 0 1px rgba(236, 254, 255, 0.78);
     }}
     .road-marker.offline span {{
       background: var(--danger);
-      box-shadow: 0 0 16px var(--danger), 0 0 0 6px rgba(255, 107, 107, 0.14);
+      box-shadow: 0 0 18px var(--danger), 0 0 0 7px rgba(255, 107, 107, 0.24), 0 0 0 1px rgba(236, 254, 255, 0.78);
     }}
     .road-marker.road-cluster {{
       width: 30px !important;
@@ -2653,7 +2720,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       width: 26px;
       height: 26px;
       border: 1px solid rgba(236, 254, 255, 0.82);
-      box-shadow: 0 0 22px var(--accent-strong), 0 0 0 8px rgba(118, 247, 166, 0.16);
+      box-shadow: 0 0 24px var(--accent-strong), 0 0 0 9px rgba(118, 247, 166, 0.28), 0 0 0 1px rgba(236, 254, 255, 0.92);
     }}
     .road-marker.selected span {{
       outline: 1px solid rgba(255, 255, 255, 0.95);
@@ -3141,6 +3208,15 @@ def login_html() -> str:
           <button type="submit">Login</button>
         </div>
       </form>
+      <form id="password-reset-request-form" class="grid">
+        <div class="span-4">
+          <label for="reset-email">Forgot password?</label>
+          <input id="reset-email" type="email" autocomplete="username" placeholder="Email address" required>
+        </div>
+        <div class="span-2">
+          <button class="secondary" type="submit">Reset password</button>
+        </div>
+      </form>
       <div id="status" class="notice"></div>
     </section>
   </main>"""
@@ -3173,6 +3249,34 @@ def signup_html() -> str:
     </section>
   </main>"""
     return _layout("Sign Up - IOT Cloud Commissioning", body, "signup")
+
+
+def reset_password_html() -> str:
+    body = """
+  <header>
+    <h1>IOT Cloud Commissioning</h1>
+    <a class="button secondary" href="/login">Login</a>
+  </header>
+  <main>
+    <section>
+      <h2>Reset Password</h2>
+      <form id="reset-password-form" class="grid">
+        <div class="span-4">
+          <label for="new-password">New password</label>
+          <input id="new-password" type="password" autocomplete="new-password" minlength="8" required>
+        </div>
+        <div class="span-4">
+          <label for="confirm-password">Confirm password</label>
+          <input id="confirm-password" type="password" autocomplete="new-password" minlength="8" required>
+        </div>
+        <div class="span-2">
+          <button type="submit">Update password</button>
+        </div>
+      </form>
+      <div id="status" class="notice"></div>
+    </section>
+  </main>"""
+    return _layout("Reset Password - IOT Cloud Commissioning", body, "reset-password")
 
 
 def check_email_html() -> str:

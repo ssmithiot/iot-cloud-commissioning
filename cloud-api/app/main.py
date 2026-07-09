@@ -84,6 +84,7 @@ from app.ui import (
     check_email_html,
     gateway_workspace_html,
     login_html,
+    reset_password_html,
     signup_html,
     tunnel_console_html,
     unauthorized_html,
@@ -655,6 +656,9 @@ def signup_page() -> HTMLResponse:
 def check_email_page() -> HTMLResponse:
     return HTMLResponse(check_email_html())
 
+@app.get("/auth/reset-password", response_class=HTMLResponse, include_in_schema=False)
+def reset_password_page() -> HTMLResponse:
+    return HTMLResponse(reset_password_html())
 
 @app.get("/auth/waiting-approval", response_class=HTMLResponse, include_in_schema=False)
 def waiting_approval_page() -> HTMLResponse:

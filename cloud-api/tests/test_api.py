@@ -287,6 +287,7 @@ def test_root_redirects_to_login() -> None:
         ("/login", "Login"),
         ("/signup", "Sign Up"),
         ("/auth/check-email", "Check Your Email"),
+        ("/auth/reset-password", "Reset Password"),
         ("/auth/waiting-approval", "Waiting For Approval"),
         ("/auth/unauthorized", "Unauthorized"),
         ("/app", "Dashboard"),
