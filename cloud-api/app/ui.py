@@ -2205,24 +2205,6 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .map-node.selected em {{
       display: block;
     }}
-    .map-core {{
-      position: absolute;
-      left: 50%;
-      top: 47%;
-      width: 118px;
-      height: 118px;
-      transform: translate(-50%, -50%);
-      border: 1px solid rgba(34, 211, 197, 0.5);
-      border-radius: 50%;
-      display: grid;
-      place-items: center;
-      color: #ecfeff;
-      background: rgba(10, 28, 30, 0.84);
-      box-shadow: 0 0 36px rgba(34, 211, 197, 0.2), inset 0 0 24px rgba(34, 211, 197, 0.08);
-      font: 800 12px/1.1 "JetBrains Mono", Consolas, monospace;
-      text-align: center;
-      text-transform: uppercase;
-    }}
     .inspector-panel {{
       min-height: 100%;
       padding: 18px;
@@ -2453,10 +2435,6 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
         min-height: 320px;
         height: 48vh;
       }}
-      .map-core {{
-        width: 88px;
-        height: 88px;
-      }}
       .inspector-head,
       .panel-title {{
         flex-direction: column;
@@ -2625,9 +2603,6 @@ def app_html() -> str:
             </g>
           </svg>
           <div id="gateway-map-nodes" class="map-node-layer"></div>
-          <div class="map-core">
-            <span>Cloud Core</span>
-          </div>
         </div>
       </div>
       <aside id="gateway-inspector" class="inspector-panel">
