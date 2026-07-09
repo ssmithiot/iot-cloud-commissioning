@@ -11,8 +11,11 @@ APP_SCRIPT = r"""
   let currentPointCandidateDevice = null;
   let selectedSavedPointIds = new Set();
   let dashboardGateways = [];
-  let dashboardSort = { key: "gateway_id", direction: "asc" };
+  let dashboardJobs = [];
+  let selectedDashboardGatewayId = null;
+  let dashboardSort = { key: "gateway_id", direction: "desc" };
   let dashboardSearch = "";
+  const themeStorageKey = "iot-cloud-command-theme";
 
   const statePaths = {
     login: "/login",
@@ -26,6 +29,37 @@ APP_SCRIPT = r"""
 
   function byId(id) {
     return document.getElementById(id);
+  }
+
+  function applyTheme(theme) {
+    const resolved = theme === "light" ? "light" : "dark";
+    document.body.dataset.theme = resolved;
+    const toggle = byId("theme-toggle");
+    if (toggle) {
+      toggle.textContent = resolved === "dark" ? "Light Mode" : "Dark Mode";
+      toggle.setAttribute("aria-pressed", resolved === "light" ? "true" : "false");
+    }
+    try {
+      window.localStorage.setItem(themeStorageKey, resolved);
+    } catch {
+      // Ignore storage failures; the current page still switches themes.
+    }
+  }
+
+  function initThemeToggle() {
+    let storedTheme = "dark";
+    try {
+      storedTheme = window.localStorage.getItem(themeStorageKey) || "dark";
+    } catch {
+      storedTheme = "dark";
+    }
+    applyTheme(storedTheme);
+    const toggle = byId("theme-toggle");
+    if (toggle) {
+      toggle.addEventListener("click", () => {
+        applyTheme(document.body.dataset.theme === "light" ? "dark" : "light");
+      });
+    }
   }
 
   function setText(id, value, isError = false) {
@@ -262,7 +296,143 @@ APP_SCRIPT = r"""
     }
   }
 
+  function metricCard(id, label, value, detail = "") {
+    const element = byId(id);
+    if (!element) {
+      return;
+    }
+    element.innerHTML = `
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <em>${escapeHtml(detail)}</em>
+    `;
+  }
+
+  function gatewayAddress(gateway) {
+    return gateway.site_compact_address || gateway.site_address || [
+      gateway.site_address_city,
+      gateway.site_address_state,
+      gateway.site_address_postal_code
+    ].filter(Boolean).join(", ");
+  }
+
+  function gatewaySearchText(gateway) {
+    return [
+      gateway.gateway_id,
+      gateway.site_id,
+      gateway.site_name,
+      gateway.hostname,
+      gateway.effective_status,
+      gatewayAddress(gateway),
+      gateway.network_status_notes,
+      gateway.lan_ip,
+      gateway.agent_version,
+      gateway.ui_version
+    ].filter(Boolean).join(" ").toLowerCase();
+  }
+
+  function stateSeed(gateway) {
+    const explicit = (gateway.site_address_state || "").trim().toUpperCase();
+    if (explicit) {
+      return explicit;
+    }
+    const address = `${gateway.site_compact_address || ""} ${gateway.site_address || ""}`.toUpperCase();
+    const states = ["AL","AZ","AR","CA","CO","CT","FL","GA","IA","ID","IL","IN","KS","KY","LA","MA","MD","ME","MI","MN","MO","MS","NC","ND","NE","NJ","NM","NV","NY","OH","OK","OR","PA","SC","SD","TN","TX","UT","VA","WA","WI","WV"];
+    return states.find((state) => address.includes(` ${state} `) || address.endsWith(` ${state}`)) || "";
+  }
+
+  function hashNumber(value) {
+    let hash = 0;
+    for (const char of String(value || "")) {
+      hash = ((hash << 5) - hash) + char.charCodeAt(0);
+      hash |= 0;
+    }
+    return Math.abs(hash);
+  }
+
+  async function renderUsaMapBase() {
+    const svg = byId("usa-map-base");
+    if (!svg || svg.dataset.loaded === "true") {
+      return;
+    }
+    try {
+      const [{ geoAlbersUsa, geoPath }, { feature }] = await Promise.all([
+        import("https://cdn.jsdelivr.net/npm/d3-geo@3/+esm"),
+        import("https://cdn.jsdelivr.net/npm/topojson-client@3/+esm")
+      ]);
+      const response = await fetch("https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json");
+      if (!response.ok) {
+        throw new Error("Could not load USA atlas.");
+      }
+      const atlas = await response.json();
+      const states = feature(atlas, atlas.objects.states).features;
+      const nation = feature(atlas, atlas.objects.nation);
+      const projection = geoAlbersUsa().fitSize([900, 500], nation);
+      const path = geoPath(projection);
+      const nationPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      nationPath.setAttribute("class", "usa-nation");
+      nationPath.setAttribute("d", path(nation));
+      svg.appendChild(nationPath);
+      for (const state of states) {
+        const statePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        statePath.setAttribute("class", "usa-state");
+        statePath.setAttribute("d", path(state));
+        svg.appendChild(statePath);
+      }
+      svg.querySelector(".usa-fallback")?.setAttribute("hidden", "");
+      svg.dataset.loaded = "true";
+    } catch {
+      svg.dataset.loaded = "fallback";
+    }
+  }
+
+  function gatewayMapPosition(gateway) {
+    const statePositions = {
+      AL:[61,65], AZ:[27,58], AR:[55,59], CA:[15,49], CO:[39,49], CT:[84,34], FL:[70,80],
+      GA:[68,66], IA:[54,42], ID:[29,33], IL:[61,47], IN:[66,46], KS:[48,52], KY:[66,54],
+      LA:[55,70], MA:[86,32], MD:[78,45], ME:[90,24], MI:[66,36], MN:[52,31], MO:[56,52],
+      MS:[59,65], NC:[75,57], ND:[45,26], NE:[45,44], NJ:[81,40], NM:[34,60], NV:[22,45],
+      NY:[80,34], OH:[70,43], OK:[48,60], OR:[18,33], PA:[76,39], SC:[72,62], SD:[45,36],
+      TN:[65,58], TX:[47,73], UT:[31,47], VA:[76,51], WA:[20,25], WI:[59,35], WV:[72,48]
+    };
+    const state = stateSeed(gateway);
+    const base = statePositions[state] || [18 + (hashNumber(gateway.gateway_id) % 66), 28 + (hashNumber(gateway.site_id) % 45)];
+    const jitter = hashNumber(`${gateway.gateway_id}:${gateway.hostname}`);
+    return [
+      Math.max(8, Math.min(92, base[0] + ((jitter % 7) - 3) * 0.8)),
+      Math.max(14, Math.min(82, base[1] + (((jitter >> 3) % 7) - 3) * 0.8))
+    ];
+  }
+
+  function gatewayStatusClass(gateway) {
+    const status = String(gateway.effective_status || gateway.latest_status || "unknown").toLowerCase();
+    if (status.includes("online")) {
+      return "online";
+    }
+    if (status.includes("stale")) {
+      return "stale";
+    }
+    return "offline";
+  }
+
+  function statusPill(gateway) {
+    const status = gatewayStatusClass(gateway);
+    return `<span class="status-pill ${status}">${escapeHtml(gateway.effective_status || gateway.latest_status || "unknown")}</span>`;
+  }
+
+  function heartbeatLabel(gateway) {
+    if (gateway.heartbeat_age_seconds === null || gateway.heartbeat_age_seconds === undefined) {
+      return "no heartbeat";
+    }
+    if (gateway.heartbeat_age_seconds < 60) {
+      return `${gateway.heartbeat_age_seconds}s ago`;
+    }
+    return `${Math.round(gateway.heartbeat_age_seconds / 60)}m ago`;
+  }
+
   async function initDashboard() {
+    initThemeToggle();
+    renderUsaMapBase();
     const me = await initProtectedPage(null);
     if (!me) {
       return;
@@ -270,17 +440,21 @@ APP_SCRIPT = r"""
     currentUser = me;
     try {
       const summary = await api("/api/ui/gateways/summary");
-      const gateways = await api("/api/ui/gateways");
-      const jobs = await api("/api/edge/jobs?limit=10");
-      dashboardGateways = gateways;
-      byId("gateway-count").textContent = `${summary.total} total\n${summary.online} online\n${summary.stale} stale\n${summary.offline} offline`;
-      byId("job-count").textContent = String(jobs.length);
+      dashboardGateways = await api("/api/ui/gateways");
+      dashboardJobs = await api("/api/edge/jobs?limit=10");
+      selectedDashboardGatewayId = dashboardGateways[0]?.gateway_id || null;
+      const queuedUploads = dashboardGateways.reduce((total, gateway) => total + Number(gateway.queued_upload_count || 0), 0);
+      metricCard("metric-total", "Total Gateways", summary.total, "registered");
+      metricCard("metric-online", "Online", summary.online, "heartbeat active");
+      metricCard("metric-stale", "Stale", summary.stale, "heartbeat delayed");
+      metricCard("metric-offline", "Offline", summary.offline, "no current heartbeat");
+      metricCard("metric-jobs", "Recent Jobs", dashboardJobs.length, `${queuedUploads} queued uploads`);
       setupGatewaySearch();
       setupGatewaySortHeaders();
+      renderGatewayMap(sortedDashboardGateways());
+      renderGatewayInspector();
       renderGatewayList();
-      byId("job-list").textContent = jobs.map((job) => (
-        `${job.job_id} | ${job.gateway_id} | ${job.job_type} | ${job.status}`
-      )).join("\n") || "No jobs found.";
+      renderEventTicker(dashboardJobs);
       if (me.role === "admin") {
         byId("admin-link").hidden = false;
       }
@@ -296,14 +470,11 @@ APP_SCRIPT = r"""
     if (!currentUser || currentUser.role === "viewer") {
       return '<span class="muted">Configured</span>';
     }
-    return `<a class="button secondary" href="/api/ui/gateways/${encodeURIComponent(gateway.gateway_id)}/direct-connect" data-direct-connect="${escapeHtml(gateway.gateway_id)}">Direct Connect</a>`;
+    return `<a class="button table-command secondary" href="/api/ui/gateways/${encodeURIComponent(gateway.gateway_id)}/direct-connect" data-direct-connect="${escapeHtml(gateway.gateway_id)}">Direct Connect</a>`;
   }
 
   function statusLabel(gateway) {
-    if (gateway.heartbeat_age_seconds === null || gateway.heartbeat_age_seconds === undefined) {
-      return `${gateway.effective_status} | no heartbeat`;
-    }
-    return `${gateway.effective_status} | heartbeat ${gateway.heartbeat_age_seconds}s ago`;
+    return `${gateway.effective_status || gateway.latest_status || "unknown"} | ${heartbeatLabel(gateway)}`;
   }
 
   function dashboardStatusCell(gateway) {
@@ -317,7 +488,7 @@ APP_SCRIPT = r"""
     const values = {
       gateway_id: gateway.gateway_id,
       site: `${gateway.site_name || ""} ${gateway.site_id || ""}`,
-      address: gateway.site_compact_address || gateway.site_address || "",
+      address: gatewayAddress(gateway) || "",
       hostname: gateway.hostname,
       status: statusLabel(gateway),
       network_status_notes: gateway.network_status_notes || "",
@@ -332,6 +503,9 @@ APP_SCRIPT = r"""
       gateway.gateway_id,
       gateway.site_name,
       gateway.site_id,
+      gateway.site_address_city,
+      gateway.site_address_state,
+      gateway.site_address_postal_code,
       gateway.site_compact_address,
       gateway.site_address,
       gateway.hostname,
@@ -364,7 +538,7 @@ APP_SCRIPT = r"""
       button.dataset.direction = isActive ? dashboardSort.direction : "";
       button.setAttribute("aria-sort", isActive ? (dashboardSort.direction === "asc" ? "ascending" : "descending") : "none");
       const label = button.dataset.label || button.textContent;
-      button.textContent = isActive ? `${label} (${dashboardSort.direction})` : label;
+      button.textContent = isActive ? `${label} (${dashboardSort.direction.toUpperCase()})` : label;
     });
   }
 
@@ -382,6 +556,7 @@ APP_SCRIPT = r"""
         } else {
           dashboardSort = { key, direction: "asc" };
         }
+        renderGatewayMap(sortedDashboardGateways());
         renderGatewayList();
       });
     });
@@ -396,35 +571,86 @@ APP_SCRIPT = r"""
     search.dataset.searchReady = "true";
     search.addEventListener("input", () => {
       dashboardSearch = search.value;
+      renderGatewayMap(sortedDashboardGateways());
       renderGatewayList();
     });
   }
 
-  function renderGatewayList() {
-    const table = byId("gateway-list");
-    table.textContent = "";
-    const gateways = sortedDashboardGateways();
-    if (!gateways.length) {
-      const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="8">No gateways found.</td>`;
-      table.appendChild(row);
+  function selectDashboardGateway(gatewayId) {
+    selectedDashboardGatewayId = gatewayId;
+    renderGatewayMap(sortedDashboardGateways());
+    renderGatewayInspector();
+    renderGatewayList();
+  }
+
+  function renderGatewayMap(gateways) {
+    const layer = byId("gateway-map-nodes");
+    const count = byId("map-node-count");
+    if (!layer) {
       return;
     }
-    for (const gateway of gateways) {
-      const row = document.createElement("tr");
-      row.innerHTML = `
-        <td><a href="/gateways/${encodeURIComponent(gateway.gateway_id)}">${gateway.gateway_id}</a></td>
-        <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
-        <td>${escapeHtml(gateway.site_compact_address || gateway.site_address || "")}</td>
-        <td>${escapeHtml(gateway.hostname)}</td>
-        <td>${dashboardStatusCell(gateway)}</td>
-        <td>${escapeHtml(gateway.network_status_notes || "")}</td>
-        <td>${directConnectCell(gateway)}</td>
-        <td><a class="button secondary" href="/gateways/${encodeURIComponent(gateway.gateway_id)}/configure">Configure</a></td>
-      `;
-      table.appendChild(row);
+    layer.textContent = "";
+    if (count) {
+      count.textContent = `${gateways.length} visible node${gateways.length === 1 ? "" : "s"}`;
     }
-    table.querySelectorAll("[data-direct-connect]").forEach((link) => {
+    for (const gateway of gateways) {
+      const [x, y] = gatewayMapPosition(gateway);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `map-node ${gatewayStatusClass(gateway)}${gateway.gateway_id === selectedDashboardGatewayId ? " selected" : ""}`;
+      button.style.left = `${x}%`;
+      button.style.top = `${y}%`;
+      button.title = `${gateway.gateway_id} - ${gateway.site_name || gateway.site_id}`;
+      button.innerHTML = `<span></span><em>${escapeHtml(gateway.gateway_id)}</em>`;
+      button.addEventListener("click", () => selectDashboardGateway(gateway.gateway_id));
+      layer.appendChild(button);
+    }
+  }
+
+  function selectedDashboardGateway() {
+    return dashboardGateways.find((gateway) => gateway.gateway_id === selectedDashboardGatewayId) || dashboardGateways[0] || null;
+  }
+
+  function renderGatewayInspector() {
+    const panel = byId("gateway-inspector");
+    if (!panel) {
+      return;
+    }
+    const gateway = selectedDashboardGateway();
+    if (!gateway) {
+      panel.innerHTML = `<div class="empty-state">No gateway selected.</div>`;
+      return;
+    }
+    const encoded = encodeURIComponent(gateway.gateway_id);
+    panel.innerHTML = `
+      <div class="inspector-head">
+        <div>
+          <span class="eyebrow">Selected Node</span>
+          <h3>${escapeHtml(gateway.gateway_id)}</h3>
+          <p>${escapeHtml(gateway.site_name || gateway.site_id || "Unassigned site")}</p>
+        </div>
+        ${statusPill(gateway)}
+      </div>
+      <dl class="inspector-grid">
+        <dt>Address</dt><dd>${escapeHtml(gatewayAddress(gateway) || "No address on file")}</dd>
+        <dt>Host</dt><dd>${escapeHtml(gateway.hostname || "")}</dd>
+        <dt>LAN IP</dt><dd>${escapeHtml(gateway.lan_ip || "unknown")}</dd>
+        <dt>Heartbeat</dt><dd>${escapeHtml(heartbeatLabel(gateway))}</dd>
+        <dt>Agent/UI</dt><dd>${escapeHtml(gateway.agent_version || "?")} / ${escapeHtml(gateway.ui_version || "?")}</dd>
+        <dt>Notes</dt><dd>${escapeHtml(gateway.network_status_notes || "No network notes")}</dd>
+      </dl>
+      <div class="inspector-actions">
+        <a class="button" href="/gateways/${encoded}">Workspace</a>
+        <a class="button secondary" href="/gateways/${encoded}">Edit Site</a>
+        <a class="button secondary" href="/gateways/${encoded}/tunnel/">Remote Tunnel</a>
+        ${gateway.direct_connect_available && currentUser?.role !== "viewer" ? `<a class="button secondary" href="/api/ui/gateways/${encoded}/direct-connect" data-direct-connect="${escapeHtml(gateway.gateway_id)}">Direct Connect</a>` : `<span class="muted">Direct Connect not configured</span>`}
+      </div>
+    `;
+    attachDirectConnectHandlers(panel);
+  }
+
+  function attachDirectConnectHandlers(root = document) {
+    root.querySelectorAll("[data-direct-connect]").forEach((link) => {
       link.addEventListener("click", async (event) => {
         event.preventDefault();
         try {
@@ -440,7 +666,66 @@ APP_SCRIPT = r"""
         }
       });
     });
+  }
+
+  function renderGatewayList() {
+    const table = byId("gateway-list");
+    const gateways = sortedDashboardGateways();
+    const count = byId("gateway-result-count");
+    if (count) {
+      count.textContent = `${gateways.length} of ${dashboardGateways.length} gateways`;
+    }
     updateGatewaySortHeaders();
+    table.textContent = "";
+    if (!gateways.length) {
+      const row = document.createElement("tr");
+      row.innerHTML = `<td colspan="8">No gateways found.</td>`;
+      table.appendChild(row);
+      return;
+    }
+    for (const gateway of gateways) {
+      const row = document.createElement("tr");
+      row.className = gateway.gateway_id === selectedDashboardGatewayId ? "selected-row" : "";
+      row.innerHTML = `
+        <td><a class="gateway-link" href="/gateways/${encodeURIComponent(gateway.gateway_id)}" data-select-gateway="${escapeHtml(gateway.gateway_id)}">${escapeHtml(gateway.gateway_id)}</a></td>
+        <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
+        <td>${escapeHtml(gatewayAddress(gateway) || "")}</td>
+        <td>${escapeHtml(gateway.hostname)}</td>
+        <td><span class="status-text">${escapeHtml(statusLabel(gateway))}</span></td>
+        <td>${escapeHtml(gateway.network_status_notes || "")}</td>
+        <td>${directConnectCell(gateway)}</td>
+        <td><a class="button table-command secondary" href="/gateways/${encodeURIComponent(gateway.gateway_id)}/configure">Configure</a></td>
+      `;
+      table.appendChild(row);
+    }
+    table.querySelectorAll("[data-select-gateway]").forEach((link) => {
+      link.addEventListener("mouseenter", () => selectDashboardGateway(link.dataset.selectGateway));
+      link.addEventListener("focus", () => selectDashboardGateway(link.dataset.selectGateway));
+    });
+    attachDirectConnectHandlers(table);
+  }
+
+  function renderEventTicker(jobs) {
+    const list = byId("event-ticker");
+    if (!list) {
+      return;
+    }
+    list.textContent = "";
+    if (!jobs.length) {
+      const item = document.createElement("li");
+      item.textContent = "No recent cloud jobs.";
+      list.appendChild(item);
+      return;
+    }
+    for (const job of jobs) {
+      const item = document.createElement("li");
+      item.innerHTML = `
+        <span>${escapeHtml(job.status)}</span>
+        <strong>${escapeHtml(job.gateway_id)}</strong>
+        <em>${escapeHtml(job.job_type)}</em>
+      `;
+      list.appendChild(item);
+    }
   }
 
   function objectFolderLabel(objectType) {
@@ -707,7 +992,7 @@ APP_SCRIPT = r"""
     currentPointCandidateDevice = null;
     setDiscoveryProgress(5, `Queueing point load for device ${device.device_instance}...`);
     const job = await api(`/api/ui/devices/${encodeURIComponent(device.id)}/load-points`, { method: "POST" });
-    setDiscoveryProgress(25, `Queued ${job.job_id} on BACnet 47814.`);
+    setDiscoveryProgress(25, `Queued ${job.job_id} on BACnet ${job.request_json?.bacnet_port || "configured port"}.`);
     const completedJob = await pollDiscoveryJob(job.job_id, "Point load");
     if (completedJob.status !== "completed") {
       setText("status", `Point load ${completedJob.status}: ${completedJob.job_id}.`, true);
@@ -1088,7 +1373,7 @@ APP_SCRIPT = r"""
       setDiscoveryProgress(5, "Queueing discovery job...");
       try {
         const job = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/discover-devices`, { method: "POST" });
-        setDiscoveryProgress(25, `Queued ${job.job_id} on BACnet 47814.`);
+        setDiscoveryProgress(25, `Queued ${job.job_id} on BACnet ${job.request_json?.bacnet_port || "configured port"}.`);
         const completedJob = await pollDiscoveryJob(job.job_id);
         if (completedJob.status === "completed") {
           renderDiscoveredDevices(completedJob);
@@ -1315,6 +1600,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       --danger: #b42318;
     }}
     * {{ box-sizing: border-box; }}
+    [hidden] {{ display: none !important; }}
     body {{
       margin: 0;
       font-family: Arial, Helvetica, sans-serif;
@@ -1586,6 +1872,562 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       align-items: center;
       flex-wrap: wrap;
     }}
+    body[data-page="app"] {{
+      color-scheme: dark;
+      --border: rgba(154, 180, 196, 0.22);
+      --ink: #eef7f8;
+      --muted: #91a7ad;
+      --panel: rgba(14, 22, 26, 0.78);
+      --accent: #22d3c5;
+      --accent-strong: #76f7a6;
+      --warning: #f5c542;
+      --danger: #ff6b6b;
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, rgba(5, 10, 12, 0.94), rgba(10, 14, 15, 1)),
+        repeating-linear-gradient(90deg, rgba(34, 211, 197, 0.05) 0 1px, transparent 1px 104px);
+      font-family: "Inter", "Segoe UI", Arial, Helvetica, sans-serif;
+    }}
+    body[data-page="app"][data-theme="light"] {{
+      color-scheme: light;
+      --border: rgba(45, 64, 75, 0.18);
+      --ink: #16242a;
+      --muted: #536873;
+      --panel: rgba(255, 255, 255, 0.9);
+      --accent: #087f86;
+      --accent-strong: #0c8b5f;
+      --warning: #a96f00;
+      --danger: #c23b3b;
+      background:
+        linear-gradient(180deg, rgba(246, 250, 250, 0.98), rgba(228, 237, 239, 1)),
+        repeating-linear-gradient(90deg, rgba(8, 127, 134, 0.06) 0 1px, transparent 1px 104px);
+    }}
+    body[data-page="app"] header {{
+      border-bottom: 1px solid var(--border);
+      background: rgba(8, 14, 16, 0.9);
+      backdrop-filter: blur(14px);
+    }}
+    body[data-page="app"][data-theme="light"] header {{
+      background: rgba(248, 252, 252, 0.92);
+    }}
+    body[data-page="app"] .cloud-header {{
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      padding: 18px clamp(18px, 3vw, 38px);
+    }}
+    body[data-page="app"] h1 {{
+      font-size: clamp(24px, 3vw, 38px);
+      line-height: 1;
+      letter-spacing: 0;
+    }}
+    body[data-page="app"] h2,
+    body[data-page="app"] h3 {{
+      margin: 0;
+      color: #f7ffff;
+      letter-spacing: 0;
+    }}
+    body[data-page="app"][data-theme="light"] h1,
+    body[data-page="app"][data-theme="light"] h2,
+    body[data-page="app"][data-theme="light"] h3 {{
+      color: #122329;
+    }}
+    body[data-page="app"] h2 {{
+      font-size: 18px;
+    }}
+    body[data-page="app"] h3 {{
+      font-size: 26px;
+    }}
+    body[data-page="app"] .eyebrow {{
+      display: block;
+      margin-bottom: 6px;
+      color: var(--accent-strong);
+      font: 700 11px/1.2 "JetBrains Mono", Consolas, monospace;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }}
+    body[data-page="app"] #identity {{
+      color: var(--muted);
+      font: 600 12px/1.2 "JetBrains Mono", Consolas, monospace;
+    }}
+    body[data-page="app"] button,
+    body[data-page="app"] .button {{
+      border-color: rgba(34, 211, 197, 0.55);
+      border-radius: 6px;
+      color: #031314;
+      background: var(--accent);
+      box-shadow: 0 0 0 1px rgba(34, 211, 197, 0.12), 0 12px 26px rgba(34, 211, 197, 0.12);
+    }}
+    body[data-page="app"] button.secondary,
+    body[data-page="app"] .button.secondary {{
+      color: var(--accent);
+      background: rgba(34, 211, 197, 0.08);
+    }}
+    body[data-page="app"] .cloud-main {{
+      width: 100%;
+      max-width: none;
+      min-height: calc(100vh - 76px);
+      padding: clamp(16px, 2.5vw, 32px);
+      display: grid;
+      gap: 18px;
+    }}
+    body[data-page="app"] section {{
+      border-bottom: 0;
+      padding: 0;
+    }}
+    .command-strip {{
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 14px;
+    }}
+    .metric-card {{
+      min-height: 116px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+      display: grid;
+      gap: 8px;
+      align-content: start;
+      background:
+        linear-gradient(135deg, rgba(34, 211, 197, 0.12), rgba(118, 247, 166, 0.05)),
+        rgba(11, 20, 23, 0.86);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }}
+    body[data-page="app"][data-theme="light"] .metric-card {{
+      background:
+        linear-gradient(135deg, rgba(8, 127, 134, 0.1), rgba(12, 139, 95, 0.05)),
+        rgba(255, 255, 255, 0.86);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 14px 34px rgba(23, 42, 49, 0.1);
+    }}
+    .metric-card.warn {{
+      background:
+        linear-gradient(135deg, rgba(245, 197, 66, 0.14), rgba(255, 107, 107, 0.06)),
+        rgba(11, 20, 23, 0.86);
+    }}
+    .metric-card.good {{
+      background:
+        linear-gradient(135deg, rgba(118, 247, 166, 0.14), rgba(34, 211, 197, 0.06)),
+        rgba(11, 20, 23, 0.86);
+    }}
+    .metric-card.bad {{
+      background:
+        linear-gradient(135deg, rgba(255, 107, 107, 0.16), rgba(245, 197, 66, 0.04)),
+        rgba(11, 20, 23, 0.86);
+    }}
+    body[data-page="app"][data-theme="light"] .metric-card.warn {{
+      background:
+        linear-gradient(135deg, rgba(169, 111, 0, 0.12), rgba(194, 59, 59, 0.04)),
+        rgba(255, 255, 255, 0.86);
+    }}
+    body[data-page="app"][data-theme="light"] .metric-card.good {{
+      background:
+        linear-gradient(135deg, rgba(12, 139, 95, 0.12), rgba(8, 127, 134, 0.04)),
+        rgba(255, 255, 255, 0.86);
+    }}
+    body[data-page="app"][data-theme="light"] .metric-card.bad {{
+      background:
+        linear-gradient(135deg, rgba(194, 59, 59, 0.12), rgba(169, 111, 0, 0.04)),
+        rgba(255, 255, 255, 0.86);
+    }}
+    .metric-card span,
+    .metric-card em,
+    .panel-counter {{
+      color: var(--muted);
+      font: 600 12px/1.3 "JetBrains Mono", Consolas, monospace;
+      font-style: normal;
+    }}
+    .metric-card strong {{
+      color: #ffffff;
+      font-size: clamp(30px, 4vw, 46px);
+      line-height: 0.95;
+    }}
+    body[data-page="app"][data-theme="light"] .metric-card strong {{
+      color: #122329;
+    }}
+    .ops-grid {{
+      min-height: 520px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.75fr) minmax(330px, 0.7fr);
+      gap: 18px;
+      align-items: stretch;
+    }}
+    .map-panel,
+    .inspector-panel,
+    .fleet-panel,
+    .ticker-panel {{
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(9, 16, 18, 0.84);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 22px 60px rgba(0, 0, 0, 0.24);
+    }}
+    body[data-page="app"][data-theme="light"] .map-panel,
+    body[data-page="app"][data-theme="light"] .inspector-panel,
+    body[data-page="app"][data-theme="light"] .fleet-panel,
+    body[data-page="app"][data-theme="light"] .ticker-panel {{
+      background: rgba(255, 255, 255, 0.82);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 18px 44px rgba(23, 42, 49, 0.12);
+    }}
+    .map-panel,
+    .fleet-panel,
+    .ticker-panel {{
+      padding: 18px;
+    }}
+    .panel-title {{
+      min-height: 44px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+    }}
+    .usa-map {{
+      position: relative;
+      min-height: 430px;
+      height: 56vh;
+      max-height: 680px;
+      overflow: hidden;
+      border: 1px solid rgba(34, 211, 197, 0.16);
+      border-radius: 8px;
+      background:
+        repeating-linear-gradient(0deg, rgba(34, 211, 197, 0.055) 0 1px, transparent 1px 54px),
+        repeating-linear-gradient(90deg, rgba(34, 211, 197, 0.045) 0 1px, transparent 1px 54px),
+        rgba(4, 12, 14, 0.82);
+    }}
+    body[data-page="app"][data-theme="light"] .usa-map {{
+      border-color: rgba(8, 127, 134, 0.2);
+      background:
+        repeating-linear-gradient(0deg, rgba(8, 127, 134, 0.07) 0 1px, transparent 1px 54px),
+        repeating-linear-gradient(90deg, rgba(8, 127, 134, 0.06) 0 1px, transparent 1px 54px),
+        rgba(233, 243, 243, 0.86);
+    }}
+    .usa-map svg {{
+      position: absolute;
+      inset: 5% 3%;
+      width: 94%;
+      height: 90%;
+      filter: drop-shadow(0 0 18px rgba(34, 211, 197, 0.12));
+    }}
+    .usa-map .usa-mainland,
+    .usa-map .usa-florida,
+    .usa-map .usa-new-england,
+    .usa-map .usa-great-lakes,
+    .usa-map .usa-inset,
+    .usa-map .usa-nation {{
+      fill: rgba(30, 54, 57, 0.72);
+      stroke: rgba(139, 248, 214, 0.35);
+      stroke-width: 2;
+    }}
+    body[data-page="app"][data-theme="light"] .usa-map .usa-mainland,
+    body[data-page="app"][data-theme="light"] .usa-map .usa-florida,
+    body[data-page="app"][data-theme="light"] .usa-map .usa-new-england,
+    body[data-page="app"][data-theme="light"] .usa-map .usa-great-lakes,
+    body[data-page="app"][data-theme="light"] .usa-map .usa-inset,
+    body[data-page="app"][data-theme="light"] .usa-map .usa-nation {{
+      fill: rgba(142, 175, 178, 0.5);
+      stroke: rgba(8, 127, 134, 0.42);
+    }}
+    .usa-map .usa-state {{
+      fill: rgba(30, 54, 57, 0.42);
+      stroke: rgba(139, 248, 214, 0.28);
+      stroke-width: 0.9;
+    }}
+    body[data-page="app"][data-theme="light"] .usa-map .usa-state {{
+      fill: rgba(151, 185, 188, 0.38);
+      stroke: rgba(8, 127, 134, 0.32);
+    }}
+    .usa-map .usa-line {{
+      fill: none;
+      stroke: rgba(145, 167, 173, 0.18);
+      stroke-width: 1.2;
+    }}
+    .map-node-layer {{
+      position: absolute;
+      inset: 0;
+    }}
+    .map-node {{
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      min-height: 18px;
+      padding: 0;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      background: transparent;
+      box-shadow: none;
+    }}
+    .map-node span {{
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent-strong);
+      box-shadow: 0 0 16px var(--accent-strong), 0 0 0 6px rgba(118, 247, 166, 0.1);
+    }}
+    .map-node.stale span {{
+      background: var(--warning);
+      box-shadow: 0 0 16px var(--warning), 0 0 0 6px rgba(245, 197, 66, 0.1);
+    }}
+    .map-node.offline span {{
+      background: var(--danger);
+      box-shadow: 0 0 16px var(--danger), 0 0 0 6px rgba(255, 107, 107, 0.1);
+    }}
+    .map-node.selected {{
+      outline: 1px solid rgba(255, 255, 255, 0.9);
+      outline-offset: 5px;
+    }}
+    .map-node em {{
+      position: absolute;
+      left: 16px;
+      top: -7px;
+      display: none;
+      padding: 3px 6px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 5px;
+      color: #ecfeff;
+      background: rgba(3, 13, 15, 0.86);
+      font: 700 11px/1 "JetBrains Mono", Consolas, monospace;
+      font-style: normal;
+      white-space: nowrap;
+    }}
+    .map-node:hover em,
+    .map-node.selected em {{
+      display: block;
+    }}
+    .map-core {{
+      position: absolute;
+      left: 50%;
+      top: 47%;
+      width: 118px;
+      height: 118px;
+      transform: translate(-50%, -50%);
+      border: 1px solid rgba(34, 211, 197, 0.5);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: #ecfeff;
+      background: rgba(10, 28, 30, 0.84);
+      box-shadow: 0 0 36px rgba(34, 211, 197, 0.2), inset 0 0 24px rgba(34, 211, 197, 0.08);
+      font: 800 12px/1.1 "JetBrains Mono", Consolas, monospace;
+      text-align: center;
+      text-transform: uppercase;
+    }}
+    .inspector-panel {{
+      min-height: 100%;
+      padding: 18px;
+      display: grid;
+      align-content: start;
+      gap: 16px;
+    }}
+    .inspector-head {{
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: flex-start;
+    }}
+    .inspector-head p {{
+      margin: 8px 0 0;
+      color: var(--muted);
+    }}
+    .status-pill {{
+      display: inline-flex;
+      min-height: 26px;
+      align-items: center;
+      border: 1px solid rgba(118, 247, 166, 0.45);
+      border-radius: 999px;
+      padding: 5px 10px;
+      color: #02130a;
+      background: var(--accent-strong);
+      font: 800 11px/1 "JetBrains Mono", Consolas, monospace;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }}
+    .status-pill.stale {{
+      border-color: rgba(245, 197, 66, 0.48);
+      color: #1b1300;
+      background: var(--warning);
+    }}
+    .status-pill.offline {{
+      border-color: rgba(255, 107, 107, 0.48);
+      color: #220000;
+      background: var(--danger);
+    }}
+    .inspector-grid {{
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr);
+      gap: 10px 14px;
+      margin: 0;
+      padding: 16px 0;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }}
+    .inspector-grid dt {{
+      color: var(--muted);
+      font: 700 11px/1.3 "JetBrains Mono", Consolas, monospace;
+      text-transform: uppercase;
+    }}
+    .inspector-grid dd {{
+      margin: 0;
+      color: #edfafa;
+      word-break: break-word;
+    }}
+    body[data-page="app"][data-theme="light"] .inspector-grid dd {{
+      color: #16242a;
+    }}
+    .inspector-actions {{
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }}
+    .empty-state {{
+      min-height: 180px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      text-align: center;
+    }}
+    .fleet-toolbar {{
+      display: grid;
+      grid-template-columns: minmax(260px, 520px) minmax(0, 1fr);
+      gap: 14px;
+      align-items: center;
+      margin-bottom: 12px;
+    }}
+    body[data-page="app"] input {{
+      border-color: rgba(145, 167, 173, 0.26);
+      border-radius: 6px;
+      color: #ecfeff;
+      background: rgba(4, 12, 14, 0.72);
+    }}
+    body[data-page="app"][data-theme="light"] input {{
+      color: #16242a;
+      background: rgba(255, 255, 255, 0.9);
+    }}
+    body[data-page="app"] input::placeholder {{
+      color: rgba(145, 167, 173, 0.78);
+    }}
+    body[data-page="app"] .notice {{
+      min-height: 0;
+      margin-top: 0;
+    }}
+    .table-wrap {{
+      overflow: auto;
+    }}
+    .gateway-table {{
+      min-width: 980px;
+      border-collapse: separate;
+      border-spacing: 0;
+    }}
+    .gateway-table th,
+    .gateway-table td {{
+      border-bottom: 1px solid rgba(145, 167, 173, 0.16);
+      padding: 13px 10px;
+      color: #e7f6f7;
+      background: transparent;
+    }}
+    body[data-page="app"][data-theme="light"] .gateway-table th,
+    body[data-page="app"][data-theme="light"] .gateway-table td {{
+      color: #1d3037;
+      border-bottom-color: rgba(45, 64, 75, 0.13);
+    }}
+    .gateway-table th {{
+      color: var(--muted);
+      font: 800 11px/1.2 "JetBrains Mono", Consolas, monospace;
+      text-transform: uppercase;
+    }}
+    .gateway-table th button {{
+      min-height: 0;
+      border: 0;
+      padding: 0;
+      color: inherit;
+      background: transparent;
+      box-shadow: none;
+      font: inherit;
+      text-transform: inherit;
+    }}
+    .gateway-table tr:hover td,
+    .gateway-table .selected-row td {{
+      background: rgba(34, 211, 197, 0.06);
+    }}
+    .gateway-link {{
+      min-height: 0;
+      border: 0;
+      padding: 0;
+      color: var(--accent);
+      background: transparent;
+      box-shadow: none;
+      font: 800 13px/1.2 "JetBrains Mono", Consolas, monospace;
+      text-decoration: none;
+    }}
+    .gateway-link:hover {{
+      text-decoration: underline;
+    }}
+    .table-command {{
+      min-height: 30px;
+      padding: 6px 10px;
+      border-radius: 5px;
+      font: 800 11px/1 "JetBrains Mono", Consolas, monospace;
+      white-space: nowrap;
+    }}
+    .status-text {{
+      color: inherit;
+      font: 700 12px/1.35 "JetBrains Mono", Consolas, monospace;
+    }}
+    .icon-link {{
+      display: inline-flex;
+      align-items: center;
+    }}
+    .event-ticker {{
+      max-height: 180px;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 8px;
+      overflow: auto;
+      list-style: none;
+    }}
+    .event-ticker li {{
+      min-height: 36px;
+      border: 1px solid rgba(145, 167, 173, 0.14);
+      border-radius: 6px;
+      padding: 9px 12px;
+      display: grid;
+      grid-template-columns: 110px 130px minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+      color: #dff6f4;
+      background: rgba(4, 12, 14, 0.46);
+      font: 600 12px/1.2 "JetBrains Mono", Consolas, monospace;
+    }}
+    body[data-page="app"][data-theme="light"] .event-ticker li {{
+      color: #1d3037;
+      background: rgba(255, 255, 255, 0.66);
+      border-color: rgba(45, 64, 75, 0.14);
+    }}
+    .event-ticker span {{
+      color: var(--accent-strong);
+      text-transform: uppercase;
+    }}
+    .event-ticker strong,
+    .event-ticker em {{
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-style: normal;
+    }}
+    @media (max-width: 1080px) {{
+      .command-strip {{
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }}
+      .ops-grid {{
+        grid-template-columns: 1fr;
+      }}
+      .usa-map {{
+        height: 54vh;
+      }}
+    }}
     @media (max-width: 760px) {{
       main {{ padding: 16px; }}
       header {{ align-items: flex-start; flex-direction: column; }}
@@ -1593,6 +2435,25 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       .span-2, .span-3, .span-4, .span-6, .span-12 {{ grid-column: span 1; }}
       table {{ display: block; overflow-x: auto; white-space: nowrap; }}
       .tree-shell {{ grid-template-columns: 1fr; }}
+      .command-strip,
+      .fleet-toolbar {{
+        grid-template-columns: 1fr;
+      }}
+      .usa-map {{
+        min-height: 320px;
+        height: 48vh;
+      }}
+      .map-core {{
+        width: 88px;
+        height: 88px;
+      }}
+      .inspector-head,
+      .panel-title {{
+        flex-direction: column;
+      }}
+      .event-ticker li {{
+        grid-template-columns: 1fr;
+      }}
     }}
   </style>
 </head>
@@ -1708,32 +2569,75 @@ def unauthorized_html() -> str:
 
 def app_html() -> str:
     body = """
-  <header>
-    <h1>IOT Cloud Commissioning</h1>
+  <header class="cloud-header">
+    <div>
+      <span class="eyebrow">Edge to Cloud Operations</span>
+      <h1>IOT Edge to Cloud Command</h1>
+    </div>
     <div class="toolbar">
       <span id="identity"></span>
+      <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Light Mode</button>
       <a id="admin-link" class="button secondary" href="/admin/users" hidden>Users</a>
       <button id="logout" class="secondary" type="button">Logout</button>
     </div>
   </header>
-  <main>
-    <section>
-      <h2>Dashboard</h2>
-      <div class="grid">
-        <div class="span-3"><label>Gateways</label><pre id="gateway-count">0</pre></div>
-        <div class="span-3"><label>Recent jobs</label><pre id="job-count">0</pre></div>
-      </div>
-      <div id="status" class="notice"></div>
+  <main class="cloud-main">
+    <section class="command-strip" aria-label="Gateway metrics">
+      <div id="metric-total" class="metric-card"><span>Total Gateways</span><strong>0</strong><em>Loading</em></div>
+      <div id="metric-online" class="metric-card good"><span>Online</span><strong>0</strong><em>Loading</em></div>
+      <div id="metric-stale" class="metric-card warn"><span>Stale</span><strong>0</strong><em>Loading</em></div>
+      <div id="metric-offline" class="metric-card bad"><span>Offline</span><strong>0</strong><em>Loading</em></div>
+      <div id="metric-jobs" class="metric-card"><span>Recent Jobs</span><strong>0</strong><em>Loading</em></div>
     </section>
-    <section>
-      <h2>Gateways</h2>
-      <div class="table-actions">
-        <div class="search-field">
-          <label for="gateway-search">Search</label>
-          <input id="gateway-search" type="search" autocomplete="off">
+    <section class="ops-grid">
+      <div class="map-panel">
+        <div class="panel-title">
+          <div>
+            <span class="eyebrow">USA Gateway Mesh</span>
+            <h2>Cloud Service Monitor</h2>
+          </div>
+          <span id="map-node-count" class="panel-counter">0 visible nodes</span>
+        </div>
+        <div class="usa-map" aria-label="USA gateway map">
+          <svg id="usa-map-base" viewBox="0 0 960 560" role="img" aria-hidden="true">
+            <g class="usa-fallback">
+              <path class="usa-mainland" d="M113 184 L143 145 L196 136 L245 118 L302 92 L368 96 L426 116 L497 124 L554 148 L625 142 L690 162 L744 201 L781 218 L825 224 L852 255 L833 291 L806 312 L793 344 L758 356 L726 381 L683 395 L642 423 L586 430 L536 455 L464 450 L404 430 L348 418 L292 392 L239 359 L197 344 L174 315 L160 270 L129 235 Z"></path>
+              <path class="usa-florida" d="M676 395 L704 420 L726 459 L747 512 L733 530 L708 488 L680 445 L656 418 Z"></path>
+              <path class="usa-new-england" d="M817 224 L842 187 L876 203 L866 238 L847 265 L831 254 Z"></path>
+              <path class="usa-great-lakes" d="M552 149 C574 128 607 128 626 145 C604 153 582 161 562 177 Z"></path>
+              <path class="usa-inset" d="M118 407 L157 386 L205 396 L244 426 L226 460 L176 470 L131 451 Z"></path>
+              <path class="usa-inset" d="M292 455 L314 448 L340 458 L360 474 L344 489 L313 480 Z"></path>
+              <path class="usa-line" d="M189 348 C259 310 333 302 397 322 C461 342 514 386 582 382 C660 378 712 333 804 340"></path>
+              <path class="usa-line" d="M300 94 C284 167 300 249 360 314 C392 349 420 390 464 450"></path>
+              <path class="usa-line" d="M497 124 C478 206 509 295 582 382"></path>
+              <path class="usa-line" d="M238 359 L244 118"></path>
+              <path class="usa-line" d="M625 142 L642 423"></path>
+            </g>
+          </svg>
+          <div id="gateway-map-nodes" class="map-node-layer"></div>
+          <div class="map-core">
+            <span>Cloud Core</span>
+          </div>
         </div>
       </div>
-      <table>
+      <aside id="gateway-inspector" class="inspector-panel">
+        <div class="empty-state">Loading gateway telemetry...</div>
+      </aside>
+    </section>
+    <section class="fleet-panel">
+      <div class="panel-title">
+        <div>
+          <span class="eyebrow">Fleet Registry</span>
+          <h2>Gateways</h2>
+        </div>
+        <span id="gateway-result-count" class="panel-counter">0 gateways</span>
+      </div>
+      <div class="fleet-toolbar">
+        <input id="gateway-search" type="search" placeholder="Search gateway, site, status, address, host, notes">
+        <div id="status" class="notice"></div>
+      </div>
+      <div class="table-wrap">
+        <table class="gateway-table">
         <thead>
           <tr>
             <th><button class="sort-header" type="button" data-sort="gateway_id">Gateway</button></th>
@@ -1741,17 +2645,25 @@ def app_html() -> str:
             <th><button class="sort-header" type="button" data-sort="address">Address</button></th>
             <th><button class="sort-header" type="button" data-sort="hostname">Hostname</button></th>
             <th><button class="sort-header" type="button" data-sort="status">Status</button></th>
-            <th><button class="sort-header" type="button" data-sort="network_status_notes">Network Notes</button></th>
+            <th><button class="sort-header" type="button" data-sort="network_status_notes">Network<br>Notes</button></th>
             <th><button class="sort-header" type="button" data-sort="direct">Direct</button></th>
             <th><button class="sort-header" type="button" data-sort="configure">Configure</button></th>
           </tr>
         </thead>
         <tbody id="gateway-list"></tbody>
       </table>
+      </div>
     </section>
-    <section>
-      <h2>Recent Jobs</h2>
-      <pre id="job-list">Loading...</pre>
+    <section class="ticker-panel">
+      <div class="panel-title">
+        <div>
+          <span class="eyebrow">Event Stream</span>
+          <h2>Recent Jobs</h2>
+        </div>
+      </div>
+      <ul id="event-ticker" class="event-ticker">
+        <li>Loading cloud job activity...</li>
+      </ul>
     </section>
   </main>"""
     return _layout("Dashboard - IOT Cloud Commissioning", body, "app")
