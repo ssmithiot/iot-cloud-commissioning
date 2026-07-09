@@ -170,6 +170,31 @@ APP_SCRIPT = r"""
     element.className = isError ? "notice error" : "notice";
   }
 
+  function errorMessage(error, fallback = "Something went wrong.") {
+    if (!error) {
+      return fallback;
+    }
+    if (typeof error === "string") {
+      return error || fallback;
+    }
+    const messageFields = ["message", "error_description", "description", "details", "hint", "code", "name"];
+    for (const field of messageFields) {
+      const value = error[field];
+      if (typeof value === "string" && value.trim() && value !== "[object Object]") {
+        return value;
+      }
+    }
+    try {
+      const json = JSON.stringify(error, Object.getOwnPropertyNames(error));
+      if (json && json !== "{}") {
+        return json;
+      }
+    } catch {
+      // Fall through to fallback.
+    }
+    return fallback;
+  }
+
   function renderImportResult(result) {
     const panel = byId("import-result");
     if (!panel) {
@@ -307,7 +332,7 @@ APP_SCRIPT = r"""
       await getSupabase();
       setText("status", "");
     } catch (error) {
-      setText("status", error.message, true);
+      setText("status", errorMessage(error), true);
       return;
     }
     form.addEventListener("submit", async (event) => {
@@ -330,7 +355,7 @@ APP_SCRIPT = r"""
           window.location.assign(statePaths.app);
         }
       } catch (error) {
-        setText("status", error.message, true);
+        setText("status", errorMessage(error), true);
       }
     });
     if (resetForm) {
@@ -347,7 +372,7 @@ APP_SCRIPT = r"""
           }
           setText("status", "Password reset email sent. Check your inbox.");
         } catch (error) {
-          setText("status", error.message, true);
+          setText("status", errorMessage(error), true);
         }
       });
     }
@@ -362,7 +387,7 @@ APP_SCRIPT = r"""
       await getSupabase();
       setText("status", "");
     } catch (error) {
-      setText("status", error.message, true);
+      setText("status", errorMessage(error), true);
       return;
     }
     form.addEventListener("submit", async (event) => {
@@ -383,7 +408,7 @@ APP_SCRIPT = r"""
         }
         window.location.assign(statePaths.checkEmail);
       } catch (error) {
-        setText("status", error.message, true);
+        setText("status", errorMessage(error), true);
       }
     });
   }
@@ -397,7 +422,7 @@ APP_SCRIPT = r"""
       await getSupabase();
       setText("status", "");
     } catch (error) {
-      setText("status", error.message, true);
+      setText("status", errorMessage(error), true);
       return;
     }
     form.addEventListener("submit", async (event) => {
@@ -417,7 +442,7 @@ APP_SCRIPT = r"""
         setText("status", "Password updated. You can now log in.");
         window.setTimeout(() => window.location.assign(statePaths.login), 1200);
       } catch (error) {
-        setText("status", error.message, true);
+        setText("status", errorMessage(error), true);
       }
     });
   }
@@ -442,7 +467,7 @@ APP_SCRIPT = r"""
       setText("status", "");
     } catch (error) {
       button.disabled = true;
-      setText("status", error.message, true);
+      setText("status", errorMessage(error), true);
       return;
     }
     button.addEventListener("click", async () => {
@@ -457,7 +482,7 @@ APP_SCRIPT = r"""
         window.location.assign(safeNext);
       } catch (error) {
         button.disabled = false;
-        setText("status", error.message, true);
+        setText("status", errorMessage(error), true);
       }
     });
   }
@@ -483,7 +508,7 @@ APP_SCRIPT = r"""
       }
       return me;
     } catch (error) {
-      setText("status", error.message, true);
+      setText("status", errorMessage(error), true);
       return null;
     }
   }
@@ -838,7 +863,7 @@ APP_SCRIPT = r"""
         byId("admin-link").hidden = false;
       }
     } catch (error) {
-      setText("status", error.message, true);
+      setText("status", errorMessage(error), true);
     }
   }
 
@@ -1180,7 +1205,7 @@ APP_SCRIPT = r"""
           }
           window.open(result.url, "_blank", "noopener,noreferrer");
         } catch (error) {
-          setText("status", error.message, true);
+          setText("status", errorMessage(error), true);
         }
       });
     });
@@ -1358,7 +1383,7 @@ APP_SCRIPT = r"""
       const missing = result.missing_ids?.length ? ` ${result.missing_ids.length} were already gone.` : "";
       setText("status", `Removed ${result.removed_count} selected saved point(s).${missing}`);
     } catch (error) {
-      setText("status", error.message, true);
+      setText("status", errorMessage(error), true);
       renderSelectedSavedPoints();
     }
   }
@@ -1453,7 +1478,7 @@ APP_SCRIPT = r"""
         });
         saved += 1;
       } catch (error) {
-        if (error.message.includes("already exists")) {
+        if (errorMessage(error).includes("already exists")) {
           duplicates += 1;
           continue;
         }
@@ -1669,7 +1694,7 @@ APP_SCRIPT = r"""
           setText("status", `Saved device ${deviceInstance}.`);
           await loadGatewayWorkspace();
         } catch (error) {
-          setText("status", error.message, true);
+          setText("status", errorMessage(error), true);
         } finally {
           button.disabled = false;
         }
@@ -1856,7 +1881,7 @@ APP_SCRIPT = r"""
         setText("status", "Site information saved.");
         await loadGatewayWorkspace();
       } catch (error) {
-        setText("status", error.message, true);
+        setText("status", errorMessage(error), true);
       }
     });
     groupForm.addEventListener("submit", async (event) => {
@@ -1870,7 +1895,7 @@ APP_SCRIPT = r"""
         setText("status", "Group saved.");
         await loadGatewayWorkspace();
       } catch (error) {
-        setText("status", error.message, true);
+        setText("status", errorMessage(error), true);
       }
     });
     importTemplateForm.addEventListener("submit", async (event) => {
@@ -1892,7 +1917,7 @@ APP_SCRIPT = r"""
         renderImportResult(result);
         setText("status", `Imported template: ${result.created_devices} device(s) created, ${result.updated_devices} updated, ${result.created_points} point(s) created, ${result.updated_points} updated.`);
       } catch (error) {
-        setText("status", error.message, true);
+        setText("status", errorMessage(error), true);
       }
     });
     discoverButton.addEventListener("click", async () => {
@@ -1909,7 +1934,7 @@ APP_SCRIPT = r"""
           setText("status", `Discovery ${completedJob.status}: ${completedJob.job_id}.`, true);
         }
       } catch (error) {
-        setText("status", error.message, true);
+        setText("status", errorMessage(error), true);
       } finally {
         discoverButton.disabled = false;
       }
@@ -1943,7 +1968,7 @@ APP_SCRIPT = r"""
         await loadGatewayWorkspace();
         setText("status", `Saved ${counts.saved} selected point(s), skipped ${counts.duplicates} duplicate(s).`);
       } catch (error) {
-        setText("status", error.message, true);
+        setText("status", errorMessage(error), true);
       } finally {
         saveSelectedPointsButton.disabled = false;
       }
@@ -1951,7 +1976,7 @@ APP_SCRIPT = r"""
     try {
       await loadGatewayWorkspace();
     } catch (error) {
-      setText("status", error.message, true);
+      setText("status", errorMessage(error), true);
     }
   }
 
@@ -2014,13 +2039,13 @@ APP_SCRIPT = r"""
           if (tunnelWindow) {
             tunnelWindow.close();
           }
-          setText("status", error.message, true);
+          setText("status", errorMessage(error), true);
         } finally {
           openTunnelButton.disabled = !tunnelStatus.connected;
         }
       });
     } catch (error) {
-      setText("status", error.message, true);
+      setText("status", errorMessage(error), true);
     }
   }
 
@@ -2076,13 +2101,13 @@ APP_SCRIPT = r"""
         setText("status", `Saved ${email}.`);
         await loadUsers();
       } catch (error) {
-        setText("status", error.message, true);
+        setText("status", errorMessage(error), true);
       }
     });
     try {
       await loadUsers();
     } catch (error) {
-      setText("status", error.message, true);
+      setText("status", errorMessage(error), true);
     }
   }
 
