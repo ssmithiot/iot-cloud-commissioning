@@ -717,6 +717,15 @@ APP_SCRIPT = r"""
     renderGatewayList();
   }
 
+  function gatewaySiteLabel(gateway) {
+    const siteId = String(gateway.site_id || "").trim();
+    const siteName = String(gateway.site_name || "").trim();
+    if (siteId && siteName && siteName !== siteId) {
+      return `${siteId} - ${siteName}`;
+    }
+    return siteId || siteName || "Unassigned site";
+  }
+
   function renderGatewayMap(gateways) {
     const layer = byId("gateway-map-nodes");
     const count = byId("map-node-count");
@@ -734,8 +743,9 @@ APP_SCRIPT = r"""
       button.className = `map-node ${gatewayStatusClass(gateway)}${gateway.gateway_id === selectedDashboardGatewayId ? " selected" : ""}`;
       button.style.left = `${x}%`;
       button.style.top = `${y}%`;
-      button.title = `${gateway.site_id || gateway.site_name || "Unassigned site"} - ${gateway.gateway_id}`;
-      button.innerHTML = `<span></span><em>${escapeHtml(gateway.gateway_id)}</em>`;
+      const siteLabel = gatewaySiteLabel(gateway);
+      button.title = `${siteLabel} - ${gateway.gateway_id}`;
+      button.innerHTML = `<span></span><em>${escapeHtml(siteLabel)}</em>`;
       button.addEventListener("click", () => selectDashboardGateway(gateway.gateway_id));
       layer.appendChild(button);
     }
@@ -2505,6 +2515,9 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       background: rgba(3, 13, 15, 0.86);
       font: 700 11px/1 "JetBrains Mono", Consolas, monospace;
       font-style: normal;
+      max-width: 240px;
+      overflow: hidden;
+      text-overflow: ellipsis;
       white-space: nowrap;
     }}
     .map-node:hover em,
