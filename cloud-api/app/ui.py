@@ -38,6 +38,7 @@ APP_SCRIPT = r"""
     login: "/login",
     signup: "/signup",
     checkEmail: "/auth/check-email",
+    confirm: "/auth/confirm",
     resetPassword: "/auth/reset-password",
     waiting: "/auth/waiting-approval",
     unauthorized: "/auth/unauthorized",
@@ -416,6 +417,46 @@ APP_SCRIPT = r"""
         setText("status", "Password updated. You can now log in.");
         window.setTimeout(() => window.location.assign(statePaths.login), 1200);
       } catch (error) {
+        setText("status", error.message, true);
+      }
+    });
+  }
+
+  async function initAuthConfirm() {
+    const button = byId("auth-confirm-button");
+    if (!button) {
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const tokenHash = params.get("token_hash") || "";
+    const type = params.get("type") || "recovery";
+    const next = params.get("next") || statePaths.resetPassword;
+    const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : statePaths.resetPassword;
+    if (!tokenHash) {
+      button.disabled = true;
+      setText("status", "This confirmation link is missing a token. Request a new password reset email.", true);
+      return;
+    }
+    try {
+      await getSupabase();
+      setText("status", "");
+    } catch (error) {
+      button.disabled = true;
+      setText("status", error.message, true);
+      return;
+    }
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      setText("status", "Confirming secure link...");
+      try {
+        const client = await getSupabase();
+        const { error } = await client.auth.verifyOtp({ token_hash: tokenHash, type });
+        if (error) {
+          throw error;
+        }
+        window.location.assign(safeNext);
+      } catch (error) {
+        button.disabled = false;
         setText("status", error.message, true);
       }
     });
@@ -2050,6 +2091,8 @@ APP_SCRIPT = r"""
     initLogin();
   } else if (page === "signup") {
     initSignup();
+  } else if (page === "auth-confirm") {
+    initAuthConfirm();
   } else if (page === "reset-password") {
     initResetPassword();
   } else if (page === "app") {
@@ -3340,6 +3383,23 @@ def reset_password_html() -> str:
     </section>
   </main>"""
     return _layout("Reset Password - IOT Cloud Commissioning", body, "reset-password")
+
+
+def auth_confirm_html() -> str:
+    body = """
+  <header>
+    <h1>IOT Cloud Commissioning</h1>
+    <a class="button secondary" href="/login">Login</a>
+  </header>
+  <main>
+    <section>
+      <h2>Confirm Secure Link</h2>
+      <p>Continue when you are ready to reset your password.</p>
+      <button id="auth-confirm-button" type="button">Continue</button>
+      <div id="status" class="notice"></div>
+    </section>
+  </main>"""
+    return _layout("Confirm Secure Link - IOT Cloud Commissioning", body, "auth-confirm")
 
 
 def check_email_html() -> str:

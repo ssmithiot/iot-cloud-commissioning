@@ -81,6 +81,7 @@ from app.tunnel import TunnelRequestFailed, TunnelResponse, TunnelUnavailable, t
 from app.ui import (
     admin_users_html,
     app_html,
+    auth_confirm_html,
     check_email_html,
     gateway_workspace_html,
     login_html,
@@ -655,6 +656,10 @@ def signup_page() -> HTMLResponse:
 @app.get("/auth/check-email", response_class=HTMLResponse, include_in_schema=False)
 def check_email_page() -> HTMLResponse:
     return HTMLResponse(check_email_html())
+
+@app.get("/auth/confirm", response_class=HTMLResponse, include_in_schema=False)
+def auth_confirm_page() -> HTMLResponse:
+    return HTMLResponse(auth_confirm_html())
 
 @app.get("/auth/reset-password", response_class=HTMLResponse, include_in_schema=False)
 def reset_password_page() -> HTMLResponse:
