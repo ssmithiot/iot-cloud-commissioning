@@ -326,6 +326,16 @@ APP_SCRIPT = r"""
     return states.find((state) => address.includes(` ${state} `) || address.endsWith(` ${state}`)) || "";
   }
 
+  function hasAddressLocation(gateway) {
+    return Boolean([
+      gateway.site_address_state,
+      gateway.site_address_city,
+      gateway.site_address_postal_code,
+      gateway.site_compact_address,
+      gateway.site_address
+    ].map((value) => String(value || "").trim()).find(Boolean));
+  }
+
   function hashNumber(value) {
     let hash = 0;
     for (const char of String(value || "")) {
@@ -372,6 +382,24 @@ APP_SCRIPT = r"""
   }
 
   function gatewayMapPosition(gateway) {
+    const jitter = hashNumber(`${gateway.gateway_id}:${gateway.hostname}`);
+    if (!hasAddressLocation(gateway)) {
+      const bermudaTriangle = [
+        [83, 59],
+        [89, 51],
+        [91, 72],
+        [86, 66],
+        [94, 62],
+        [88, 79],
+        [80, 70],
+        [93, 82]
+      ];
+      const base = bermudaTriangle[jitter % bermudaTriangle.length];
+      return [
+        Math.max(78, Math.min(96, base[0] + (((jitter >> 4) % 9) - 4) * 0.7)),
+        Math.max(48, Math.min(84, base[1] + (((jitter >> 8) % 9) - 4) * 0.7))
+      ];
+    }
     const statePositions = {
       AL:[61,65], AZ:[27,58], AR:[55,59], CA:[15,49], CO:[39,49], CT:[84,34], FL:[70,80],
       GA:[68,66], IA:[54,42], ID:[29,33], IL:[61,47], IN:[66,46], KS:[48,52], KY:[66,54],
@@ -382,7 +410,6 @@ APP_SCRIPT = r"""
     };
     const state = stateSeed(gateway);
     const base = statePositions[state] || [18 + (hashNumber(gateway.gateway_id) % 66), 28 + (hashNumber(gateway.site_id) % 45)];
-    const jitter = hashNumber(`${gateway.gateway_id}:${gateway.hostname}`);
     return [
       Math.max(8, Math.min(92, base[0] + ((jitter % 7) - 3) * 0.8)),
       Math.max(14, Math.min(82, base[1] + (((jitter >> 3) % 7) - 3) * 0.8))
