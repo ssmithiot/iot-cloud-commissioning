@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -95,11 +95,25 @@ from app.ui import (
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if settings.auto_create_tables:
         Base.metadata.create_all(bind=engine)
+    _ensure_site_coordinate_columns()
     yield
 
 
 app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lifespan)
 logger = logging.getLogger("iot-cloud-api.tunnel")
+
+def _ensure_site_coordinate_columns() -> None:
+    inspector = inspect(engine)
+    if not inspector.has_table("sites"):
+        return
+    columns = {column["name"] for column in inspector.get_columns("sites")}
+    missing = [column for column in ("latitude", "longitude") if column not in columns]
+    if not missing:
+        return
+    column_type = "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT"
+    with engine.begin() as connection:
+        for column in missing:
+            connection.execute(text(f"ALTER TABLE sites ADD COLUMN {column} {column_type}"))
 
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")

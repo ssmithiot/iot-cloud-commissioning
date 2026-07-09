@@ -449,14 +449,21 @@ APP_SCRIPT = r"""
       const projection = geoAlbersUsa().fitSize([900, 500], nation);
       const path = geoPath(projection);
       mapProjection = projection;
+      const nationD = path(nation);
       const nationPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
       nationPath.setAttribute("class", "usa-nation");
-      nationPath.setAttribute("d", path(nation));
-      svg.appendChild(nationPath);
+      if (nationD) {
+        nationPath.setAttribute("d", nationD);
+        svg.appendChild(nationPath);
+      }
       for (const state of states) {
+        const stateD = path(state);
+        if (!stateD) {
+          continue;
+        }
         const statePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
         statePath.setAttribute("class", "usa-state");
-        statePath.setAttribute("d", path(state));
+        statePath.setAttribute("d", stateD);
         svg.appendChild(statePath);
       }
       svg.querySelector(".usa-fallback")?.setAttribute("hidden", "");
