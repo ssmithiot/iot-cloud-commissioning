@@ -16,6 +16,7 @@ APP_SCRIPT = r"""
   let dashboardSort = { key: "gateway_id", direction: "desc" };
   let dashboardSearch = "";
   let mapZoom = 1;
+  let mapProjection = null;
   const themeStorageKey = "iot-cloud-command-theme";
 
   const statePaths = {
@@ -337,6 +338,18 @@ APP_SCRIPT = r"""
     ].map((value) => String(value || "").trim()).find(Boolean));
   }
 
+  function gatewayCoordinates(gateway) {
+    const latitude = Number(gateway.site_latitude);
+    const longitude = Number(gateway.site_longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return null;
+    }
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      return null;
+    }
+    return { latitude, longitude };
+  }
+
   function hashNumber(value) {
     let hash = 0;
     for (const char of String(value || "")) {
@@ -435,6 +448,7 @@ APP_SCRIPT = r"""
       const nation = feature(atlas, atlas.objects.nation);
       const projection = geoAlbersUsa().fitSize([900, 500], nation);
       const path = geoPath(projection);
+      mapProjection = projection;
       const nationPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
       nationPath.setAttribute("class", "usa-nation");
       nationPath.setAttribute("d", path(nation));
@@ -447,6 +461,9 @@ APP_SCRIPT = r"""
       }
       svg.querySelector(".usa-fallback")?.setAttribute("hidden", "");
       svg.dataset.loaded = "true";
+      if (dashboardGateways.length) {
+        renderGatewayMap(sortedDashboardGateways());
+      }
     } catch {
       svg.dataset.loaded = "fallback";
     }
@@ -454,6 +471,16 @@ APP_SCRIPT = r"""
 
   function gatewayMapPosition(gateway) {
     const jitter = hashNumber(`${gateway.gateway_id}:${gateway.hostname}`);
+    const coordinates = gatewayCoordinates(gateway);
+    if (coordinates && mapProjection) {
+      const projected = mapProjection([coordinates.longitude, coordinates.latitude]);
+      if (projected) {
+        return [
+          Math.max(2, Math.min(98, (projected[0] / 960) * 100)),
+          Math.max(2, Math.min(98, (projected[1] / 560) * 100))
+        ];
+      }
+    }
     if (!hasAddressLocation(gateway)) {
       const bermudaTriangle = [
         [83, 59],
@@ -1328,12 +1355,19 @@ APP_SCRIPT = r"""
     }
   }
 
+  function optionalNumberValue(id) {
+    const value = byId(id).value.trim();
+    return value === "" ? null : Number(value);
+  }
+
   function renderSiteInfo(site, directConnect, tunnelStatus) {
     setFieldValue("site-name", site.name);
     setFieldValue("site-address-street", site.address_street || site.address);
     setFieldValue("site-address-city", site.address_city);
     setFieldValue("site-address-state", site.address_state);
     setFieldValue("site-address-postal-code", site.address_postal_code);
+    setFieldValue("site-latitude", site.latitude);
+    setFieldValue("site-longitude", site.longitude);
     setFieldValue("direct-connect-host", site.direct_connect_host || site.cradlepoint_ip || site.external_ip);
     setFieldValue("direct-connect-port", site.direct_connect_port || 5002);
     setFieldValue("gateway-ui-port", site.gateway_ui_port || 5000);
@@ -1401,6 +1435,8 @@ APP_SCRIPT = r"""
             address_city: byId("site-address-city").value.trim(),
             address_state: byId("site-address-state").value.trim(),
             address_postal_code: byId("site-address-postal-code").value.trim(),
+            latitude: optionalNumberValue("site-latitude"),
+            longitude: optionalNumberValue("site-longitude"),
             direct_connect_host: byId("direct-connect-host").value.trim() || null,
             direct_connect_port: Number(byId("direct-connect-port").value || 5002),
             gateway_ui_port: Number(byId("gateway-ui-port").value || 5000),
@@ -2827,6 +2863,14 @@ def gateway_workspace_html(gateway_id: str) -> str:
         <div class="span-2">
           <label for="site-address-postal-code">ZIP</label>
           <input id="site-address-postal-code" type="text" maxlength="40">
+        </div>
+        <div class="span-2">
+          <label for="site-latitude">Latitude</label>
+          <input id="site-latitude" type="number" min="-90" max="90" step="0.000001">
+        </div>
+        <div class="span-2">
+          <label for="site-longitude">Longitude</label>
+          <input id="site-longitude" type="number" min="-180" max="180" step="0.000001">
         </div>
         <div class="span-4">
           <label for="direct-connect-host">Cradlepoint/direct-connect host</label>

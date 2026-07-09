@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import ARRAY, JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import ARRAY, JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ENUM as PostgresEnum
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -93,6 +93,8 @@ class Site(Base):
     address_city: Mapped[str | None] = mapped_column(String(120), nullable=True)
     address_state: Mapped[str | None] = mapped_column(String(80), nullable=True)
     address_postal_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     store_hours_mf: Mapped[str | None] = mapped_column(String(120), nullable=True)
     store_hours_sat: Mapped[str | None] = mapped_column(String(120), nullable=True)
     store_hours_sun: Mapped[str | None] = mapped_column(String(120), nullable=True)

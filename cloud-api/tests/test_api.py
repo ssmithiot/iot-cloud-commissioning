@@ -477,6 +477,8 @@ def test_admin_can_update_site_metadata_and_direct_connect() -> None:
             "address_city": "Springfield",
             "address_state": "IL",
             "address_postal_code": "62701",
+            "latitude": 39.7817,
+            "longitude": -89.6501,
             "store_hours_monday_friday": "8:00 AM - 6:00 PM",
             "store_hours_saturday": "9:00 AM - 5:00 PM",
             "store_hours_sunday": "10:00 AM - 4:00 PM",
@@ -496,6 +498,8 @@ def test_admin_can_update_site_metadata_and_direct_connect() -> None:
     assert response.json()["address_city"] == "Springfield"
     assert response.json()["address_state"] == "IL"
     assert response.json()["address_postal_code"] == "62701"
+    assert response.json()["latitude"] == 39.7817
+    assert response.json()["longitude"] == -89.6501
     assert response.json()["store_hours_monday_friday"] == "8:00 AM - 6:00 PM"
     assert response.json()["store_hours_saturday"] == "9:00 AM - 5:00 PM"
     assert response.json()["store_hours_sunday"] == "10:00 AM - 4:00 PM"
@@ -544,6 +548,8 @@ def test_gateway_list_includes_site_info_and_direct_connect_availability() -> No
             "address_city": "Springfield",
             "address_state": "IL",
             "address_postal_code": "62701",
+            "latitude": 39.7817,
+            "longitude": -89.6501,
             "direct_connect_host": "10.20.30.40",
             "network_status_notes": "The rest of the boxes on these two networks are online as well.",
         },
@@ -558,6 +564,8 @@ def test_gateway_list_includes_site_info_and_direct_connect_availability() -> No
     assert gateway["site_address_city"] == "Springfield"
     assert gateway["site_address_state"] == "IL"
     assert gateway["site_address_postal_code"] == "62701"
+    assert gateway["site_latitude"] == 39.7817
+    assert gateway["site_longitude"] == -89.6501
     assert gateway["site_compact_address"] == "123 Main St, Springfield, IL 62701"
     assert gateway["direct_connect_available"] is True
     assert gateway["direct_connect_host"] == "10.20.30.40"
@@ -577,6 +585,8 @@ def test_gateway_detail_site_endpoint_includes_site_info() -> None:
             "address_city": "Springfield",
             "address_state": "IL",
             "address_postal_code": "62701",
+            "latitude": 39.7817,
+            "longitude": -89.6501,
         },
     )
 
@@ -589,6 +599,8 @@ def test_gateway_detail_site_endpoint_includes_site_info() -> None:
     assert response.json()["address_city"] == "Springfield"
     assert response.json()["address_state"] == "IL"
     assert response.json()["address_postal_code"] == "62701"
+    assert response.json()["latitude"] == 39.7817
+    assert response.json()["longitude"] == -89.6501
 
 
 def test_direct_connect_hidden_when_not_configured() -> None:

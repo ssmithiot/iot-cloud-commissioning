@@ -139,6 +139,8 @@ class SiteOut(BaseModel):
     address_city: str | None = None
     address_state: str | None = None
     address_postal_code: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
     store_hours_mf: str | None
     store_hours_sat: str | None
     store_hours_sun: str | None
@@ -162,6 +164,8 @@ class SiteUpdate(BaseModel):
     address_city: str | None = Field(default=None, max_length=120)
     address_state: str | None = Field(default=None, max_length=80)
     address_postal_code: str | None = Field(default=None, max_length=40)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
     store_hours_mf: str | None = Field(default=None, max_length=120)
     store_hours_sat: str | None = Field(default=None, max_length=120)
     store_hours_sun: str | None = Field(default=None, max_length=120)
@@ -216,6 +220,8 @@ class GatewayOut(BaseModel):
     site_address_city: str | None = None
     site_address_state: str | None = None
     site_address_postal_code: str | None = None
+    site_latitude: float | None = None
+    site_longitude: float | None = None
     site_compact_address: str | None = None
     store_hours_monday_friday: str | None = None
     store_hours_saturday: str | None = None
