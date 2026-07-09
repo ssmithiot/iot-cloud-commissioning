@@ -131,6 +131,9 @@ class SiteWeather(Base):
     timezone: Mapped[str | None] = mapped_column(String(120), nullable=True)
     timezone_abbreviation: Mapped[str | None] = mapped_column(String(40), nullable=True)
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sunrise_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sunset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    solar_noon_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     raw_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
 

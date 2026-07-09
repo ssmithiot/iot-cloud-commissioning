@@ -196,6 +196,9 @@ class SiteWeatherOut(BaseModel):
     timezone: str | None = None
     timezone_abbreviation: str | None = None
     observed_at: datetime | None = None
+    sunrise_at: datetime | None = None
+    sunset_at: datetime | None = None
+    solar_noon_at: datetime | None = None
     fetched_at: datetime | None = None
     cache_age_seconds: int | None = None
 

@@ -838,6 +838,16 @@ APP_SCRIPT = r"""
     if (!weather?.available) {
       return weather?.reason || "Weather unavailable";
     }
+    const formatWeatherTime = (value) => {
+      if (!value) {
+        return "";
+      }
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return "";
+      }
+      return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    };
     const parts = [];
     if (weather.temperature_f !== null && weather.temperature_f !== undefined) {
       parts.push(`${Math.round(Number(weather.temperature_f))}F`);
@@ -847,6 +857,15 @@ APP_SCRIPT = r"""
     }
     if (weather.wind_speed_mph !== null && weather.wind_speed_mph !== undefined) {
       parts.push(`${Math.round(Number(weather.wind_speed_mph))} mph wind`);
+    }
+    const sunrise = formatWeatherTime(weather.sunrise_at);
+    const sunset = formatWeatherTime(weather.sunset_at);
+    const solarNoon = formatWeatherTime(weather.solar_noon_at);
+    if (sunrise && sunset) {
+      parts.push(`Sun ${sunrise}/${sunset}`);
+    }
+    if (solarNoon) {
+      parts.push(`Solar noon ${solarNoon}`);
     }
     const suffix = weather.timezone_abbreviation ? ` ${weather.timezone_abbreviation}` : "";
     return `${parts.join(" | ") || "Weather cached"}${suffix}`;

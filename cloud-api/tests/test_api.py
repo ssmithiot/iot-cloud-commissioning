@@ -629,6 +629,11 @@ def test_gateway_weather_fetches_and_caches_open_meteo(monkeypatch: pytest.Monke
                 "weather_code": 2,
                 "wind_speed_10m": 7.6,
             },
+            "daily": {
+                "time": ["2026-07-09"],
+                "sunrise": ["2026-07-09T05:42"],
+                "sunset": ["2026-07-09T20:28"],
+            },
         }
 
     monkeypatch.setattr(main_module, "_fetch_open_meteo_weather", fake_weather)
@@ -642,6 +647,9 @@ def test_gateway_weather_fetches_and_caches_open_meteo(monkeypatch: pytest.Monke
     assert first.json()["temperature_f"] == 82.4
     assert first.json()["condition"] == "Partly cloudy"
     assert first.json()["timezone_abbreviation"] == "CDT"
+    assert first.json()["sunrise_at"].startswith("2026-07-09T10:42:00")
+    assert first.json()["sunset_at"].startswith("2026-07-10T01:28:00")
+    assert first.json()["solar_noon_at"].startswith("2026-07-09T18:05:00")
     assert second.status_code == 200
     assert len(observed) == 1
 

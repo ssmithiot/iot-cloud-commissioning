@@ -125,7 +125,17 @@ def _ensure_site_coordinate_columns() -> None:
 
 def _ensure_site_weather_table() -> None:
     SiteWeather.__table__.create(bind=engine, checkfirst=True)
-
+    inspector = inspect(engine)
+    if not inspector.has_table("site_weather"):
+        return
+    columns = {column["name"] for column in inspector.get_columns("site_weather")}
+    missing = [column for column in ("sunrise_at", "sunset_at", "solar_noon_at") if column not in columns]
+    if not missing:
+        return
+    column_type = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "DATETIME"
+    with engine.begin() as connection:
+        for column in missing:
+            connection.execute(text(f"ALTER TABLE site_weather ADD COLUMN {column} {column_type}"))
 
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -309,6 +319,12 @@ def _parse_open_meteo_time(value: str | None, utc_offset_seconds: int | None) ->
     return parsed.astimezone(timezone.utc)
 
 
+
+def _solar_noon(sunrise: datetime | None, sunset: datetime | None) -> datetime | None:
+    if sunrise is None or sunset is None:
+        return None
+    return sunrise + ((sunset - sunrise) / 2)
+
 def _fetch_open_meteo_weather(latitude: float, longitude: float) -> dict[str, object]:
     params = urlencode(
         {
@@ -324,6 +340,8 @@ def _fetch_open_meteo_weather(latitude: float, longitude: float) -> dict[str, ob
                     "wind_speed_10m",
                 ]
             ),
+            "daily": "sunrise,sunset",
+            "forecast_days": 1,
             "temperature_unit": "fahrenheit",
             "wind_speed_unit": "mph",
             "precipitation_unit": "inch",
@@ -368,6 +386,9 @@ def _site_weather_out(
         timezone=weather.timezone,
         timezone_abbreviation=weather.timezone_abbreviation,
         observed_at=weather.observed_at,
+        sunrise_at=weather.sunrise_at,
+        sunset_at=weather.sunset_at,
+        solar_noon_at=weather.solar_noon_at,
         fetched_at=weather.fetched_at,
         cache_age_seconds=max(0, cache_age_seconds) if cache_age_seconds is not None else None,
     )
@@ -404,6 +425,17 @@ def _refresh_site_weather(site: Site, db: Session, now: datetime | None = None) 
         str(current.get("time")) if current.get("time") is not None else None,
         int(payload.get("utc_offset_seconds") or 0),
     )
+    daily = payload.get("daily") if isinstance(payload.get("daily"), dict) else {}
+    sunrise_values = daily.get("sunrise") if isinstance(daily.get("sunrise"), list) else []
+    sunset_values = daily.get("sunset") if isinstance(daily.get("sunset"), list) else []
+    sunrise_at = _parse_open_meteo_time(
+        str(sunrise_values[0]) if sunrise_values else None,
+        int(payload.get("utc_offset_seconds") or 0),
+    )
+    sunset_at = _parse_open_meteo_time(
+        str(sunset_values[0]) if sunset_values else None,
+        int(payload.get("utc_offset_seconds") or 0),
+    )
     if weather is None:
         weather = SiteWeather(site_id=site.site_id, latitude=site.latitude, longitude=site.longitude)
         db.add(weather)
@@ -423,6 +455,9 @@ def _refresh_site_weather(site: Site, db: Session, now: datetime | None = None) 
         str(payload.get("timezone_abbreviation")) if payload.get("timezone_abbreviation") else None
     )
     weather.observed_at = observed_at
+    weather.sunrise_at = sunrise_at
+    weather.sunset_at = sunset_at
+    weather.solar_noon_at = _solar_noon(sunrise_at, sunset_at)
     weather.fetched_at = now
     weather.raw_json = payload
     db.commit()
