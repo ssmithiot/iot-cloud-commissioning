@@ -2924,7 +2924,7 @@ def app_html() -> str:
         </div>
         <div class="usa-map" aria-label="USA gateway map">
           <div id="map-zoom-content" class="map-zoom-content">
-            <svg id="usa-map-base" viewBox="0 0 960 560" role="img" aria-hidden="true">
+            <svg id="usa-map-base" viewBox="0 0 960 560" preserveAspectRatio="none" role="img" aria-hidden="true">
               <g class="usa-fallback">
                 <path class="usa-mainland" d="M113 184 L143 145 L196 136 L245 118 L302 92 L368 96 L426 116 L497 124 L554 148 L625 142 L690 162 L744 201 L781 218 L825 224 L852 255 L833 291 L806 312 L793 344 L758 356 L726 381 L683 395 L642 423 L586 430 L536 455 L464 450 L404 430 L348 418 L292 392 L239 359 L197 344 L174 315 L160 270 L129 235 Z"></path>
                 <path class="usa-florida" d="M676 395 L704 420 L726 459 L747 512 L733 530 L708 488 L680 445 L656 418 Z"></path>
