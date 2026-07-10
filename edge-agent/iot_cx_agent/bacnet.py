@@ -361,7 +361,7 @@ def validate_bacnet_read_request(request: dict[str, Any]) -> dict[str, object]:
     object_type = request.get("object_type")
     if not isinstance(object_type, str) or object_type not in BACNET_READ_OBJECT_TYPES:
         allowed = ", ".join(sorted(BACNET_READ_OBJECT_TYPES))
-        raise ValueError(f"object_type must be one of: {allowed}")
+        raise ValueError(f"object_type received {object_type!r}; must be one of: {allowed}")
 
     property_name = request.get("property", BACNET_PRESENT_VALUE)
     if property_name != BACNET_PRESENT_VALUE:
@@ -390,7 +390,9 @@ def validate_bacnet_read_bulk_request(request: dict[str, Any]) -> dict[str, obje
         object_type = point.get("object_type")
         if not isinstance(object_type, str) or object_type not in BACNET_READ_OBJECT_TYPES:
             allowed = ", ".join(sorted(BACNET_READ_OBJECT_TYPES))
-            raise ValueError(f"points[{index}].object_type must be one of: {allowed}")
+            raise ValueError(
+                f"points[{index}].object_type received {object_type!r}; must be one of: {allowed}"
+            )
         saved_point_id = point.get("saved_point_id")
         normalized_points.append(
             {

@@ -248,7 +248,8 @@ def test_bacnet_read_invalid_object_type_fails_cleanly(tmp_path: Path) -> None:
     assert status == "failed"
     assert result is not None
     assert result["status"] == "error"
-    assert "object_type must be one of" in str(error)
+    assert "object_type received 'calendar'" in str(error)
+    assert "must be one of" in str(error)
 
 
 def test_bacnet_read_missing_required_field_fails_cleanly(tmp_path: Path) -> None:

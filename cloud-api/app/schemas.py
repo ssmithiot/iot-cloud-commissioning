@@ -50,7 +50,7 @@ def normalize_bacnet_read_request(request: dict[str, object]) -> dict[str, objec
     object_type = request.get("object_type")
     if not isinstance(object_type, str) or object_type not in BACNET_READ_OBJECT_TYPES:
         allowed = ", ".join(sorted(BACNET_READ_OBJECT_TYPES))
-        raise ValueError(f"object_type must be one of: {allowed}")
+        raise ValueError(f"object_type received {object_type!r}; must be one of: {allowed}")
 
     property_name = request.get("property", "present-value")
     if property_name != "present-value":
