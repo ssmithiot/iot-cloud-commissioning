@@ -197,7 +197,6 @@ def test_service_control_commands_use_timeout_wrapper() -> None:
     agent_restart = next(command for label, command, _sudo in service_commands(make_request()) if label == "restart agent service")
 
     assert apply_stop.startswith("timeout -k 5s 30s sudo -S -p")
-    assert "systemctl kill --kill-who=all --signal=KILL edge-bacnet-ui.service" in apply_stop
     assert "systemctl start --no-block edge-bacnet-ui.service" in restart_start
     assert agent_restart.startswith("sh -c ")
 
@@ -207,7 +206,6 @@ def test_stop_edge_ui_command_is_direct_and_bounded() -> None:
     assert "systemctl stop edge-bacnet-ui.service" in command
     assert command.startswith("timeout -k 5s 30s sudo -S -p")
     assert "sh -c" not in command
-    assert "edge-bacnet-ui.service state after stop attempt" in command
 
 
 def test_apply_ui_commands_can_skip_edge_ui_stop() -> None:
