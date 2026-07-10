@@ -191,6 +191,9 @@ def page(title: str, body: str) -> bytes:
     .checks {{ display:flex; gap:18px; align-items:center; flex-wrap:wrap; }}
     .checks label {{ display:flex; grid-template-columns:none; align-items:center; gap:8px; }}
     .hint {{ color: var(--muted); font-size: 13px; font-weight: 400; }}
+    .phase-groups {{ display: grid; gap: 8px; margin: 12px 0; }}
+    .phase-groups div {{ display: grid; gap: 2px; padding: 8px 10px; border-left: 4px solid #1458d4; background: #eef4ff; }}
+    .phase-groups span {{ color: var(--muted); font-size: 13px; font-weight: 400; }}
     .layout {{ display:grid; grid-template-columns: minmax(280px, 420px) 1fr; gap:16px; margin-top:16px; }}
     .panel {{ background:white; border:1px solid var(--line); padding:16px; }}
     .phase {{ display:grid; grid-template-columns: 1fr auto; gap:10px; padding:8px 0; border-bottom:1px solid #edf0f5; }}
@@ -276,6 +279,10 @@ def form_page(message: str = "") -> bytes:
     <strong>Processes to run</strong>
     <button type="button" id="select-all-phases">Select all</button>
     <button type="button" id="clear-all-phases">Clear all</button>
+    <div class="phase-groups">
+      <div><b>1. UI Update</b><span>Back up, upload, apply, authenticate, and restart the local BACnet UI.</span></div>
+      <div><b>2. Provision + Agent Update</b><span>Provision the gateway, pull the selected Git release, install Python, and restart the cloud agent.</span></div>
+    </div>
     <div class="phase-options">
       {''.join(f'<label><input type="checkbox" name="selected_phases" value="{i}" checked> {escape(name)}</label>' for i, name in enumerate(PHASES))}
     </div>
