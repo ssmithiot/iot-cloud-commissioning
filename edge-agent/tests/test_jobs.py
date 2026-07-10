@@ -1,6 +1,7 @@
+import os
 from pathlib import Path
 
-from iot_cx_agent.config import AgentConfig, load_config
+from iot_cx_agent.config import AgentConfig, load_config, resolve_bacnet_port
 from iot_cx_agent.heartbeat import auth_headers
 from iot_cx_agent.jobs import execute_job
 from iot_cx_agent.main import run_once
@@ -15,6 +16,7 @@ def config(tmp_path: Path) -> AgentConfig:
         ui_version="0.1.0",
         sqlite_path=tmp_path / "edge.db",
         bacnet_lock_path=tmp_path / "bacnet.lock",
+        bacnet_lock_timeout_sec=0,
     )
 
 
@@ -66,6 +68,34 @@ def test_bacnet_read_job_dispatches_to_handler(tmp_path: Path, monkeypatch) -> N
     assert result == {"job_type": "bacnet_read", "status": "ok", "value": 72.4}
 
 
+def test_bacnet_bulk_read_job_dispatches_to_handler(tmp_path: Path, monkeypatch) -> None:
+    def fake_run_bacnet_read_bulk(agent_config, request):
+        assert agent_config.gateway_id == "GW001"
+        assert request == {
+            "device_instance": 1,
+            "points": [{"object_type": "analog-value", "object_instance": 1}],
+        }
+        return {"job_type": "bacnet_read_bulk", "status": "ok", "value_count": 1}, None
+
+    monkeypatch.setattr("iot_cx_agent.jobs.run_bacnet_read_bulk", fake_run_bacnet_read_bulk)
+
+    status, result, error = execute_job(
+        config(tmp_path),
+        {
+            "job_id": "job-bulk-1",
+            "job_type": "bacnet_read_bulk",
+            "request": {
+                "device_instance": 1,
+                "points": [{"object_type": "analog-value", "object_instance": 1}],
+            },
+        },
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert result == {"job_type": "bacnet_read_bulk", "status": "ok", "value_count": 1}
+
+
 def test_bacnet_load_points_job_dispatches_to_handler(tmp_path: Path, monkeypatch) -> None:
     def fake_run_bacnet_load_points(agent_config, request):
         assert agent_config.gateway_id == "GW001"
@@ -86,7 +116,7 @@ def test_bacnet_load_points_job_dispatches_to_handler(tmp_path: Path, monkeypatc
 
 def test_bacnet_read_deferred_when_lock_is_held(tmp_path: Path, monkeypatch) -> None:
     agent_config = config(tmp_path)
-    agent_config.bacnet_lock_path.write_text("ui-active", encoding="utf-8")
+    agent_config.bacnet_lock_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
 
     def fail_run(*args, **kwargs):
         raise AssertionError("subprocess.run should not be called while BACnet runtime lock is held")
@@ -112,7 +142,7 @@ def test_bacnet_read_deferred_when_lock_is_held(tmp_path: Path, monkeypatch) -> 
     assert result is not None
     assert result["status"] == "deferred"
     assert result["error"] == "bacnet_runtime_busy"
-    assert result["message"] == "Local commissioning UI is using BACnet port 47814. Cloud BACnet job yielded."
+    assert result["message"] == "BACnet runtime is busy. Another local BACnet command is already using UDP 47814."
 
 
 def test_agent_config_keeps_jobs_on_cloud_api_and_local_sqlite(tmp_path: Path) -> None:
@@ -215,6 +245,62 @@ def test_load_config_reads_bacrp_path(tmp_path: Path) -> None:
     agent_config = load_config(config_path)
 
     assert agent_config.bacrp_path == "/opt/bacnet-stack/bin/bacrp"
+
+
+def test_bacnet_port_resolution_defaults_to_contemporary_47814() -> None:
+    profile, port = resolve_bacnet_port()
+
+    assert profile == "contemporary"
+    assert port == 47814
+
+
+def test_bacnet_port_resolution_supports_bac_rtr_47809() -> None:
+    profile, port = resolve_bacnet_port(profile="bac-rtr")
+
+    assert profile == "bac-rtr"
+    assert port == 47809
+
+
+def test_bacnet_port_resolution_supports_contemporary_aliases() -> None:
+    assert resolve_bacnet_port(profile="contemporary") == ("contemporary", 47814)
+    assert resolve_bacnet_port(profile="basrtb") == ("basrtb", 47814)
+
+
+def test_bacnet_ip_port_overrides_router_profile() -> None:
+    profile, port = resolve_bacnet_port(profile="bac-rtr", explicit_port="47814")
+
+    assert profile == "bac-rtr"
+    assert port == 47814
+
+
+def test_load_config_reads_bac_rtr_profile_from_env(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW001\nsite_id: demo-site\ncloud_url: http://localhost:8000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BACNET_ROUTER_PROFILE", "bac-rtr")
+
+    agent_config = load_config(config_path)
+
+    assert agent_config.bacnet_router_profile == "bac-rtr"
+    assert agent_config.bacnet_default_port == 47809
+    assert agent_config.bacnet_lock_path_for_port() == Path("/tmp/iot-edge-bacnet-47809.lock")
+
+
+def test_load_config_bacnet_ip_port_overrides_profile_default(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW001\nsite_id: demo-site\ncloud_url: http://localhost:8000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BACNET_ROUTER_PROFILE", "contemporary")
+    monkeypatch.setenv("BACNET_IP_PORT", "47809")
+
+    agent_config = load_config(config_path)
+
+    assert agent_config.bacnet_router_profile == "contemporary"
+    assert agent_config.bacnet_default_port == 47809
 
 
 def test_unknown_job_type_fails_gracefully(tmp_path: Path) -> None:

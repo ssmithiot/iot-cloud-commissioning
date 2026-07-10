@@ -2,6 +2,8 @@ import os
 import re
 import shutil
 import subprocess
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -65,29 +67,118 @@ BACNET_OBJECT_LIST_PROPERTY_ID = 76
 BACNET_OBJECT_NAME_PROPERTY_ID = 77
 BACNET_POINT_LOAD_BATCH_SIZE = 40
 BACNET_OBJECT_LIST_INDEX_BLOCK_SIZE = 40
-CLOUD_BACNET_PORT = 47814
 BACNET_RUNTIME_BUSY = "bacnet_runtime_busy"
-BACNET_RUNTIME_BUSY_MESSAGE = "Local commissioning UI is using BACnet port 47814. Cloud BACnet job yielded."
 
 
-def bacnet_runtime_lock_held(config: AgentConfig) -> bool:
-    return config.bacnet_lock_path.exists()
+def resolved_bacnet_port(config: AgentConfig) -> int:
+    return config.bacnet_default_port
 
 
-def acquire_bacnet_runtime_lock(config: AgentConfig) -> int | None:
+def _runtime_busy_message(port: int) -> str:
+    return f"BACnet runtime is busy. Another local BACnet command is already using UDP {port}."
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
     try:
-        config.bacnet_lock_path.parent.mkdir(parents=True, exist_ok=True)
-        return os.open(str(config.bacnet_lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _lock_pid(lock_path: Path) -> int | None:
+    try:
+        first_line = lock_path.read_text(encoding="utf-8").splitlines()[0].strip()
+    except (FileNotFoundError, IndexError, OSError):
+        return None
+    try:
+        return int(first_line)
+    except ValueError:
         return None
 
 
-def release_bacnet_runtime_lock(config: AgentConfig, lock_fd: int) -> None:
-    os.close(lock_fd)
+def _lock_is_stale(lock_path: Path, stale_after_sec: float) -> bool:
+    pid = _lock_pid(lock_path)
     try:
-        config.bacnet_lock_path.unlink()
+        age_sec = time.time() - lock_path.stat().st_mtime
     except FileNotFoundError:
-        pass
+        return True
+    if pid is None or not _pid_is_running(pid):
+        return True
+    return age_sec > stale_after_sec
+
+
+@dataclass
+class BacnetRuntimeLock:
+    config: AgentConfig
+    port: int
+
+    def __post_init__(self) -> None:
+        self.path = self.config.bacnet_lock_path_for_port(self.port)
+        self.fd: int | None = None
+
+    def acquire(self) -> bool:
+        deadline = time.monotonic() + self.config.bacnet_lock_timeout_sec
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                self.fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                content = f"{os.getpid()}\n{time.time():.3f}\nport={self.port}\n"
+                os.write(self.fd, content.encode("utf-8"))
+                return True
+            except FileExistsError:
+                if _lock_is_stale(self.path, self.config.bacnet_lock_stale_sec):
+                    try:
+                        self.path.unlink()
+                        continue
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        pass
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.1)
+
+    def release(self) -> None:
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+        try:
+            if _lock_pid(self.path) == os.getpid():
+                self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def __enter__(self) -> "BacnetRuntimeLock":
+        acquired = self.acquire()
+        if not acquired:
+            raise TimeoutError(_runtime_busy_message(self.port))
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.release()
+
+
+def bacnet_runtime_lock_held(config: AgentConfig, port: int | None = None) -> bool:
+    resolved_port = resolved_bacnet_port(config) if port is None else port
+    lock_path = config.bacnet_lock_path_for_port(resolved_port)
+    if not lock_path.exists():
+        return False
+    if _lock_is_stale(lock_path, config.bacnet_lock_stale_sec):
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return True
+        return False
+    return True
 
 
 def _command_status(command_path: str) -> dict[str, object]:
@@ -115,12 +206,13 @@ def _command_status(command_path: str) -> dict[str, object]:
 
 def _deferred_result(base_result: dict[str, object], config: AgentConfig) -> dict[str, object]:
     result = dict(base_result)
+    port = int(result.get("bacnet_port", result.get("port", resolved_bacnet_port(config))))
     result.update(
         {
             "status": "deferred",
             "error": BACNET_RUNTIME_BUSY,
-            "message": BACNET_RUNTIME_BUSY_MESSAGE,
-            "lock_path": str(config.bacnet_lock_path),
+            "message": _runtime_busy_message(port),
+            "lock_path": str(config.bacnet_lock_path_for_port(port)),
             "lock_held": True,
         }
     )
@@ -129,21 +221,21 @@ def _deferred_result(base_result: dict[str, object], config: AgentConfig) -> dic
 
 def run_bacnet_runtime_check(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[str, object], str | None]:
     try:
-        port = int(request.get("bacnet_port", request.get("port", config.bacnet_default_port)))
         timeout_sec = int(request.get("timeout_sec", config.bacnet_timeout_sec))
     except (TypeError, ValueError):
-        port = config.bacnet_default_port
         timeout_sec = config.bacnet_timeout_sec
 
+    port = resolved_bacnet_port(config)
     bacwi = _command_status(config.bacwi_path)
     bacrp = _command_status(config.bacrp_path)
     bacrpm = _command_status(config.bacrpm_path)
     result = {
         "job_type": "bacnet_runtime_check",
         "bacnet_port": port,
+        "bacnet_router_profile": config.bacnet_router_profile,
         "timeout_sec": timeout_sec,
-        "lock_path": str(config.bacnet_lock_path),
-        "lock_held": bacnet_runtime_lock_held(config),
+        "lock_path": str(config.bacnet_lock_path_for_port(port)),
+        "lock_held": bacnet_runtime_lock_held(config, port),
         "bacwi_configured_path": bacwi["configured_path"],
         "bacwi_resolved_path": bacwi["resolved_path"],
         "bacwi_exists": bacwi["exists"],
@@ -158,10 +250,6 @@ def run_bacnet_runtime_check(config: AgentConfig, request: dict[str, Any]) -> tu
         "bacrpm_executable": bacrpm["executable"],
     }
 
-    if port != CLOUD_BACNET_PORT:
-        error = f"Cloud BACnet jobs must use UDP {CLOUD_BACNET_PORT}"
-        result.update({"status": "error", "error": error})
-        return result, error
     if timeout_sec <= 0:
         error = "BACnet timeout_sec must be greater than 0"
         result.update({"status": "error", "error": error})
@@ -212,16 +300,16 @@ def run_bacnet_discovery(config: AgentConfig, request: dict[str, Any]) -> tuple[
     except (TypeError, ValueError):
         return None, "BACnet discovery request has invalid timeout_sec"
 
-    port = CLOUD_BACNET_PORT
-    base_result = {"bacnet_discover": True, "port": port}
-    lock_fd = acquire_bacnet_runtime_lock(config)
-    if lock_fd is None:
-        return _deferred_result(base_result, config), BACNET_RUNTIME_BUSY
+    port = resolved_bacnet_port(config)
+    base_result = {"bacnet_discover": True, "port": port, "bacnet_router_profile": config.bacnet_router_profile}
 
     env = os.environ.copy()
     env["BACNET_IP_PORT"] = str(port)
 
     try:
+        lock = BacnetRuntimeLock(config, port)
+        if not lock.acquire():
+            return _deferred_result(base_result, config), BACNET_RUNTIME_BUSY
         try:
             completed = subprocess.run(
                 [config.bacwi_path],
@@ -238,7 +326,8 @@ def run_bacnet_discovery(config: AgentConfig, request: dict[str, Any]) -> tuple[
         except OSError as exc:
             return None, f"BACnet discovery command failed to start: {exc}"
     finally:
-        release_bacnet_runtime_lock(config, lock_fd)
+        if "lock" in locals():
+            lock.release()
 
     raw_output = completed.stdout
     if completed.returncode != 0:
@@ -288,6 +377,41 @@ def validate_bacnet_read_request(request: dict[str, Any]) -> dict[str, object]:
     }
 
 
+def validate_bacnet_read_bulk_request(request: dict[str, Any]) -> dict[str, object]:
+    device_instance = _required_int(request, "device_instance")
+    points = request.get("points")
+    if not isinstance(points, list) or not points:
+        raise ValueError("points must be a non-empty list")
+    normalized_points: list[dict[str, object]] = []
+    for index, point in enumerate(points):
+        if not isinstance(point, dict):
+            raise ValueError(f"points[{index}] must be an object")
+        object_instance = _required_int(point, "object_instance")
+        object_type = point.get("object_type")
+        if not isinstance(object_type, str) or object_type not in BACNET_READ_OBJECT_TYPES:
+            allowed = ", ".join(sorted(BACNET_READ_OBJECT_TYPES))
+            raise ValueError(f"points[{index}].object_type must be one of: {allowed}")
+        saved_point_id = point.get("saved_point_id")
+        normalized_points.append(
+            {
+                "saved_point_id": str(saved_point_id) if saved_point_id is not None else None,
+                "object_type": object_type,
+                "object_instance": object_instance,
+                "object_name": point.get("object_name") if isinstance(point.get("object_name"), str) else None,
+                "property": BACNET_PRESENT_VALUE,
+                "property_id": BACNET_PRESENT_VALUE_PROPERTY_ID,
+            }
+        )
+
+    return {
+        "job_type": "bacnet_read_bulk",
+        "device_instance": device_instance,
+        "property": BACNET_PRESENT_VALUE,
+        "property_id": BACNET_PRESENT_VALUE_PROPERTY_ID,
+        "points": normalized_points,
+    }
+
+
 def _normalize_object_type(raw_type: str) -> str | None:
     value = raw_type.strip().strip("()").strip().lower().replace("_", "-")
     if value.isdigit():
@@ -332,7 +456,7 @@ def parse_bacnet_object_list(raw_output: str) -> list[dict[str, object]]:
     return points
 
 
-def validate_bacnet_load_points_request(request: dict[str, Any]) -> dict[str, object]:
+def validate_bacnet_load_points_request(config: AgentConfig, request: dict[str, Any]) -> dict[str, object]:
     device_instance = _required_int(request, "device_instance")
     limit = request.get("limit", 250)
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 1000:
@@ -364,7 +488,7 @@ def validate_bacnet_load_points_request(request: dict[str, Any]) -> dict[str, ob
         "limit": limit,
         "name_limit": name_limit,
         "include_object_names": include_object_names,
-        "bacnet_port": CLOUD_BACNET_PORT,
+        "bacnet_port": resolved_bacnet_port(config),
     }
 
 
@@ -414,6 +538,17 @@ def build_bacnet_rpm_point_batch_args(
     args = [config.bacrpm_path, str(device_instance)]
     for point in points:
         args.extend([str(point["object_type"]), str(point["object_instance"]), str(BACNET_OBJECT_NAME_PROPERTY_ID)])
+    return args
+
+
+def build_bacnet_rpm_value_batch_args(
+    config: AgentConfig,
+    device_instance: int,
+    points: list[dict[str, object]],
+) -> list[str]:
+    args = [config.bacrpm_path, str(device_instance)]
+    for point in points:
+        args.extend([str(point["object_type"]), str(point["object_instance"]), str(BACNET_PRESENT_VALUE_PROPERTY_ID)])
     return args
 
 
@@ -524,11 +659,14 @@ def run_bacnet_read(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[
         return result, str(exc)
 
     env = os.environ.copy()
-    env["BACNET_IP_PORT"] = str(CLOUD_BACNET_PORT)
+    port = resolved_bacnet_port(config)
+    env["BACNET_IP_PORT"] = str(port)
     args = build_bacnet_read_args(config, normalized)
+    normalized["bacnet_port"] = port
+    normalized["bacnet_router_profile"] = config.bacnet_router_profile
 
-    lock_fd = acquire_bacnet_runtime_lock(config)
-    if lock_fd is None:
+    lock = BacnetRuntimeLock(config, port)
+    if not lock.acquire():
         return _deferred_result(normalized, config), BACNET_RUNTIME_BUSY
 
     try:
@@ -552,7 +690,7 @@ def run_bacnet_read(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[
             error = f"BACnet read command failed to start: {exc}"
             return _failure_result(normalized, error), error
     finally:
-        release_bacnet_runtime_lock(config, lock_fd)
+        lock.release()
 
     raw_output = completed.stdout
     combined_output = "\n".join(part for part in (completed.stdout.strip(), completed.stderr.strip()) if part)
@@ -574,6 +712,90 @@ def run_bacnet_read(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[
             "status": "ok",
         }
     )
+    return result, None
+
+
+def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[str, object], str | None]:
+    try:
+        normalized = validate_bacnet_read_bulk_request(request)
+    except ValueError as exc:
+        result = _failure_result({"job_type": "bacnet_read_bulk", "property": BACNET_PRESENT_VALUE, "property_id": 85}, str(exc))
+        return result, str(exc)
+
+    env = os.environ.copy()
+    port = resolved_bacnet_port(config)
+    env["BACNET_IP_PORT"] = str(port)
+    normalized["bacnet_port"] = port
+    normalized["bacnet_router_profile"] = config.bacnet_router_profile
+
+    rpm_status = _command_status(config.bacrpm_path)
+    if not rpm_status["executable"]:
+        error = f"BACnet RPM command is not executable: {config.bacrpm_path}"
+        return _failure_result(normalized, error), error
+
+    lock = BacnetRuntimeLock(config, port)
+    if not lock.acquire():
+        return _deferred_result(normalized, config), BACNET_RUNTIME_BUSY
+
+    values: list[dict[str, object]] = []
+    errors: list[str] = []
+    raw_outputs: list[str] = []
+    try:
+        for chunk in _chunks(list(normalized["points"]), BACNET_POINT_LOAD_BATCH_SIZE):
+            args = build_bacnet_rpm_value_batch_args(config, int(normalized["device_instance"]), chunk)
+            completed, error = _run_command(args, config, env, "BACnet value RPM batch read")
+            if error is not None or completed is None:
+                errors.append(error or "BACnet value RPM batch read failed")
+                continue
+            raw_output = _combined_output(completed)
+            if raw_output:
+                raw_outputs.append(raw_output)
+            parsed = parse_bacnet_rpm_present_values(completed.stdout)
+            for point in chunk:
+                key = (str(point["object_type"]), int(point["object_instance"]))
+                parsed_value = parsed.get(key)
+                if parsed_value is None:
+                    values.append(
+                        {
+                            "saved_point_id": point.get("saved_point_id"),
+                            "object_type": point["object_type"],
+                            "object_instance": point["object_instance"],
+                            "status": "missing",
+                            "error": "present-value not returned",
+                        }
+                    )
+                    continue
+                value, raw_value = parsed_value
+                values.append(
+                    {
+                        "saved_point_id": point.get("saved_point_id"),
+                        "object_type": point["object_type"],
+                        "object_instance": point["object_instance"],
+                        "value": value,
+                        "raw_value": raw_value,
+                        "status": "ok",
+                    }
+                )
+    finally:
+        lock.release()
+
+    result = dict(normalized)
+    result.update(
+        {
+            "status": "ok" if not errors else "partial",
+            "read_mode": "rpm-bulk",
+            "requested_count": len(normalized["points"]),
+            "value_count": len([item for item in values if item.get("status") == "ok"]),
+            "values": values,
+        }
+    )
+    if raw_outputs:
+        result["raw_outputs"] = raw_outputs
+    if errors:
+        result["errors"] = errors
+    if not any(item.get("status") == "ok" for item in values):
+        error = "; ".join(errors) if errors else "BACnet bulk read returned no point values"
+        return _failure_result(result, error), error
     return result, None
 
 
@@ -614,6 +836,33 @@ def parse_bacnet_rpm_object_names(raw_output: str) -> dict[tuple[str, int], str]
             current = None
             continue
     return names
+
+
+def parse_bacnet_rpm_present_values(raw_output: str) -> dict[tuple[str, int], tuple[object, str]]:
+    values: dict[tuple[str, int], tuple[object, str]] = {}
+    current: tuple[str, int] | None = None
+    for raw_line in raw_output.splitlines():
+        line = raw_line.strip()
+        if not line or line in {"{", "}"} or line.lower().startswith("device #"):
+            continue
+
+        object_match = (
+            re.match(r"^\(?([a-z]+(?:-[a-z]+)*)\s*,\s*(\d+)\)?$", line, flags=re.IGNORECASE)
+            or re.match(r"^([a-z]+(?:-[a-z]+)*)\s+#?(\d+)\s*$", line, flags=re.IGNORECASE)
+        )
+        if object_match is not None:
+            object_type = _normalize_object_type(object_match.group(1))
+            if object_type is not None:
+                current = (object_type, int(object_match.group(2)))
+            continue
+
+        value_match = re.match(r"^(?:present[-_ ]value|85)\s*[:=]\s*(.*)$", line, flags=re.IGNORECASE)
+        if value_match is not None and current is not None:
+            raw_value = _clean_candidate(value_match.group(1))
+            values[current] = (_coerce_bacnet_value(raw_value), raw_value)
+            current = None
+            continue
+    return values
 
 
 def _parse_rpm_point_values(raw_output: str, requested_points: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -802,15 +1051,18 @@ def _enrich_points_with_bacrp_names(
 
 def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[str, object], str | None]:
     try:
-        normalized = validate_bacnet_load_points_request(request)
+        normalized = validate_bacnet_load_points_request(config, request)
     except ValueError as exc:
-        result = _failure_result({"job_type": "bacnet_load_points", "bacnet_port": CLOUD_BACNET_PORT}, str(exc))
+        result = _failure_result({"job_type": "bacnet_load_points", "bacnet_port": resolved_bacnet_port(config)}, str(exc))
         return result, str(exc)
 
     env = os.environ.copy()
-    env["BACNET_IP_PORT"] = str(CLOUD_BACNET_PORT)
-    lock_fd = acquire_bacnet_runtime_lock(config)
-    if lock_fd is None:
+    port = resolved_bacnet_port(config)
+    env["BACNET_IP_PORT"] = str(port)
+    normalized["bacnet_port"] = port
+    normalized["bacnet_router_profile"] = config.bacnet_router_profile
+    lock = BacnetRuntimeLock(config, port)
+    if not lock.acquire():
         return _deferred_result(normalized, config), BACNET_RUNTIME_BUSY
 
     try:
@@ -870,7 +1122,7 @@ def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tupl
                     int(normalized["name_limit"]),
                 )
     finally:
-        release_bacnet_runtime_lock(config, lock_fd)
+        lock.release()
 
     raw_output = "\n".join(output.strip() for output in raw_outputs if output.strip())
     result = dict(normalized)

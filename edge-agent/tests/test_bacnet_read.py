@@ -1,28 +1,35 @@
 import subprocess
+import sys
 from pathlib import Path
 
-from iot_cx_agent.bacnet import parse_bacnet_read_value
+from iot_cx_agent.bacnet import parse_bacnet_read_value, parse_bacnet_rpm_present_values
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.jobs import execute_job
 
 
-def config(tmp_path: Path, bacrp_path: str = "bacrp") -> AgentConfig:
+def config(tmp_path: Path, bacrp_path: str = "bacrp", bacrpm_path: str = "bacrpm") -> AgentConfig:
     return AgentConfig(
         gateway_id="GW001",
         site_id="demo-site",
         cloud_url="http://localhost:8000",
         bacnet_default_port=47814,
         bacrp_path=bacrp_path,
+        bacrpm_path=bacrpm_path,
         bacnet_timeout_sec=10,
         agent_version="0.1.0",
         ui_version="0.1.0",
         sqlite_path=tmp_path / "edge.db",
         bacnet_lock_path=tmp_path / "bacnet.lock",
+        bacnet_lock_timeout_sec=0,
     )
 
 
 def bacnet_read_job(request: dict[str, object]) -> dict[str, object]:
     return {"job_id": "job-read-1", "job_type": "bacnet_read", "request": request}
+
+
+def bacnet_read_bulk_job(request: dict[str, object]) -> dict[str, object]:
+    return {"job_id": "job-read-bulk-1", "job_type": "bacnet_read_bulk", "request": request}
 
 
 def valid_read_request(object_type: str = "analog-value") -> dict[str, object]:
@@ -55,6 +62,20 @@ def test_parse_bacnet_read_multi_state_numeric_value() -> None:
     assert raw_value == "3"
 
 
+def test_parse_bacnet_rpm_present_values() -> None:
+    values = parse_bacnet_rpm_present_values(
+        """
+        analog-value, 1
+            present-value: Real: 72.4
+        binary-value, 5
+            85: active
+        """
+    )
+
+    assert values[("analog-value", 1)] == (72.4, "72.4")
+    assert values[("binary-value", 5)] == ("active", "active")
+
+
 def test_bacnet_read_success_with_mocked_command_args(tmp_path: Path, monkeypatch) -> None:
     def fake_run(*args, **kwargs):
         assert args[0] == ["bacrp", "1", "analog-value", "1", "85"]
@@ -76,10 +97,84 @@ def test_bacnet_read_success_with_mocked_command_args(tmp_path: Path, monkeypatc
         "object_instance": 1,
         "property": "present-value",
         "property_id": 85,
+        "bacnet_port": 47814,
+        "bacnet_router_profile": "contemporary",
         "value": 72.4,
         "raw_value": "72.4",
         "status": "ok",
     }
+
+
+def test_bacnet_bulk_read_uses_one_rpm_command_for_multiple_points(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args[0])
+        assert args[0] == [sys.executable, "1", "analog-value", "1", "85", "binary-value", "5", "85"]
+        assert kwargs["env"]["BACNET_IP_PORT"] == "47814"
+        assert kwargs["timeout"] == 10
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="""
+            analog-value, 1
+                present-value: Real: 72.4
+            binary-value, 5
+                present-value: active
+            """,
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    status, result, error = execute_job(
+        config(tmp_path, bacrpm_path=sys.executable),
+        bacnet_read_bulk_job(
+            {
+                "device_instance": 1,
+                "points": [
+                    {
+                        "saved_point_id": "point-1",
+                        "object_type": "analog-value",
+                        "object_instance": 1,
+                        "object_name": "Space Temp",
+                    },
+                    {
+                        "saved_point_id": "point-2",
+                        "object_type": "binary-value",
+                        "object_instance": 5,
+                        "object_name": "Fan Status",
+                    },
+                ],
+            }
+        ),
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert calls == [[sys.executable, "1", "analog-value", "1", "85", "binary-value", "5", "85"]]
+    assert result is not None
+    assert result["read_mode"] == "rpm-bulk"
+    assert result["requested_count"] == 2
+    assert result["value_count"] == 2
+    assert result["values"] == [
+        {
+            "saved_point_id": "point-1",
+            "object_type": "analog-value",
+            "object_instance": 1,
+            "value": 72.4,
+            "raw_value": "72.4",
+            "status": "ok",
+        },
+        {
+            "saved_point_id": "point-2",
+            "object_type": "binary-value",
+            "object_instance": 5,
+            "value": "active",
+            "raw_value": "active",
+            "status": "ok",
+        },
+    ]
 
 
 def test_bacnet_read_invalid_object_type_fails_cleanly(tmp_path: Path) -> None:

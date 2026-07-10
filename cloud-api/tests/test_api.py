@@ -2122,11 +2122,21 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
             "property": "present-value",
         },
     )
+    second_point_response = client.post(
+        f"/api/ui/devices/{device_response.json()['id']}/points",
+        headers=headers,
+        json={
+            "object_type": "binary-value",
+            "object_instance": 5,
+            "object_name": "Fan Status",
+            "property": "present-value",
+        },
+    )
 
     read_response = client.post(
         "/api/ui/gateways/GW001/points/read",
         headers=headers,
-        json={"point_ids": [point_response.json()["id"]]},
+        json={"point_ids": [point_response.json()["id"], second_point_response.json()["id"]]},
     )
     job_id = read_response.json()["job_ids"][0]
     next_response = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
@@ -2136,14 +2146,28 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
         json={
             "status": "completed",
             "result": {
-                "job_type": "bacnet_read",
+                "job_type": "bacnet_read_bulk",
                 "device_instance": 1001,
-                "object_type": "analog-value",
-                "object_instance": 1,
                 "property": "present-value",
-                "value": 72.4,
-                "raw_value": "72.4",
                 "status": "ok",
+                "values": [
+                    {
+                        "saved_point_id": point_response.json()["id"],
+                        "object_type": "analog-value",
+                        "object_instance": 1,
+                        "value": 72.4,
+                        "raw_value": "72.4",
+                        "status": "ok",
+                    },
+                    {
+                        "saved_point_id": second_point_response.json()["id"],
+                        "object_type": "binary-value",
+                        "object_instance": 5,
+                        "value": "active",
+                        "raw_value": "active",
+                        "status": "ok",
+                    },
+                ],
             },
             "error_message": None,
         },
@@ -2153,9 +2177,12 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
     assert read_response.status_code == 200
     assert read_response.json()["queued_count"] == 1
     assert next_response.status_code == 200
-    assert next_response.json()["request"]["saved_point_id"] == point_response.json()["id"]
+    assert next_response.json()["job_type"] == "bacnet_read_bulk"
+    assert len(next_response.json()["request"]["points"]) == 2
+    assert next_response.json()["request"]["points"][0]["saved_point_id"] == point_response.json()["id"]
     assert result_response.status_code == 200
     assert tree_response.json()["points"][0]["present_value"] == "72.4"
+    assert tree_response.json()["points"][1]["present_value"] == "active"
 
 
 def test_ui_operator_can_import_edge_commissioning_template() -> None:

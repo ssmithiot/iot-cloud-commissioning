@@ -112,6 +112,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lifespan)
 logger = logging.getLogger("iot-cloud-api.tunnel")
 
+
 def _ensure_site_coordinate_columns() -> None:
     inspector = inspect(engine)
     if not inspector.has_table("sites"):
@@ -124,6 +125,7 @@ def _ensure_site_coordinate_columns() -> None:
     with engine.begin() as connection:
         for column in missing:
             connection.execute(text(f"ALTER TABLE sites ADD COLUMN {column} {column_type}"))
+
 
 def _ensure_site_weather_table() -> None:
     SiteWeather.__table__.create(bind=engine, checkfirst=True)
@@ -273,6 +275,7 @@ def _site_compact_address(site: Site | None) -> str | None:
     compact = ", ".join(part for part in [street, locality] if part)
     return compact or _clean_optional_text(site.address)
 
+
 def _weather_condition(code: int | None) -> str | None:
     if code is None:
         return None
@@ -321,11 +324,11 @@ def _parse_open_meteo_time(value: str | None, utc_offset_seconds: int | None) ->
     return parsed.astimezone(timezone.utc)
 
 
-
 def _solar_noon(sunrise: datetime | None, sunset: datetime | None) -> datetime | None:
     if sunrise is None or sunset is None:
         return None
     return sunrise + ((sunset - sunrise) / 2)
+
 
 def _fetch_open_meteo_weather(latitude: float, longitude: float) -> dict[str, object]:
     params = urlencode(
@@ -465,7 +468,6 @@ def _refresh_site_weather(site: Site, db: Session, now: datetime | None = None) 
     db.commit()
     db.refresh(weather)
     return _site_weather_out(site.site_id, weather, now=now)
-
 
 
 def _validate_direct_connect_host(host: str | None) -> str | None:
@@ -875,13 +877,16 @@ def signup_page() -> HTMLResponse:
 def check_email_page() -> HTMLResponse:
     return HTMLResponse(check_email_html())
 
+
 @app.get("/auth/confirm", response_class=HTMLResponse, include_in_schema=False)
 def auth_confirm_page() -> HTMLResponse:
     return HTMLResponse(auth_confirm_html())
 
+
 @app.get("/auth/reset-password", response_class=HTMLResponse, include_in_schema=False)
 def reset_password_page() -> HTMLResponse:
     return HTMLResponse(reset_password_html())
+
 
 @app.get("/auth/waiting-approval", response_class=HTMLResponse, include_in_schema=False)
 def waiting_approval_page() -> HTMLResponse:
@@ -1096,6 +1101,7 @@ def ui_get_gateway_site(
 ) -> Site:
     return _get_gateway_with_site_or_404(db, gateway_id).site
 
+
 @app.get("/api/ui/gateways/{gateway_id}/weather", response_model=SiteWeatherOut)
 def ui_get_gateway_weather(
     gateway_id: str,
@@ -1104,7 +1110,6 @@ def ui_get_gateway_weather(
 ) -> SiteWeatherOut:
     gateway = _get_gateway_with_site_or_404(db, gateway_id)
     return _refresh_site_weather(gateway.site, db)
-
 
 
 @app.patch("/api/ui/gateways/{gateway_id}/site", response_model=SiteOut)
@@ -1527,6 +1532,7 @@ def ui_load_device_points(
         raise HTTPException(status_code=404, detail="Device not found")
     edge_node = _get_gateway_or_404(db, device.gateway_id)
     _require_online_gateway(edge_node)
+    bacnet_port = edge_node.bacnet_port
     job = EdgeJob(
         job_id=f"job-{uuid4().hex}",
         gateway_id=device.gateway_id,
@@ -1535,7 +1541,7 @@ def ui_load_device_points(
         request_json={
             "device_instance": device.device_instance,
             "saved_device_id": str(device.id),
-            "bacnet_port": 47814,
+            "bacnet_port": bacnet_port,
             "limit": 80,
             "name_limit": 40,
             "include_object_names": True,
@@ -1623,6 +1629,7 @@ def ui_bulk_remove_points(
         missing_ids=missing_ids,
     )
 
+
 @app.post("/api/ui/gateways/{gateway_id}/points/read", response_model=SavedPointsReadOut)
 def ui_read_saved_points(
     gateway_id: str,
@@ -1647,18 +1654,27 @@ def ui_read_saved_points(
     points_by_id = {str(point.id): point for point in points}
     missing_ids = [point_id for point_id in payload.point_ids if _tree_id(point_id) not in points_by_id]
     job_ids: list[str] = []
+    points_by_device: dict[int, list[SavedBacnetPoint]] = {}
     for point in points:
+        points_by_device.setdefault(point.device_instance, []).append(point)
+    for device_instance, device_points in points_by_device.items():
         job = EdgeJob(
             job_id=f"job-{uuid4().hex}",
             gateway_id=gateway_id,
-            job_type="bacnet_read",
+            job_type="bacnet_read_bulk",
             status="queued",
             request_json={
-                "saved_point_id": str(point.id),
-                "device_instance": point.device_instance,
-                "object_type": point.object_type,
-                "object_instance": point.object_instance,
+                "device_instance": device_instance,
                 "property": "present-value",
+                "points": [
+                    {
+                        "saved_point_id": str(point.id),
+                        "object_type": point.object_type,
+                        "object_instance": point.object_instance,
+                        "object_name": point.object_name,
+                    }
+                    for point in device_points
+                ],
             },
         )
         db.add(job)
@@ -1671,7 +1687,6 @@ def ui_read_saved_points(
         job_ids=job_ids,
         missing_ids=missing_ids,
     )
-
 
 
 @app.patch("/api/ui/points/{point_id}", response_model=SavedPointOut)
@@ -1837,12 +1852,13 @@ def ui_discover_devices(
 ) -> EdgeJob:
     edge_node = _get_gateway_or_404(db, gateway_id)
     _require_online_gateway(edge_node)
+    bacnet_port = edge_node.bacnet_port
     job = EdgeJob(
         job_id=f"job-{uuid4().hex}",
         gateway_id=gateway_id,
         job_type="bacnet_discover",
         status="queued",
-        request_json={"bacnet_port": 47814},
+        request_json={"bacnet_port": bacnet_port},
     )
     db.add(job)
     db.commit()
@@ -2060,6 +2076,22 @@ def receive_job_result(
                 point.present_value = str(value)
                 point.latest_read_at = utc_now()
                 point.updated_at = utc_now()
+    if job.job_type == "bacnet_read_bulk" and payload.status == "completed" and isinstance(payload.result, dict):
+        values = payload.result.get("values")
+        if isinstance(values, list):
+            now = utc_now()
+            for value_payload in values:
+                if not isinstance(value_payload, dict):
+                    continue
+                saved_point_id = value_payload.get("saved_point_id")
+                value = value_payload.get("value", value_payload.get("raw_value"))
+                if not isinstance(saved_point_id, str) or value is None:
+                    continue
+                point = db.get(SavedBacnetPoint, _tree_id(saved_point_id))
+                if point is not None and point.gateway_id == job.gateway_id:
+                    point.present_value = str(value)
+                    point.latest_read_at = now
+                    point.updated_at = now
     db.commit()
     db.refresh(job)
     return job

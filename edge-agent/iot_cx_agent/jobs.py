@@ -8,6 +8,7 @@ from iot_cx_agent.bacnet import (
     run_bacnet_discovery,
     run_bacnet_load_points,
     run_bacnet_read,
+    run_bacnet_read_bulk,
     run_bacnet_runtime_check,
 )
 from iot_cx_agent.config import AgentConfig
@@ -70,6 +71,14 @@ def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str
 
     if job_type == "bacnet_read":
         result, error_message = run_bacnet_read(config, request if isinstance(request, dict) else {})
+        if error_message == BACNET_RUNTIME_BUSY:
+            return "deferred", result, error_message
+        if error_message is not None:
+            return "failed", result, error_message
+        return "completed", result, None
+
+    if job_type == "bacnet_read_bulk":
+        result, error_message = run_bacnet_read_bulk(config, request if isinstance(request, dict) else {})
         if error_message == BACNET_RUNTIME_BUSY:
             return "deferred", result, error_message
         if error_message is not None:

@@ -40,7 +40,6 @@ APP_SCRIPT = r"""
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
   const pointTableColumns = [
     { key: "object_identifier", label: "Object Identifier" },
-    { key: "object_name", label: "Object Name" },
     { key: "object_type", label: "Object Type" },
     { key: "present_value", label: "Present Value" },
     { key: "units", label: "Units" },
@@ -1571,6 +1570,17 @@ APP_SCRIPT = r"""
     return `iot-cloud-custom-point-table:${document.body.dataset.gatewayId || "gateway"}`;
   }
 
+  function sanitizePointTableColumns(columns) {
+    const selected = Array.isArray(columns) ? columns : [];
+    const validKeys = new Set(pointTableColumns.map((column) => column.key));
+    return selected.filter((key) => key !== "object_name" && validKeys.has(key));
+  }
+
+  function normalizePointTableColumns(columns, fallback = ["object_identifier", "present_value", "units"]) {
+    const sanitized = sanitizePointTableColumns(columns);
+    return sanitized.length ? sanitized : fallback;
+  }
+
   function loadCustomPointTableState() {
     try {
       const saved = JSON.parse(localStorage.getItem(pointTableStorageKey()) || "{}");
@@ -1590,9 +1600,9 @@ APP_SCRIPT = r"""
       const activeTable = savedPointTables[activePointTableName] || {};
       customTablePointIds = new Set(Array.isArray(activeTable.pointIds) ? activeTable.pointIds : []);
       visiblePointTableColumns = Array.isArray(activeTable.columns) && activeTable.columns.length
-        ? activeTable.columns.filter((key) => pointTableColumns.some((column) => column.key === key))
+        ? normalizePointTableColumns(activeTable.columns)
         : Array.isArray(saved.columns) && saved.columns.length
-        ? saved.columns.filter((key) => pointTableColumns.some((column) => column.key === key))
+        ? normalizePointTableColumns(saved.columns)
         : ["object_identifier", "present_value", "units"];
     } catch {
       activePointTableName = "New Table View";
@@ -1653,7 +1663,7 @@ APP_SCRIPT = r"""
     activePointTableName = name;
     const activeTable = savedPointTables[name] || {};
     customTablePointIds = new Set(Array.isArray(activeTable.pointIds) ? activeTable.pointIds : []);
-    visiblePointTableColumns = Array.isArray(activeTable.columns) && activeTable.columns.length ? activeTable.columns : ["object_identifier", "present_value", "units"];
+    visiblePointTableColumns = Array.isArray(activeTable.columns) && activeTable.columns.length ? normalizePointTableColumns(activeTable.columns) : ["object_identifier", "present_value", "units"];
     saveCustomPointTableState();
     renderCustomPointTable();
     renderPropertyPicker();
@@ -1753,13 +1763,13 @@ APP_SCRIPT = r"""
     if (button) {
       button.disabled = true;
     }
-    setText("status", `Queueing ${points.length} point value read(s)...`);
+    setText("status", `Queueing bulk read for ${points.length} point value(s)...`);
     try {
       const result = await api(`/api/ui/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/points/read`, {
         method: "POST",
         body: JSON.stringify({ point_ids: points.map((point) => point.id) })
       });
-      setText("status", `Queued ${result.queued_count} read job(s). Waiting for edge results...`);
+      setText("status", `Queued ${result.queued_count} bulk read request(s). Waiting for edge results...`);
       await pollPointValueReads(result.job_ids || []);
     } catch (error) {
       setText("status", errorMessage(error), true);
@@ -1787,21 +1797,21 @@ APP_SCRIPT = r"""
       const failed = [...terminalJobs.values()].filter((job) => job.status === "failed").length;
       const deferred = [...terminalJobs.values()].filter((job) => job.status === "deferred").length;
       if (waiting.size) {
-        const message = `Point reads: ${completed} completed, ${failed} failed, ${deferred} deferred, ${waiting.size} pending.`;
+        const message = `Bulk reads: ${completed} completed, ${failed} failed, ${deferred} deferred, ${waiting.size} pending.`;
         setText("status", message, Boolean(failed || deferred));
         setText("point-read-status", message, Boolean(failed || deferred));
         await new Promise((resolve) => setTimeout(resolve, 2500));
       }
     }
     if (waiting.size) {
-      const message = `${waiting.size} point read job(s) still pending. Values will fill in as the edge completes them.`;
+      const message = `${waiting.size} bulk read request(s) still pending. Values will fill in as the edge completes them.`;
       setText("status", message, true);
       setText("point-read-status", message, true);
       return;
     }
     const failedJobs = [...terminalJobs.values()].filter((job) => job.status === "failed" || job.status === "deferred");
     if (failedJobs.length) {
-      const message = `Point values partially refreshed. ${failedJobs.length} read job(s) failed/deferred; check recent jobs for details.`;
+      const message = `Point values partially refreshed. ${failedJobs.length} bulk read request(s) failed/deferred; check recent jobs for details.`;
       setText("status", message, true);
       setText("point-read-status", message, true);
       return;
@@ -1827,10 +1837,11 @@ APP_SCRIPT = r"""
     if (refreshButton) {
       refreshButton.disabled = !points.length;
     }
+    const columns = sanitizePointTableColumns(visiblePointTableColumns);
     head.innerHTML = `
       <tr>
-        <th>Path</th>
-        ${visiblePointTableColumns.map((key) => {
+        <th>Name</th>
+        ${columns.map((key) => {
           const column = pointTableColumns.find((item) => item.key === key);
           return `<th>${escapeHtml(column?.label || key)}</th>`;
         }).join("")}
@@ -1840,19 +1851,17 @@ APP_SCRIPT = r"""
     body.textContent = "";
     if (!points.length) {
       const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="${visiblePointTableColumns.length + 2}" class="empty-table-cell">Open a folder and add points to build this table.</td>`;
+      row.innerHTML = `<td colspan="${columns.length + 2}" class="empty-table-cell">Open a folder and add points to build this table.</td>`;
       body.appendChild(row);
       return;
     }
     for (const point of points) {
-      const device = currentGatewayTree?.devices?.find((item) => item.id === point.saved_device_id);
       const row = document.createElement("tr");
       row.innerHTML = `
         <td>
           <strong>${escapeHtml(point.object_name || "unnamed")}</strong>
-          <span class="muted">${escapeHtml(device?.device_name || "Device " + point.device_instance)} / ${escapeHtml(objectFolderLabel(point.object_type))}</span>
         </td>
-        ${visiblePointTableColumns.map((key) => `<td>${escapeHtml(pointTableValue(point, key))}</td>`).join("")}
+        ${columns.map((key) => `<td>${escapeHtml(pointTableValue(point, key))}</td>`).join("")}
         <td><button class="secondary table-command" type="button" data-remove-table-point="${escapeHtml(point.id)}">Remove</button></td>
       `;
       body.appendChild(row);
@@ -1883,7 +1892,7 @@ APP_SCRIPT = r"""
 
   function applyPropertyPicker() {
     const selected = [...document.querySelectorAll("#property-picker-options input:checked")].map((input) => input.value);
-    visiblePointTableColumns = selected.length ? selected : ["object_identifier"];
+    visiblePointTableColumns = selected.length ? normalizePointTableColumns(selected, ["object_identifier"]) : ["object_identifier"];
     saveCustomPointTableState();
     renderCustomPointTable();
     byId("property-picker").hidden = true;
