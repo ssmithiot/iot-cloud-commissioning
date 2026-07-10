@@ -10,6 +10,10 @@ APP_SCRIPT = r"""
   let currentUser = null;
   let currentPointCandidateDevice = null;
   let selectedSavedPointIds = new Set();
+  let customTablePointIds = new Set();
+  let visiblePointTableColumns = ["object_identifier", "present_value", "units"];
+  let savedPointTables = {};
+  let activePointTableName = "New Table View";
   let dashboardGateways = [];
   let dashboardJobs = [];
   let dashboardWeather = new Map();
@@ -34,6 +38,17 @@ APP_SCRIPT = r"""
   const themeStorageKey = "iot-cloud-command-theme";
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+  const pointTableColumns = [
+    { key: "object_identifier", label: "Object Identifier" },
+    { key: "object_name", label: "Object Name" },
+    { key: "object_type", label: "Object Type" },
+    { key: "present_value", label: "Present Value" },
+    { key: "units", label: "Units" },
+    { key: "writable", label: "Writable" },
+    { key: "priority_array", label: "Priority Array" },
+    { key: "relinquish_default", label: "Relinquish Default" },
+    { key: "latest_read_at", label: "Latest Read" }
+  ];
 
   const statePaths = {
     login: "/login",
@@ -216,6 +231,117 @@ APP_SCRIPT = r"""
     `;
   }
 
+  function parseCsv(text) {
+    const rows = [];
+    let row = [];
+    let value = "";
+    let quoted = false;
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      const next = text[index + 1];
+      if (quoted) {
+        if (char === '"' && next === '"') {
+          value += '"';
+          index += 1;
+        } else if (char === '"') {
+          quoted = false;
+        } else {
+          value += char;
+        }
+      } else if (char === '"') {
+        quoted = true;
+      } else if (char === ",") {
+        row.push(value);
+        value = "";
+      } else if (char === "\n") {
+        row.push(value);
+        rows.push(row);
+        row = [];
+        value = "";
+      } else if (char !== "\r") {
+        value += char;
+      }
+    }
+    row.push(value);
+    rows.push(row);
+    return rows.filter((item) => item.some((cell) => String(cell || "").trim()));
+  }
+
+  function csvToCommissioningTemplate(text, fileName, gatewayId) {
+    const rows = parseCsv(text);
+    if (rows.length < 2) {
+      throw new Error("CSV must include a header row and at least one point row.");
+    }
+    const headers = rows[0].map((header) => String(header || "").trim().toLowerCase().replaceAll(" ", "_"));
+    const indexFor = (...names) => names.map((name) => headers.indexOf(name)).find((index) => index >= 0);
+    const objectTypeIndex = indexFor("object_type", "type", "bacnet_type");
+    const instanceIndex = indexFor("object_instance", "instance", "object_id", "object_instance_number");
+    const objectNameIndex = indexFor("object_name", "name", "point_name", "description");
+    if (objectTypeIndex == null || instanceIndex == null || objectNameIndex == null) {
+      throw new Error("CSV needs object_type, instance, and object_name columns.");
+    }
+    const groupIndex = indexFor("group", "group_name", "folder");
+    const deviceIndex = indexFor("device_instance", "device_id", "controller_instance");
+    const deviceNameIndex = indexFor("device_name", "controller", "controller_name");
+    const propertyIndex = indexFor("property", "property_name");
+    const unitsIndex = indexFor("units", "unit");
+    const writableIndex = indexFor("writable", "writeable");
+    const defaultGroup = byId("csv-group-name")?.value.trim() || "HVAC";
+    const defaultDeviceRaw = byId("csv-device-instance")?.value || currentGatewayTree?.devices?.[0]?.device_instance;
+    if (defaultDeviceRaw == null || String(defaultDeviceRaw).trim() === "") {
+      throw new Error("Enter a CSV controller/device instance before importing this CSV.");
+    }
+    const defaultDeviceInstance = Number(defaultDeviceRaw);
+    const defaultDeviceName = byId("csv-device-name")?.value.trim() || fileName.replace(/\.[^.]+$/, "");
+    if (!Number.isFinite(defaultDeviceInstance)) {
+      throw new Error("Enter a numeric controller/device instance before importing this CSV.");
+    }
+    const groups = new Set();
+    const devices = new Map();
+    for (const row of rows.slice(1)) {
+      const objectType = String(row[objectTypeIndex] || "").trim().toLowerCase();
+      const objectInstance = Number(row[instanceIndex]);
+      const objectName = String(row[objectNameIndex] || "").trim();
+      if (!objectType || !Number.isFinite(objectInstance) || !objectName) {
+        continue;
+      }
+      const groupName = String(groupIndex == null ? defaultGroup : (row[groupIndex] || defaultGroup)).trim() || defaultGroup;
+      const deviceInstance = Number(deviceIndex == null ? defaultDeviceInstance : (row[deviceIndex] || defaultDeviceInstance));
+      const deviceName = String(deviceNameIndex == null ? defaultDeviceName : (row[deviceNameIndex] || defaultDeviceName)).trim() || defaultDeviceName;
+      if (!Number.isFinite(deviceInstance)) {
+        continue;
+      }
+      groups.add(groupName);
+      const deviceKey = `${groupName}:${deviceInstance}`;
+      if (!devices.has(deviceKey)) {
+        devices.set(deviceKey, {
+          group_name: groupName,
+          device_instance: deviceInstance,
+          device_name: deviceName,
+          points: []
+        });
+      }
+      devices.get(deviceKey).points.push({
+        object_type: objectType,
+        object_instance: objectInstance,
+        object_name: objectName,
+        property: String(propertyIndex == null ? "present-value" : (row[propertyIndex] || "present-value")).trim() || "present-value",
+        units: unitsIndex == null ? null : (String(row[unitsIndex] || "").trim() || null),
+        writable: writableIndex == null ? null : ["true", "yes", "1", "write", "writable"].includes(String(row[writableIndex] || "").trim().toLowerCase())
+      });
+    }
+    if (!devices.size) {
+      throw new Error("No valid points found in CSV.");
+    }
+    return {
+      schema_version: "iot-cx-commissioning-template/v1",
+      source: `csv:${fileName}`,
+      gateway_id: gatewayId,
+      groups: [...groups].map((name) => ({ name })),
+      devices: [...devices.values()]
+    };
+  }
+
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (char) => ({
       "&": "&amp;",
@@ -233,6 +359,9 @@ APP_SCRIPT = r"""
     }
     const config = await response.json();
     if (!config.configured) {
+      if (["localhost", "127.0.0.1"].includes(window.location.hostname)) {
+        return { ...config, local_preview: true };
+      }
       throw new Error("Supabase browser auth is not configured on this deployment.");
     }
     return config;
@@ -243,11 +372,21 @@ APP_SCRIPT = r"""
       return supabaseClient;
     }
     const config = await getConfig();
+    if (config.local_preview) {
+      throw new Error("Local preview auth is active.");
+    }
     supabaseClient = createClient(config.supabase_url, config.supabase_anon_key);
     return supabaseClient;
   }
 
   async function getSession() {
+    const config = await getConfig();
+    if (config.local_preview) {
+      return {
+        access_token: "local-preview-token",
+        local_preview: true
+      };
+    }
     const client = await getSupabase();
     const { data, error } = await client.auth.getSession();
     if (error) {
@@ -499,7 +638,9 @@ APP_SCRIPT = r"""
         window.location.assign(statePaths.login);
         return null;
       }
-      const me = await ensureProfile();
+      const me = session.local_preview
+        ? { email: "local-preview@localhost", role: "admin", status: "active" }
+        : await ensureProfile();
       if (!redirectForRole(me, requiredRole)) {
         return null;
       }
@@ -1391,7 +1532,290 @@ APP_SCRIPT = r"""
   }
 
   function savedPointLabel(point) {
-    return `[${point.object_type} ${point.object_instance}] ${point.object_name || "unnamed"}`;
+    return `[${objectIdentifier(point)}] ${point.object_name || "unnamed"}`;
+  }
+
+  function objectTypeCode(objectType) {
+    const codes = {
+      "analog-input": "AI",
+      "analog-output": "AO",
+      "analog-value": "AV",
+      "binary-input": "BI",
+      "binary-output": "BO",
+      "binary-value": "BV",
+      "multi-state-input": "MSI",
+      "multi-state-output": "MSO",
+      "multi-state-value": "MSV",
+      "schedule": "SCHED",
+      "trend-log": "TL",
+      "calendar": "CAL",
+      "event-enrollment": "EE",
+      "file": "FILE",
+      "loop": "LOOP",
+      "notification-class": "NC",
+      "program": "PGM",
+      "command": "CMD"
+    };
+    return codes[pointTableObjectTypeKey(objectType)] || String(objectType || "OBJ").toUpperCase();
+  }
+
+  function pointTableObjectTypeKey(objectType) {
+    return String(objectType || "").toLowerCase().replaceAll("_", "-").replaceAll(" ", "-");
+  }
+
+  function objectIdentifier(point) {
+    return `${objectTypeCode(point.object_type)}${point.object_instance ?? ""}`;
+  }
+
+  function pointTableStorageKey() {
+    return `iot-cloud-custom-point-table:${document.body.dataset.gatewayId || "gateway"}`;
+  }
+
+  function loadCustomPointTableState() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(pointTableStorageKey()) || "{}");
+      activePointTableName = saved.activeTable || saved.name || "New Table View";
+      savedPointTables = saved.tables && typeof saved.tables === "object"
+        ? saved.tables
+        : {
+          [activePointTableName]: {
+            pointIds: Array.isArray(saved.pointIds) ? saved.pointIds : [],
+            columns: Array.isArray(saved.columns) ? saved.columns : ["object_identifier", "present_value", "units"]
+          }
+        };
+      if (!savedPointTables[activePointTableName]) {
+        activePointTableName = Object.keys(savedPointTables)[0] || "New Table View";
+        savedPointTables[activePointTableName] = savedPointTables[activePointTableName] || { pointIds: [], columns: ["object_identifier", "present_value", "units"] };
+      }
+      const activeTable = savedPointTables[activePointTableName] || {};
+      customTablePointIds = new Set(Array.isArray(activeTable.pointIds) ? activeTable.pointIds : []);
+      visiblePointTableColumns = Array.isArray(activeTable.columns) && activeTable.columns.length
+        ? activeTable.columns.filter((key) => pointTableColumns.some((column) => column.key === key))
+        : Array.isArray(saved.columns) && saved.columns.length
+        ? saved.columns.filter((key) => pointTableColumns.some((column) => column.key === key))
+        : ["object_identifier", "present_value", "units"];
+    } catch {
+      activePointTableName = "New Table View";
+      savedPointTables = { [activePointTableName]: { pointIds: [], columns: ["object_identifier", "present_value", "units"] } };
+      customTablePointIds = new Set();
+      visiblePointTableColumns = ["object_identifier", "present_value", "units"];
+    }
+    renderPointTableControls();
+  }
+
+  function saveCustomPointTableState() {
+    const tableName = activePointTableName || "New Table View";
+    savedPointTables[tableName] = {
+      pointIds: [...customTablePointIds],
+      columns: visiblePointTableColumns
+    };
+    localStorage.setItem(pointTableStorageKey(), JSON.stringify({
+      activeTable: tableName,
+      tables: savedPointTables
+    }));
+    renderPointTableControls();
+  }
+
+  function renderPointTableControls() {
+    const select = byId("saved-point-table-select");
+    const nameInput = byId("point-table-name");
+    const title = byId("active-point-table-title");
+    if (title) {
+      title.textContent = activePointTableName || "New Table View";
+    }
+    if (nameInput) {
+      nameInput.value = activePointTableName || "New Table View";
+    }
+    if (!select) {
+      return;
+    }
+    const names = Object.keys(savedPointTables);
+    select.innerHTML = names.map((name) => (
+      `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`
+    )).join("");
+    select.value = activePointTableName;
+  }
+
+  function saveActivePointTableName() {
+    const inputName = byId("point-table-name").value.trim() || "New Table View";
+    if (inputName !== activePointTableName) {
+      delete savedPointTables[activePointTableName];
+      activePointTableName = inputName;
+    }
+    saveCustomPointTableState();
+    setText("status", `Saved table ${inputName}.`);
+  }
+
+  function switchActivePointTable(name) {
+    if (!name || !savedPointTables[name]) {
+      return;
+    }
+    activePointTableName = name;
+    const activeTable = savedPointTables[name] || {};
+    customTablePointIds = new Set(Array.isArray(activeTable.pointIds) ? activeTable.pointIds : []);
+    visiblePointTableColumns = Array.isArray(activeTable.columns) && activeTable.columns.length ? activeTable.columns : ["object_identifier", "present_value", "units"];
+    saveCustomPointTableState();
+    renderCustomPointTable();
+    renderPropertyPicker();
+  }
+
+  function newPointTable() {
+    let index = Object.keys(savedPointTables).length + 1;
+    let name = `New Table View ${index}`;
+    while (savedPointTables[name]) {
+      index += 1;
+      name = `New Table View ${index}`;
+    }
+    activePointTableName = name;
+    customTablePointIds = new Set();
+    visiblePointTableColumns = ["object_identifier", "present_value", "units"];
+    savedPointTables[name] = { pointIds: [], columns: visiblePointTableColumns };
+    saveCustomPointTableState();
+    renderCustomPointTable();
+  }
+
+  function pointTableValue(point, key) {
+    if (key === "object_identifier") {
+      return objectIdentifier(point);
+    }
+    if (key === "object_name") {
+      return point.object_name || "";
+    }
+    if (key === "object_type") {
+      return objectFolderLabel(point.object_type).replace(" Objects", "");
+    }
+    if (key === "present_value") {
+      return point.present_value ?? "";
+    }
+    if (key === "units") {
+      return point.units ?? "";
+    }
+    if (key === "writable") {
+      return point.writable == null ? "" : (point.writable ? "Yes" : "No");
+    }
+    if (key === "priority_array" || key === "relinquish_default") {
+      return "not loaded";
+    }
+    if (key === "latest_read_at") {
+      return point.latest_read_at ? new Date(point.latest_read_at).toLocaleString() : "";
+    }
+    return "";
+  }
+
+  function tablePoints() {
+    const points = currentGatewayTree?.points || [];
+    const byPointId = new Map(points.map((point) => [point.id, point]));
+    return [...customTablePointIds].map((id) => byPointId.get(id)).filter(Boolean);
+  }
+
+  function addPointToCustomTable(pointId) {
+    if (!pointId) {
+      return;
+    }
+    customTablePointIds.add(pointId);
+    saveCustomPointTableState();
+    renderCustomPointTable();
+  }
+
+  function addSelectedPointsToCustomTable() {
+    const selected = selectedSavedPoints();
+    if (!selected.length) {
+      setText("status", "Select saved points in the tree first.", true);
+      return;
+    }
+    for (const point of selected) {
+      customTablePointIds.add(point.id);
+    }
+    saveCustomPointTableState();
+    renderCustomPointTable();
+    setText("status", `Added ${selected.length} point(s) to the custom table.`);
+  }
+
+  function removePointFromCustomTable(pointId) {
+    customTablePointIds.delete(pointId);
+    saveCustomPointTableState();
+    renderCustomPointTable();
+  }
+
+  function clearCustomPointTable() {
+    customTablePointIds = new Set();
+    saveCustomPointTableState();
+    renderCustomPointTable();
+  }
+
+  function renderCustomPointTable() {
+    const body = byId("custom-point-table-body");
+    const head = byId("custom-point-table-head");
+    const count = byId("custom-point-table-count");
+    const removeAll = byId("clear-custom-point-table");
+    if (!body || !head || !count) {
+      return;
+    }
+    const points = tablePoints();
+    count.textContent = `${points.length} point${points.length === 1 ? "" : "s"}`;
+    if (removeAll) {
+      removeAll.disabled = !points.length;
+    }
+    head.innerHTML = `
+      <tr>
+        <th>Path</th>
+        ${visiblePointTableColumns.map((key) => {
+          const column = pointTableColumns.find((item) => item.key === key);
+          return `<th>${escapeHtml(column?.label || key)}</th>`;
+        }).join("")}
+        <th>Actions</th>
+      </tr>
+    `;
+    body.textContent = "";
+    if (!points.length) {
+      const row = document.createElement("tr");
+      row.innerHTML = `<td colspan="${visiblePointTableColumns.length + 2}" class="empty-table-cell">Open a folder and add points to build this table.</td>`;
+      body.appendChild(row);
+      return;
+    }
+    for (const point of points) {
+      const device = currentGatewayTree?.devices?.find((item) => item.id === point.saved_device_id);
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td>
+          <strong>${escapeHtml(point.object_name || "unnamed")}</strong>
+          <span class="muted">${escapeHtml(device?.device_name || "Device " + point.device_instance)} / ${escapeHtml(objectFolderLabel(point.object_type))}</span>
+        </td>
+        ${visiblePointTableColumns.map((key) => `<td>${escapeHtml(pointTableValue(point, key))}</td>`).join("")}
+        <td><button class="secondary table-command" type="button" data-remove-table-point="${escapeHtml(point.id)}">Remove</button></td>
+      `;
+      body.appendChild(row);
+    }
+    body.querySelectorAll("[data-remove-table-point]").forEach((button) => {
+      button.addEventListener("click", () => removePointFromCustomTable(button.dataset.removeTablePoint));
+    });
+  }
+
+  function renderPropertyPicker() {
+    const picker = byId("property-picker");
+    const list = byId("property-picker-options");
+    if (!picker || !list) {
+      return;
+    }
+    list.textContent = "";
+    for (const column of pointTableColumns) {
+      const label = document.createElement("label");
+      label.className = "property-option";
+      label.innerHTML = `
+        <input type="checkbox" value="${escapeHtml(column.key)}">
+        <span>${escapeHtml(column.label)}</span>
+      `;
+      label.querySelector("input").checked = visiblePointTableColumns.includes(column.key);
+      list.appendChild(label);
+    }
+  }
+
+  function applyPropertyPicker() {
+    const selected = [...document.querySelectorAll("#property-picker-options input:checked")].map((input) => input.value);
+    visiblePointTableColumns = selected.length ? selected : ["object_identifier"];
+    saveCustomPointTableState();
+    renderCustomPointTable();
+    byId("property-picker").hidden = true;
   }
 
   function selectedSavedPoints() {
@@ -1419,6 +1843,10 @@ APP_SCRIPT = r"""
       list.appendChild(item);
     }
     removeButton.disabled = !selected.length || !canEditTree();
+    const addButton = byId("add-selected-to-custom-table");
+    if (addButton) {
+      addButton.disabled = !selected.length;
+    }
   }
 
   function setSavedPointSelected(point, checked) {
@@ -1506,14 +1934,18 @@ APP_SCRIPT = r"""
     const row = document.createElement("div");
     row.className = "tree-row point-select-row";
     row.dataset.kind = "point";
+    row.draggable = true;
+    row.dataset.pointId = point.id;
     row.style.setProperty("--depth", String(depth));
     row.innerHTML = `
-      <input type="checkbox" data-role="saved-point-select" aria-label="Select ${escapeHtml(label)}">
+      <input type="checkbox" data-role="saved-point-select" title="Select for bulk actions" aria-label="Select ${escapeHtml(label)} for bulk actions">
       <span class="node-icon">-></span>
       <span class="node-label">${escapeHtml(label)}</span>
       <span class="node-meta">${escapeHtml(meta)}</span>
+      <button class="tree-add-point" type="button" title="Add point to custom table" aria-label="Add ${escapeHtml(label)} to custom table">Add</button>
     `;
     const checkbox = row.querySelector('[data-role="saved-point-select"]');
+    const addButton = row.querySelector(".tree-add-point");
     checkbox.checked = selectedSavedPointIds.has(point.id);
     checkbox.addEventListener("change", (event) => {
       event.stopPropagation();
@@ -1521,10 +1953,19 @@ APP_SCRIPT = r"""
       showPointDetails();
     });
     row.addEventListener("click", (event) => {
-      if (event.target === checkbox) {
+      if (event.target === checkbox || event.target === addButton) {
         return;
       }
       showPointDetails();
+    });
+    row.addEventListener("dragstart", (event) => {
+      event.dataTransfer.effectAllowed = "copy";
+      event.dataTransfer.setData("text/plain", point.id);
+    });
+    addButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      addPointToCustomTable(point.id);
+      setText("status", `Added ${objectIdentifier(point)} to the custom table.`);
     });
     return row;
   }
@@ -1705,6 +2146,7 @@ APP_SCRIPT = r"""
     }
     target.appendChild(root);
     renderSelectedSavedPoints();
+    renderCustomPointTable();
   }
 
   function groupOptions() {
@@ -1899,6 +2341,7 @@ APP_SCRIPT = r"""
   }
 
   async function initGatewayWorkspace() {
+    initThemeToggle();
     const me = await initProtectedPage(null);
     if (!me) {
       return;
@@ -1912,12 +2355,20 @@ APP_SCRIPT = r"""
     const selectAllPointsButton = byId("select-all-point-candidates");
     const deselectAllPointsButton = byId("deselect-all-point-candidates");
     const removeSelectedPointsButton = byId("remove-selected-points");
+    const addSelectedToCustomTableButton = byId("add-selected-to-custom-table");
+    const clearCustomPointTableButton = byId("clear-custom-point-table");
+    const editPointColumnsButton = byId("edit-point-columns");
+    const applyPointColumnsButton = byId("apply-point-columns");
+    const cancelPointColumnsButton = byId("cancel-point-columns");
+    const customPointTableDropZone = byId("custom-point-table-dropzone");
     const gatewayId = document.body.dataset.gatewayId;
     const technicalSection = byId("technical-section");
     if (technicalSection && me.role === "admin") {
       technicalSection.hidden = false;
     }
     const canEditSite = me.role === "admin";
+    loadCustomPointTableState();
+    renderPropertyPicker();
     siteInfoForm.querySelectorAll("input, textarea").forEach((field) => {
       field.disabled = !canEditSite;
     });
@@ -1977,7 +2428,11 @@ APP_SCRIPT = r"""
       }
       setText("status", `Importing ${file.name}...`);
       try {
-        const template = JSON.parse(await file.text());
+        const fileText = await file.text();
+        const isCsv = file.name.toLowerCase().endsWith(".csv");
+        const template = isCsv
+          ? csvToCommissioningTemplate(fileText, file.name, gatewayId)
+          : JSON.parse(fileText);
         const result = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/commissioning-template/import`, {
           method: "POST",
           body: JSON.stringify(template)
@@ -2020,6 +2475,35 @@ APP_SCRIPT = r"""
       });
     });
     removeSelectedPointsButton.addEventListener("click", removeSelectedSavedPoints);
+    addSelectedToCustomTableButton.addEventListener("click", addSelectedPointsToCustomTable);
+    clearCustomPointTableButton.addEventListener("click", clearCustomPointTable);
+    byId("save-point-table").addEventListener("click", saveActivePointTableName);
+    byId("new-point-table").addEventListener("click", newPointTable);
+    byId("saved-point-table-select").addEventListener("change", (event) => {
+      switchActivePointTable(event.target.value);
+    });
+    editPointColumnsButton.addEventListener("click", () => {
+      renderPropertyPicker();
+      byId("property-picker").hidden = false;
+    });
+    applyPointColumnsButton.addEventListener("click", applyPropertyPicker);
+    cancelPointColumnsButton.addEventListener("click", () => {
+      byId("property-picker").hidden = true;
+    });
+    customPointTableDropZone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      customPointTableDropZone.classList.add("drag-over");
+    });
+    customPointTableDropZone.addEventListener("dragleave", () => {
+      customPointTableDropZone.classList.remove("drag-over");
+    });
+    customPointTableDropZone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      customPointTableDropZone.classList.remove("drag-over");
+      const pointId = event.dataTransfer.getData("text/plain");
+      addPointToCustomTable(pointId);
+      setText("status", "Point added to the custom table.");
+    });
     saveSelectedPointsButton.addEventListener("click", async () => {
       if (!currentPointCandidateDevice) {
         setText("status", "Import an edge commissioning template first.", true);
@@ -2304,6 +2788,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       align-items: end;
     }}
     .span-2 {{ grid-column: span 2; }}
+    .span-1 {{ grid-column: span 1; }}
     .span-3 {{ grid-column: span 3; }}
     .span-4 {{ grid-column: span 4; }}
     .span-6 {{ grid-column: span 6; }}
@@ -2522,6 +3007,301 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       gap: 10px;
       align-items: center;
       flex-wrap: wrap;
+    }}
+    .workflow-steps {{
+      margin: 0;
+      padding: 12px 16px 12px 34px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      background: rgba(34, 211, 197, 0.06);
+      font-size: 14px;
+    }}
+    .workflow-steps li + li {{
+      margin-top: 6px;
+    }}
+    .workflow-steps strong {{
+      color: var(--accent-strong);
+    }}
+    body[data-page="gateway-workspace"] {{
+      color-scheme: dark;
+      --border: rgba(154, 180, 196, 0.22);
+      --ink: #eef7f8;
+      --muted: #91a7ad;
+      --panel: rgba(14, 22, 26, 0.78);
+      --accent: #22d3c5;
+      --accent-strong: #76f7a6;
+      --warning: #f5c542;
+      --danger: #ff6b6b;
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, rgba(5, 10, 12, 0.94), rgba(10, 14, 15, 1)),
+        repeating-linear-gradient(90deg, rgba(34, 211, 197, 0.05) 0 1px, transparent 1px 104px);
+      font-family: "Inter", "Segoe UI", Arial, Helvetica, sans-serif;
+    }}
+    body[data-page="gateway-workspace"][data-theme="light"] {{
+      color-scheme: light;
+      --border: rgba(45, 64, 75, 0.18);
+      --ink: #16242a;
+      --muted: #536873;
+      --panel: rgba(255, 255, 255, 0.9);
+      --accent: #087f86;
+      --accent-strong: #0c8b5f;
+      --warning: #a96f00;
+      --danger: #c23b3b;
+      background:
+        linear-gradient(180deg, rgba(246, 250, 250, 0.98), rgba(228, 237, 239, 1)),
+        repeating-linear-gradient(90deg, rgba(8, 127, 134, 0.06) 0 1px, transparent 1px 104px);
+    }}
+    body[data-page="gateway-workspace"] header {{
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid var(--border);
+      background: rgba(8, 14, 16, 0.9);
+      backdrop-filter: blur(14px);
+      padding: 18px clamp(18px, 3vw, 38px);
+    }}
+    body[data-page="gateway-workspace"][data-theme="light"] header {{
+      background: rgba(248, 252, 252, 0.92);
+    }}
+    body[data-page="gateway-workspace"] main {{
+      width: 100%;
+      max-width: none;
+      padding: clamp(16px, 2.5vw, 32px);
+      display: grid;
+      gap: 18px;
+    }}
+    body[data-page="gateway-workspace"] section {{
+      border-bottom: 0;
+      padding: 0;
+    }}
+    body[data-page="gateway-workspace"] h1 {{
+      font-size: clamp(24px, 3vw, 38px);
+      line-height: 1;
+      letter-spacing: 0;
+    }}
+    body[data-page="gateway-workspace"] h2,
+    body[data-page="gateway-workspace"] h3 {{
+      margin: 0;
+      color: #f7ffff;
+      letter-spacing: 0;
+    }}
+    body[data-page="gateway-workspace"][data-theme="light"] h1,
+    body[data-page="gateway-workspace"][data-theme="light"] h2,
+    body[data-page="gateway-workspace"][data-theme="light"] h3 {{
+      color: #122329;
+    }}
+    body[data-page="gateway-workspace"] h2 {{
+      font-size: 18px;
+    }}
+    body[data-page="gateway-workspace"] .eyebrow {{
+      display: block;
+      margin-bottom: 6px;
+      color: var(--accent-strong);
+      font: 700 11px/1.2 "JetBrains Mono", Consolas, monospace;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }}
+    body[data-page="gateway-workspace"] #identity {{
+      color: var(--muted);
+      font: 600 12px/1.2 "JetBrains Mono", Consolas, monospace;
+    }}
+    body[data-page="gateway-workspace"] button,
+    body[data-page="gateway-workspace"] .button {{
+      border-color: rgba(34, 211, 197, 0.55);
+      border-radius: 6px;
+      color: #031314;
+      background: var(--accent);
+      box-shadow: 0 0 0 1px rgba(34, 211, 197, 0.12), 0 12px 26px rgba(34, 211, 197, 0.12);
+    }}
+    body[data-page="gateway-workspace"] button.secondary,
+    body[data-page="gateway-workspace"] .button.secondary {{
+      color: var(--accent);
+      background: rgba(34, 211, 197, 0.08);
+    }}
+    body[data-page="gateway-workspace"] input,
+    body[data-page="gateway-workspace"] select,
+    body[data-page="gateway-workspace"] textarea {{
+      color: var(--ink);
+      border-color: var(--border);
+      background: rgba(4, 12, 14, 0.66);
+    }}
+    body[data-page="gateway-workspace"][data-theme="light"] input,
+    body[data-page="gateway-workspace"][data-theme="light"] select,
+    body[data-page="gateway-workspace"][data-theme="light"] textarea {{
+      background: rgba(255, 255, 255, 0.82);
+    }}
+    body[data-page="gateway-workspace"] pre,
+    .workspace-panel,
+    .point-workbench > .tree-panel,
+    .custom-table-panel,
+    .point-side-panel > .detail-panel {{
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(34, 211, 197, 0.08), rgba(118, 247, 166, 0.03)),
+        rgba(11, 20, 23, 0.86);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }}
+    body[data-page="gateway-workspace"][data-theme="light"] pre,
+    body[data-page="gateway-workspace"][data-theme="light"] .workspace-panel,
+    body[data-page="gateway-workspace"][data-theme="light"] .point-workbench > .tree-panel,
+    body[data-page="gateway-workspace"][data-theme="light"] .custom-table-panel,
+    body[data-page="gateway-workspace"][data-theme="light"] .point-side-panel > .detail-panel {{
+      background:
+        linear-gradient(135deg, rgba(8, 127, 134, 0.08), rgba(12, 139, 95, 0.03)),
+        rgba(255, 255, 255, 0.9);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 14px 34px rgba(23, 42, 49, 0.08);
+    }}
+    .workspace-panel {{
+      display: grid;
+      gap: 16px;
+      padding: 20px;
+    }}
+    .panel-title {{
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: center;
+    }}
+    .compact-title {{
+      margin-bottom: 12px;
+    }}
+    .point-workbench {{
+      min-height: 560px;
+      display: grid;
+      grid-template-columns: minmax(310px, 0.78fr) minmax(520px, 1.45fr) minmax(280px, 0.72fr);
+      gap: 16px;
+      align-items: stretch;
+    }}
+    .point-workbench > .tree-panel,
+    .custom-table-panel,
+    .point-side-panel {{
+      min-height: 0;
+    }}
+    .tree-scroll {{
+      min-height: 420px;
+      max-height: 64vh;
+      overflow: auto;
+      padding-right: 4px;
+    }}
+    .tree-view {{
+      font-family: "JetBrains Mono", Consolas, "Courier New", monospace;
+      font-size: 12px;
+    }}
+    .tree-row {{
+      grid-template-columns: 26px 26px minmax(0, 1fr) auto 30px;
+      min-height: 32px;
+      border-radius: 6px;
+      padding: 4px 7px 4px calc(7px + (var(--depth) * 18px));
+      color: var(--ink);
+    }}
+    body[data-page="gateway-workspace"] .tree-row:hover {{
+      color: #ffffff;
+      background: rgba(34, 211, 197, 0.12);
+    }}
+    body[data-page="gateway-workspace"][data-theme="light"] .tree-row:hover {{
+      color: #122329;
+      background: rgba(8, 127, 134, 0.1);
+    }}
+    .tree-add-point {{
+      width: auto;
+      min-height: 26px;
+      padding: 0 8px;
+      justify-content: center;
+      opacity: 0;
+      font-size: 11px;
+    }}
+    .tree-row:hover .tree-add-point,
+    .tree-add-point:focus {{
+      opacity: 1;
+    }}
+    .tree-row:not([data-kind="point"]) .tree-add-point {{
+      visibility: hidden;
+    }}
+    .node-icon {{
+      color: var(--accent);
+      font-weight: 900;
+    }}
+    .node-meta {{
+      color: var(--muted);
+      font: 600 11px/1.2 "JetBrains Mono", Consolas, monospace;
+    }}
+    .custom-table-panel {{
+      padding: 16px;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 12px;
+    }}
+    .custom-table-panel .toolbar {{
+      justify-content: flex-end;
+    }}
+    .custom-table-panel .toolbar select,
+    .custom-table-panel .toolbar input {{
+      width: auto;
+      min-width: 150px;
+    }}
+    .point-table-name {{
+      max-width: 220px;
+    }}
+    .custom-table-panel.drag-over {{
+      outline: 2px solid var(--accent);
+      outline-offset: -6px;
+    }}
+    .point-table-wrap {{
+      min-height: 360px;
+      overflow: auto;
+    }}
+    .point-table th,
+    .point-table td {{
+      white-space: nowrap;
+    }}
+    .point-table td:first-child {{
+      min-width: 220px;
+      white-space: normal;
+    }}
+    .point-table td:first-child strong,
+    .point-table td:first-child span {{
+      display: block;
+    }}
+    .empty-table-cell {{
+      height: 220px;
+      color: var(--muted);
+      text-align: center;
+      vertical-align: middle;
+      font: 700 13px/1.4 "JetBrains Mono", Consolas, monospace;
+    }}
+    .property-picker {{
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }}
+    .property-options {{
+      max-height: 180px;
+      overflow: auto;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+      margin-bottom: 12px;
+    }}
+    .property-option {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--ink);
+      margin: 0;
+      font-weight: 600;
+    }}
+    .property-option input {{
+      width: 16px;
+      min-height: 16px;
+      accent-color: var(--accent);
+    }}
+    .point-side-panel {{
+      display: grid;
+      gap: 12px;
+      align-content: start;
     }}
     body[data-page="app"] {{
       color-scheme: dark;
@@ -3358,9 +4138,12 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
         justify-self: start;
       }}
       .grid {{ grid-template-columns: 1fr; }}
-      .span-2, .span-3, .span-4, .span-6, .span-12 {{ grid-column: span 1; }}
+      .span-1, .span-2, .span-3, .span-4, .span-6, .span-12 {{ grid-column: span 1; }}
       table {{ display: block; overflow-x: auto; white-space: nowrap; }}
       .tree-shell {{ grid-template-columns: 1fr; }}
+      .point-workbench {{ grid-template-columns: 1fr; }}
+      .tree-scroll {{ max-height: 420px; }}
+      .property-options {{ grid-template-columns: 1fr; }}
       .command-strip,
       .gateway-toolbar {{
         grid-template-columns: 1fr;
@@ -3663,6 +4446,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
     <h1 id="gateway-title">Gateway Workspace</h1>
     <div class="toolbar">
       <span id="identity"></span>
+      <button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Light Mode</button>
       <a class="button secondary" href="/app">Dashboard</a>
       <button id="logout" class="secondary" type="button">Logout</button>
     </div>
@@ -3742,28 +4526,93 @@ def gateway_workspace_html(gateway_id: str) -> str:
         </div>
       </form>
     </section>
-    <section>
-      <h2>Imported Commissioning Model</h2>
-      <div class="notice">Use the edge commissioning UI for BACnet discovery and point selection, then import the approved JSON template here.</div>
+    <section class="workspace-panel">
+      <div class="panel-title">
+        <div>
+          <span class="eyebrow">Point Workspace</span>
+          <h2>Imported Commissioning Model</h2>
+        </div>
+        <span id="custom-point-table-count" class="panel-counter">0 points</span>
+      </div>
+      <ol class="workflow-steps">
+        <li>Import a JSON template or CSV point list into the saved tree.</li>
+        <li>Open a device folder and use <strong>Add</strong> to place points in the active table. Checkboxes are only for bulk actions.</li>
+        <li>Name the table, choose visible columns, then save the table view. Trend setup is next.</li>
+      </ol>
       <form id="import-template-form" class="grid">
-        <div class="span-6">
-          <label for="template-file">Edge commissioning template JSON</label>
-          <input id="template-file" type="file" accept="application/json,.json" required>
+        <div class="span-4">
+          <label for="template-file">Point template or CSV</label>
+          <input id="template-file" type="file" accept="application/json,.json,text/csv,.csv" required>
+        </div>
+        <div class="span-2">
+          <label for="csv-group-name">CSV group</label>
+          <input id="csv-group-name" type="text" maxlength="120" value="HVAC">
+        </div>
+        <div class="span-2">
+          <label for="csv-device-instance">CSV controller instance</label>
+          <input id="csv-device-instance" type="number" min="0" step="1" placeholder="190263">
         </div>
         <div class="span-3">
+          <label for="csv-device-name">CSV controller name</label>
+          <input id="csv-device-name" type="text" maxlength="255" placeholder="Controller name">
+        </div>
+        <div class="span-1">
           <button type="submit">Import template</button>
         </div>
       </form>
       <div id="import-result" class="detail-panel compact-panel" hidden></div>
-      <div class="tree-shell">
-        <div id="tree" class="tree-panel">Loading...</div>
-        <aside>
+      <div class="point-workbench">
+        <div class="tree-panel">
+          <div class="panel-title compact-title">
+            <div>
+              <span class="eyebrow">Saved Tree</span>
+              <h2>Groups / Devices / Points</h2>
+            </div>
+          </div>
+          <div id="tree" class="tree-scroll">Loading...</div>
+        </div>
+        <div id="custom-point-table-dropzone" class="custom-table-panel">
+          <div class="panel-title compact-title">
+            <div>
+              <span class="eyebrow">Custom Table</span>
+              <h2 id="active-point-table-title">New Table View</h2>
+            </div>
+            <div class="toolbar">
+              <select id="saved-point-table-select" aria-label="Saved point tables"></select>
+              <input id="point-table-name" class="point-table-name" type="text" maxlength="80" value="New Table View" aria-label="Point table name">
+              <button id="save-point-table" type="button">Save table</button>
+              <button id="new-point-table" class="secondary" type="button">New</button>
+              <button id="edit-point-columns" class="secondary" type="button">Columns</button>
+              <button id="clear-custom-point-table" class="secondary" type="button" disabled>Clear</button>
+            </div>
+          </div>
+          <div class="table-wrap point-table-wrap">
+            <table class="gateway-table point-table">
+              <thead id="custom-point-table-head"></thead>
+              <tbody id="custom-point-table-body"></tbody>
+            </table>
+          </div>
+          <div id="property-picker" class="property-picker" hidden>
+            <div class="panel-title compact-title">
+              <h2>Visible Property Columns</h2>
+            </div>
+            <div id="property-picker-options" class="property-options"></div>
+            <div class="toolbar">
+              <button id="apply-point-columns" type="button">Apply</button>
+              <button id="cancel-point-columns" class="secondary" type="button">Cancel</button>
+            </div>
+          </div>
+        </div>
+        <aside class="point-side-panel">
           <div id="tree-details" class="detail-panel" hidden></div>
           <div id="selected-points-panel" class="detail-panel" hidden>
             <h2>Selected Imported Points</h2>
             <div id="selected-points-count" class="notice">No saved points selected.</div>
             <ul id="selected-points-list" class="selected-point-list"></ul>
-            <button id="remove-selected-points" class="secondary" type="button" disabled>Remove selected points</button>
+            <div class="toolbar">
+              <button id="add-selected-to-custom-table" type="button" disabled>Add to table</button>
+              <button id="remove-selected-points" class="secondary" type="button" disabled>Remove selected</button>
+            </div>
           </div>
         </aside>
       </div>
