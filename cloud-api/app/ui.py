@@ -1473,11 +1473,16 @@ APP_SCRIPT = r"""
     }
     for (const job of jobs) {
       const item = document.createElement("li");
+      const detail = job.error_message || job.result_json?.error || job.result_json?.message || "";
       item.innerHTML = `
         <span>${escapeHtml(job.status)}</span>
         <strong>${escapeHtml(job.gateway_id)}</strong>
         <em>${escapeHtml(job.job_type)}</em>
+        ${detail ? `<small>${escapeHtml(detail)}</small>` : ""}
       `;
+      if (detail) {
+        item.title = detail;
+      }
       list.appendChild(item);
     }
   }
@@ -4333,8 +4338,8 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       color: #e7f6f7;
       background: transparent;
     }}
-    body[data-page="app"][data-theme="light"] .gateway-table th,
-    body[data-page="app"][data-theme="light"] .gateway-table td {{
+    body[data-theme="light"] .gateway-table th,
+    body[data-theme="light"] .gateway-table td {{
       color: #1d3037;
       border-bottom-color: rgba(45, 64, 75, 0.13);
     }}
@@ -4407,6 +4412,9 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       background: rgba(4, 12, 14, 0.46);
       font: 600 12px/1.2 "JetBrains Mono", Consolas, monospace;
     }}
+    .event-ticker li:has(small) {{
+      grid-template-columns: 90px 110px minmax(120px, 0.8fr) minmax(160px, 1.4fr);
+    }}
     body[data-page="app"][data-theme="light"] .event-ticker li {{
       color: #1d3037;
       background: rgba(255, 255, 255, 0.66);
@@ -4417,11 +4425,15 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       text-transform: uppercase;
     }}
     .event-ticker strong,
-    .event-ticker em {{
+    .event-ticker em,
+    .event-ticker small {{
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       font-style: normal;
+    }}
+    .event-ticker small {{
+      color: var(--danger);
     }}
     @media (max-width: 1080px) {{
       .command-strip {{
