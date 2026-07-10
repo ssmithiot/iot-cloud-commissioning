@@ -547,8 +547,7 @@ def sudo_systemctl_timeout(action: str, service: str, timeout_sec: int = 30) -> 
 
 def stop_edge_ui_command() -> str:
     script = (
-        "timeout -k 5s 20s sudo -S -p '' -v || { code=$?; echo \"sudo validation failed or timed out with exit code $code\"; exit $code; }; "
-        "timeout -k 5s 30s sudo -n systemctl stop edge-bacnet-ui.service || true; "
+        "timeout -k 5s 30s sudo -S -p '' systemctl stop edge-bacnet-ui.service || true; "
         "state=\"$(systemctl is-active edge-bacnet-ui.service 2>/dev/null || true)\"; "
         "if [ \"$state\" != \"inactive\" ] && [ \"$state\" != \"failed\" ]; then "
         "echo 'edge-bacnet-ui.service did not stop cleanly; forcing service processes to exit'; "
