@@ -83,6 +83,7 @@ class UpgradeRequest:
     reuse_uploaded_zip: bool = False
     skip_edge_ui_stop: bool = False
     cloud_portal_verified: bool = False
+    selected_phases: tuple[int, ...] = tuple(range(len(PHASES)))
 
 
 @dataclass
@@ -271,6 +272,15 @@ def form_page(message: str = "") -> bytes:
     <label><input type="checkbox" name="skip_edge_ui_stop" value="1"> Edge UI already stopped / skip stop</label>
     <label><input type="checkbox" name="cloud_portal_verified" value="1"> Cloud portal verified</label>
   </div>
+  <div class="wide phase-select">
+    <strong>Processes to run</strong>
+    <button type="button" id="select-all-phases">Select all</button>
+    <button type="button" id="clear-all-phases">Clear all</button>
+    <div class="phase-options">
+      {''.join(f'<label><input type="checkbox" name="selected_phases" value="{i}" checked> {escape(name)}</label>' for i, name in enumerate(PHASES))}
+    </div>
+    <span class="hint">All processes are selected by default. Use this for targeted reruns only.</span>
+  </div>
   <div class="wide">
     <button id="start-button" type="submit">Start inspect</button>
   </div>
@@ -297,6 +307,9 @@ const continueButton = document.getElementById("continue-button");
 const rollbackButton = document.getElementById("rollback-button");
 const disableAgentButton = document.getElementById("disable-agent-button");
 const log = document.getElementById("log");
+const phaseChecks = () => [...document.querySelectorAll('input[name="selected_phases"]')];
+document.getElementById("select-all-phases").addEventListener("click", () => phaseChecks().forEach((input) => input.checked = true));
+document.getElementById("clear-all-phases").addEventListener("click", () => phaseChecks().forEach((input) => input.checked = false));
 const phases = document.getElementById("phases");
 let pollTimer = null;
 let jobId = null;
@@ -384,6 +397,8 @@ def parse_bool(fields: dict[str, list[str]], key: str) -> bool:
 
 def parse_upgrade_request(body: bytes) -> UpgradeRequest:
     fields = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+    selected_raw = fields.get("selected_phases")
+    selected_phases = tuple(sorted({int(value) for value in (selected_raw or []) if value.isdigit() and 0 <= int(value) < len(PHASES)}))
     gateway_id = value(fields, "gateway_id")
     ui_password = value(fields, "ui_password")
     if "'" in ui_password:
@@ -408,6 +423,7 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         reuse_uploaded_zip=parse_bool(fields, "reuse_uploaded_zip"),
         skip_edge_ui_stop=parse_bool(fields, "skip_edge_ui_stop"),
         cloud_portal_verified=parse_bool(fields, "cloud_portal_verified"),
+        selected_phases=selected_phases,
     )
     required = [
         ("Gateway number", request.gateway_id),
@@ -1207,6 +1223,11 @@ def run_until_checkpoint(job_id: str) -> None:
                     job.status = "complete"
                     runner.close()
                     return
+                if next_phase not in runner.request.selected_phases:
+                    job.phases[next_phase].status = PhaseStatus.SKIPPED
+                    job.phases[next_phase].detail = "Not selected"
+                    job.current_phase = next_phase + 1
+                    continue
             runner.run_phase(next_phase)
             with JOBS_LOCK:
                 status = JOBS[job_id].status
