@@ -438,6 +438,18 @@ class SavedPointsBulkRemoveOut(BaseModel):
     missing_ids: list[str]
 
 
+class SavedPointsReadIn(BaseModel):
+    point_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class SavedPointsReadOut(BaseModel):
+    requested_count: int
+    queued_count: int
+    skipped_count: int
+    job_ids: list[str]
+    missing_ids: list[str]
+
+
 class CommissioningTemplateGroupIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 

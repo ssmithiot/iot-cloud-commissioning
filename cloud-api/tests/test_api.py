@@ -2097,6 +2097,67 @@ def test_ui_gateway_tree_can_store_group_device_and_point() -> None:
     assert tree["points"][0]["property"] == "present-value"
 
 
+def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
+    raw_token = create_gateway_token("GW001")
+    set_gateway_heartbeat("GW001", seconds_ago=15)
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    group_response = client.post("/api/ui/gateways/GW001/groups", headers=headers, json={"name": "HVAC"})
+    device_response = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=headers,
+        json={
+            "group_id": group_response.json()["id"],
+            "device_instance": 1001,
+            "device_name": "AHU-1",
+        },
+    )
+    point_response = client.post(
+        f"/api/ui/devices/{device_response.json()['id']}/points",
+        headers=headers,
+        json={
+            "object_type": "analog-value",
+            "object_instance": 1,
+            "object_name": "Space Temp",
+            "property": "present-value",
+        },
+    )
+
+    read_response = client.post(
+        "/api/ui/gateways/GW001/points/read",
+        headers=headers,
+        json={"point_ids": [point_response.json()["id"]]},
+    )
+    job_id = read_response.json()["job_ids"][0]
+    next_response = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
+    result_response = client.post(
+        f"/api/edge/jobs/{job_id}/result",
+        headers=auth_headers(raw_token),
+        json={
+            "status": "completed",
+            "result": {
+                "job_type": "bacnet_read",
+                "device_instance": 1001,
+                "object_type": "analog-value",
+                "object_instance": 1,
+                "property": "present-value",
+                "value": 72.4,
+                "raw_value": "72.4",
+                "status": "ok",
+            },
+            "error_message": None,
+        },
+    )
+    tree_response = client.get("/api/ui/gateways/GW001/tree", headers=headers)
+
+    assert read_response.status_code == 200
+    assert read_response.json()["queued_count"] == 1
+    assert next_response.status_code == 200
+    assert next_response.json()["request"]["saved_point_id"] == point_response.json()["id"]
+    assert result_response.status_code == 200
+    assert tree_response.json()["points"][0]["present_value"] == "72.4"
+
+
 def test_ui_operator_can_import_edge_commissioning_template() -> None:
     create_gateway_token("GW001")
     user_id = create_operator_user("operator@example.com", role="operator", status="active")

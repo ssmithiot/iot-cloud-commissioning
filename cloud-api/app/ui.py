@@ -1743,6 +1743,56 @@ APP_SCRIPT = r"""
     renderCustomPointTable();
   }
 
+  async function refreshCustomPointValues() {
+    const points = tablePoints();
+    if (!points.length) {
+      setText("status", "Add points to the table before refreshing values.", true);
+      return;
+    }
+    const button = byId("refresh-point-values");
+    if (button) {
+      button.disabled = true;
+    }
+    setText("status", `Queueing ${points.length} point value read(s)...`);
+    try {
+      const result = await api(`/api/ui/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/points/read`, {
+        method: "POST",
+        body: JSON.stringify({ point_ids: points.map((point) => point.id) })
+      });
+      setText("status", `Queued ${result.queued_count} read job(s). Waiting for edge results...`);
+      await pollPointValueReads(result.job_ids || []);
+    } catch (error) {
+      setText("status", errorMessage(error), true);
+    } finally {
+      if (button) {
+        button.disabled = false;
+      }
+    }
+  }
+
+  async function pollPointValueReads(jobIds) {
+    const waiting = new Set(jobIds);
+    const startedAt = Date.now();
+    while (waiting.size && Date.now() - startedAt < 120000) {
+      const jobs = await api("/api/edge/jobs?limit=200");
+      for (const job of jobs) {
+        if (waiting.has(job.job_id) && ["completed", "failed", "deferred"].includes(job.status)) {
+          waiting.delete(job.job_id);
+        }
+      }
+      await loadGatewayWorkspace();
+      if (waiting.size) {
+        setText("status", `Waiting on ${waiting.size} point read job(s)...`);
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+      }
+    }
+    if (waiting.size) {
+      setText("status", `${waiting.size} point read job(s) still pending. Values will fill in as the edge completes them.`, true);
+      return;
+    }
+    setText("status", "Point values refreshed.");
+  }
+
   function renderCustomPointTable() {
     const body = byId("custom-point-table-body");
     const head = byId("custom-point-table-head");
@@ -1755,6 +1805,10 @@ APP_SCRIPT = r"""
     count.textContent = `${points.length} point${points.length === 1 ? "" : "s"}`;
     if (removeAll) {
       removeAll.disabled = !points.length;
+    }
+    const refreshButton = byId("refresh-point-values");
+    if (refreshButton) {
+      refreshButton.disabled = !points.length;
     }
     head.innerHTML = `
       <tr>
@@ -2477,6 +2531,7 @@ APP_SCRIPT = r"""
     removeSelectedPointsButton.addEventListener("click", removeSelectedSavedPoints);
     addSelectedToCustomTableButton.addEventListener("click", addSelectedPointsToCustomTable);
     clearCustomPointTableButton.addEventListener("click", clearCustomPointTable);
+    byId("refresh-point-values").addEventListener("click", refreshCustomPointValues);
     byId("save-point-table").addEventListener("click", saveActivePointTableName);
     byId("new-point-table").addEventListener("click", newPointTable);
     byId("saved-point-table-select").addEventListener("change", (event) => {
@@ -3171,7 +3226,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .point-workbench {{
       min-height: 560px;
       display: grid;
-      grid-template-columns: minmax(310px, 0.78fr) minmax(520px, 1.45fr) minmax(280px, 0.72fr);
+      grid-template-columns: minmax(190px, 0.38fr) minmax(680px, 2.2fr) minmax(220px, 0.45fr);
       gap: 16px;
       align-items: stretch;
     }}
@@ -3179,6 +3234,18 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .custom-table-panel,
     .point-side-panel {{
       min-height: 0;
+    }}
+    .point-workbench > .tree-panel {{
+      min-width: 170px;
+      max-width: 520px;
+      resize: horizontal;
+      overflow: auto;
+    }}
+    .point-side-panel {{
+      min-width: 200px;
+      max-width: 480px;
+      resize: horizontal;
+      overflow: auto;
     }}
     .tree-scroll {{
       min-height: 420px;
@@ -3191,10 +3258,10 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       font-size: 12px;
     }}
     .tree-row {{
-      grid-template-columns: 26px 26px minmax(0, 1fr) auto 30px;
+      grid-template-columns: 18px 20px minmax(0, 1fr) auto auto;
       min-height: 32px;
       border-radius: 6px;
-      padding: 4px 7px 4px calc(7px + (var(--depth) * 18px));
+      padding: 4px 6px 4px calc(6px + (var(--depth) * 14px));
       color: var(--ink);
     }}
     body[data-page="gateway-workspace"] .tree-row:hover {{
@@ -3208,7 +3275,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .tree-add-point {{
       width: auto;
       min-height: 26px;
-      padding: 0 8px;
+      padding: 0 7px;
       justify-content: center;
       opacity: 0;
       font-size: 11px;
@@ -4581,6 +4648,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
               <select id="saved-point-table-select" aria-label="Saved point tables"></select>
               <input id="point-table-name" class="point-table-name" type="text" maxlength="80" value="New Table View" aria-label="Point table name">
               <button id="save-point-table" type="button">Save table</button>
+              <button id="refresh-point-values" type="button" disabled>Refresh values</button>
               <button id="new-point-table" class="secondary" type="button">New</button>
               <button id="edit-point-columns" class="secondary" type="button">Columns</button>
               <button id="clear-custom-point-table" class="secondary" type="button" disabled>Clear</button>

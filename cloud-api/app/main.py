@@ -74,6 +74,8 @@ from app.schemas import (
     SavedPointIn,
     SavedPointOut,
     SavedPointPatchIn,
+    SavedPointsReadIn,
+    SavedPointsReadOut,
     SavedPointsBulkRemoveIn,
     SavedPointsBulkRemoveOut,
     SiteOut,
@@ -1621,6 +1623,56 @@ def ui_bulk_remove_points(
         missing_ids=missing_ids,
     )
 
+@app.post("/api/ui/gateways/{gateway_id}/points/read", response_model=SavedPointsReadOut)
+def ui_read_saved_points(
+    gateway_id: str,
+    payload: SavedPointsReadIn,
+    _: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> SavedPointsReadOut:
+    edge_node = _get_gateway_or_404(db, gateway_id)
+    _require_online_gateway(edge_node)
+    point_ids = [_tree_id(point_id) for point_id in payload.point_ids]
+    points = list(
+        db.scalars(
+            select(SavedBacnetPoint)
+            .where(
+                SavedBacnetPoint.id.in_(point_ids),
+                SavedBacnetPoint.gateway_id == gateway_id,
+                SavedBacnetPoint.enabled.is_(True),
+            )
+            .order_by(SavedBacnetPoint.device_instance, SavedBacnetPoint.object_type, SavedBacnetPoint.object_instance)
+        ).all()
+    )
+    points_by_id = {str(point.id): point for point in points}
+    missing_ids = [point_id for point_id in payload.point_ids if _tree_id(point_id) not in points_by_id]
+    job_ids: list[str] = []
+    for point in points:
+        job = EdgeJob(
+            job_id=f"job-{uuid4().hex}",
+            gateway_id=gateway_id,
+            job_type="bacnet_read",
+            status="queued",
+            request_json={
+                "saved_point_id": str(point.id),
+                "device_instance": point.device_instance,
+                "object_type": point.object_type,
+                "object_instance": point.object_instance,
+                "property": "present-value",
+            },
+        )
+        db.add(job)
+        job_ids.append(job.job_id)
+    db.commit()
+    return SavedPointsReadOut(
+        requested_count=len(payload.point_ids),
+        queued_count=len(job_ids),
+        skipped_count=len(missing_ids),
+        job_ids=job_ids,
+        missing_ids=missing_ids,
+    )
+
+
 
 @app.patch("/api/ui/points/{point_id}", response_model=SavedPointOut)
 def ui_patch_point(
@@ -1999,6 +2051,15 @@ def receive_job_result(
     job.result_json = payload.result
     job.error_message = payload.error_message
     job.completed_at = utc_now()
+    if job.job_type == "bacnet_read" and payload.status == "completed" and isinstance(payload.result, dict):
+        saved_point_id = job.request_json.get("saved_point_id") if isinstance(job.request_json, dict) else None
+        value = payload.result.get("value", payload.result.get("raw_value"))
+        if isinstance(saved_point_id, str) and value is not None:
+            point = db.get(SavedBacnetPoint, _tree_id(saved_point_id))
+            if point is not None and point.gateway_id == job.gateway_id:
+                point.present_value = str(value)
+                point.latest_read_at = utc_now()
+                point.updated_at = utc_now()
     db.commit()
     db.refresh(job)
     return job
