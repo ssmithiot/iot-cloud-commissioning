@@ -3435,6 +3435,18 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .tree-row[data-kind="folder"] {{
       font-weight: 700;
     }}
+    .tree-row[data-kind="folder"] .node-label,
+    .tree-row[data-kind="device"] .node-label {{
+      color: #ecfeff;
+    }}
+    .tree-row[data-kind="point"] .node-label {{
+      color: #e7f6f7;
+    }}
+    body[data-theme="light"] .tree-row[data-kind="folder"] .node-label,
+    body[data-theme="light"] .tree-row[data-kind="device"] .node-label,
+    body[data-theme="light"] .tree-row[data-kind="point"] .node-label {{
+      color: #122329;
+    }}
     .tree-row[data-kind="point"] {{
       font-weight: 500;
     }}
