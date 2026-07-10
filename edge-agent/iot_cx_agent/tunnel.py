@@ -153,7 +153,7 @@ def handle_tunnel_message(config: AgentConfig, message: dict[str, object]) -> di
             url,
             headers=forwarded_headers,
             data=base64.b64decode(body_b64),
-            timeout=30,
+            timeout=config.tunnel_request_timeout_sec,
             allow_redirects=False,
         )
         logger.warning(

@@ -217,6 +217,10 @@ class TunnelStatusOut(BaseModel):
     status: str
 
 
+class TunnelSessionCreateIn(BaseModel):
+    ttl_minutes: int = Field(default=5, ge=5, le=60)
+
+
 class TunnelSessionOut(BaseModel):
     url: str
 

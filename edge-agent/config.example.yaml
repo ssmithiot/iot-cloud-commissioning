@@ -3,18 +3,31 @@ site_id: UNPROVISIONED
 cloud_url: http://localhost:8000
 tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
+# Maximum time for a cloud-relayed request to complete at the local gateway UI.
+# The WebSocket connection/reconnect timeout remains 30 seconds.
+tunnel_request_timeout_sec: 900
 # Prefer setting GATEWAY_API_TOKEN in the environment instead of this file.
 # gateway_api_token: iotcc_gw_<token_prefix>_<secret>
+# Router profiles:
+# - contemporary or basrtb: Contemporary Controls / BASRT-B commissioning on UDP 47814.
+# - bac-rtr: BAC-RTR commissioning on UDP 47809.
+# - custom: use bacnet.default_port or BACNET_IP_PORT exactly.
+# BACNET_IP_PORT in the service environment overrides these profile defaults.
 bacnet_default_port: 47814
 heartbeat_interval_sec: 30
 agent_version: 0.1.0
 ui_version: 0.1.0
 bacnet:
+  router_profile: contemporary
   default_port: 47814
   bacwi_path: bacwi
   bacrp_path: bacrp
   bacrpm_path: bacrpm
-  lock_path: /tmp/iot-cloud-commissioning-bacnet-47814.lock
+  # Omit lock_path for the standard per-port lock:
+  # /tmp/iot-edge-bacnet-<port>.lock
+  # Or set lock_path to a directory for custom per-port lock files.
   timeout_sec: 10
+  lock_timeout_sec: 30
+  lock_stale_sec: 120
 # For local development, override the default /var/lib/iot-cx-agent/edge.db:
 # sqlite_path: ./edge.db

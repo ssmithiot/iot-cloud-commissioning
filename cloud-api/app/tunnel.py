@@ -135,13 +135,14 @@ class TunnelSessionManager:
         self.ttl_seconds = ttl_seconds
         self._sessions: dict[str, TunnelConsoleSession] = {}
 
-    def create(self, *, gateway_id: str, subject: str) -> TunnelConsoleSession:
+    def create(self, *, gateway_id: str, subject: str, ttl_seconds: int | None = None) -> TunnelConsoleSession:
         self._expire_old()
+        session_ttl = self.ttl_seconds if ttl_seconds is None else max(300, min(3600, int(ttl_seconds)))
         session = TunnelConsoleSession(
             session_id=secrets.token_urlsafe(32),
             gateway_id=gateway_id,
             subject=subject,
-            expires_at=datetime.now(timezone.utc) + timedelta(seconds=self.ttl_seconds),
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=session_ttl),
         )
         self._sessions[session.session_id] = session
         return session

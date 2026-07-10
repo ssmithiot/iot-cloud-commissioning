@@ -13,7 +13,7 @@ from urllib.request import urlopen
 from uuid import UUID
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
@@ -81,6 +81,7 @@ from app.schemas import (
     SiteOut,
     SiteUpdate,
     SiteWeatherOut,
+    TunnelSessionCreateIn,
     TunnelSessionOut,
     TunnelStatusOut,
 )
@@ -1147,6 +1148,7 @@ def ui_gateway_tunnel_status(
 @app.post("/api/ui/gateways/{gateway_id}/tunnel-session", response_model=TunnelSessionOut)
 def ui_create_gateway_tunnel_session(
     gateway_id: str,
+    payload: TunnelSessionCreateIn | None = Body(default=None),
     auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> TunnelSessionOut:
@@ -1154,7 +1156,10 @@ def ui_create_gateway_tunnel_session(
     if not tunnel_manager.is_connected(gateway_id):
         raise HTTPException(status_code=503, detail="Gateway tunnel is not connected")
     subject = auth.email or auth.auth_type
-    session = tunnel_session_manager.create(gateway_id=gateway_id, subject=subject)
+    session_kwargs = {"gateway_id": gateway_id, "subject": subject}
+    if payload is not None:
+        session_kwargs["ttl_seconds"] = payload.ttl_minutes * 60
+    session = tunnel_session_manager.create(**session_kwargs)
     return TunnelSessionOut(url=f"{_tunnel_session_prefix(gateway_id, session.session_id)}/")
 
 

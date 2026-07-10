@@ -2930,6 +2930,7 @@ APP_SCRIPT = r"""
       }
       const openTunnelButton = byId("open-tunnel-console");
       const tunnelFallback = byId("tunnel-session-link");
+      const tunnelTtl = byId("tunnel-ttl-minutes");
       openTunnelButton.disabled = !tunnelStatus.connected;
       openTunnelButton.addEventListener("click", async () => {
         openTunnelButton.disabled = true;
@@ -2938,7 +2939,10 @@ APP_SCRIPT = r"""
         const tunnelWindow = window.open("about:blank", "_blank");
         setText("status", "Creating short-lived tunnel console session...");
         try {
-          const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST" });
+          const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, {
+            method: "POST",
+            body: JSON.stringify({ ttl_minutes: Number(tunnelTtl?.value || 5) })
+          });
           if (tunnelWindow) {
             try {
               tunnelWindow.opener = null;
@@ -5565,6 +5569,13 @@ def tunnel_console_html(gateway_id: str) -> str:
         Open a short-lived authenticated tunnel session in a new tab for the full gateway UI.
       </div>
       <div class="toolbar">
+        <label for="tunnel-ttl-minutes">Session time</label>
+        <select id="tunnel-ttl-minutes" aria-label="Tunnel session time">
+          <option value="5" selected>5 minutes</option>
+          <option value="15">15 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="60">60 minutes</option>
+        </select>
         <button id="open-tunnel-console" type="button" disabled>Open Tunnel Console</button>
         <a id="tunnel-session-link" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>Popup blocked? Open tunnel manually</a>
       </div>

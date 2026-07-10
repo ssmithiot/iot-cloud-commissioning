@@ -28,6 +28,9 @@ class AgentConfig:
     cloud_url: str
     tunnel_enabled: bool = True
     local_ui_url: str = "http://127.0.0.1:5000"
+    # Maximum time allowed for a relayed request to the gateway-local UI.
+    # This is intentionally independent from the WebSocket connect timeout.
+    tunnel_request_timeout_sec: float = 900.0
     bacnet_router_profile: str = "contemporary"
     bacnet_default_port: int = DEFAULT_BACNET_PORT
     bacwi_path: str = "bacwi"
@@ -125,6 +128,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         cloud_url=str(raw["cloud_url"]).rstrip("/"),
         tunnel_enabled=bool(raw.get("tunnel_enabled", True)),
         local_ui_url=str(raw.get("local_ui_url", "http://127.0.0.1:5000")).rstrip("/"),
+        tunnel_request_timeout_sec=float(raw.get("tunnel_request_timeout_sec", 900)),
         bacnet_router_profile=profile,
         bacnet_default_port=bacnet_port,
         bacwi_path=str(bacnet.get("bacwi_path", "bacwi")),
