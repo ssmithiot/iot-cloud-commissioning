@@ -816,6 +816,127 @@ APP_SCRIPT = r"""
     }
   }
 
+  function refreshDashboardMapSize() {
+    window.requestAnimationFrame(() => {
+      if (roadMap) {
+        roadMap.invalidateSize({ pan: false });
+      }
+      if (dashboardGateways.length) {
+        renderGatewayMap(sortedDashboardGateways());
+      }
+    });
+  }
+
+  function initDashboardWorkspace() {
+    const workspace = byId("dashboard-workspace");
+    const context = byId("dashboard-context");
+    const columnSplitter = byId("dashboard-column-splitter");
+    const rowSplitter = byId("dashboard-row-splitter");
+    if (!workspace || !context || !columnSplitter || !rowSplitter || workspace.dataset.splittersReady === "true") {
+      return;
+    }
+    workspace.dataset.splittersReady = "true";
+    const storageKey = "iot-cloud-dashboard-workspace";
+    let listPercent = 75;
+    let mapPercent = 58;
+
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
+      if (Number.isFinite(Number(saved.listPercent))) {
+        listPercent = Number(saved.listPercent);
+      }
+      if (Number.isFinite(Number(saved.mapPercent))) {
+        mapPercent = Number(saved.mapPercent);
+      }
+    } catch {
+      // Ignore split layout storage failures.
+    }
+
+    function persistLayout() {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify({
+          listPercent: Math.round(listPercent * 10) / 10,
+          mapPercent: Math.round(mapPercent * 10) / 10
+        }));
+      } catch {
+        // Ignore split layout storage failures.
+      }
+    }
+
+    function setListPercent(value, persist = false) {
+      listPercent = Math.max(50, Math.min(80, value));
+      workspace.style.setProperty("--registry-pane-width", `${listPercent}%`);
+      columnSplitter.setAttribute("aria-valuenow", String(Math.round(listPercent)));
+      if (persist) {
+        persistLayout();
+      }
+      refreshDashboardMapSize();
+    }
+
+    function setMapPercent(value, persist = false) {
+      mapPercent = Math.max(38, Math.min(72, value));
+      context.style.setProperty("--map-pane-height", `${mapPercent}%`);
+      rowSplitter.setAttribute("aria-valuenow", String(Math.round(mapPercent)));
+      if (persist) {
+        persistLayout();
+      }
+      refreshDashboardMapSize();
+    }
+
+    function dragSplitter(splitter, axis, container, setter) {
+      splitter.addEventListener("pointerdown", (event) => {
+        if (window.matchMedia("(max-width: 1200px)").matches) {
+          return;
+        }
+        event.preventDefault();
+        splitter.setPointerCapture(event.pointerId);
+        const bounds = container.getBoundingClientRect();
+        const handleMove = (moveEvent) => {
+          const value = axis === "x"
+            ? ((moveEvent.clientX - bounds.left) / bounds.width) * 100
+            : ((moveEvent.clientY - bounds.top) / bounds.height) * 100;
+          setter(value);
+        };
+        const stopMove = () => {
+          splitter.removeEventListener("pointermove", handleMove);
+          splitter.removeEventListener("pointerup", stopMove);
+          splitter.removeEventListener("pointercancel", stopMove);
+          persistLayout();
+        };
+        splitter.addEventListener("pointermove", handleMove);
+        splitter.addEventListener("pointerup", stopMove);
+        splitter.addEventListener("pointercancel", stopMove);
+      });
+    }
+
+    dragSplitter(columnSplitter, "x", workspace, setListPercent);
+    dragSplitter(rowSplitter, "y", context, setMapPercent);
+
+    columnSplitter.addEventListener("keydown", (event) => {
+      if (!["ArrowLeft", "ArrowRight", "Home"].includes(event.key)) {
+        return;
+      }
+      event.preventDefault();
+      setListPercent(event.key === "Home" ? 75 : listPercent + (event.key === "ArrowRight" ? 2 : -2), true);
+    });
+    rowSplitter.addEventListener("keydown", (event) => {
+      if (!["ArrowUp", "ArrowDown", "Home"].includes(event.key)) {
+        return;
+      }
+      event.preventDefault();
+      setMapPercent(event.key === "Home" ? 58 : mapPercent + (event.key === "ArrowDown" ? 2 : -2), true);
+    });
+    columnSplitter.addEventListener("dblclick", () => setListPercent(75, true));
+    rowSplitter.addEventListener("dblclick", () => setMapPercent(58, true));
+    window.addEventListener("resize", () => {
+      setListPercent(listPercent);
+      refreshDashboardMapSize();
+    });
+
+    setListPercent(listPercent);
+    setMapPercent(mapPercent);
+  }
+
   async function renderUsaMapBase() {
     const svg = byId("usa-map-base");
     if (!svg || svg.dataset.loaded === "true") {
@@ -1045,6 +1166,7 @@ APP_SCRIPT = r"""
   async function initDashboard() {
     initThemeToggle();
     setupMapControls();
+    initDashboardWorkspace();
     const me = await initProtectedPage(null);
     if (!me) {
       return;
@@ -2505,6 +2627,30 @@ APP_SCRIPT = r"""
     setFieldValue("network-status-notes", site.network_status_notes);
     byId("tunnel-status").textContent = tunnelStatus.connected ? "connected" : "not connected";
 
+    const summaryName = byId("site-summary-name");
+    const summaryAddress = byId("site-summary-address");
+    const summaryLocation = byId("site-summary-location");
+    const summaryCoordinates = byId("site-summary-coordinates");
+    const summaryNetwork = byId("site-summary-network");
+    const summaryHours = byId("site-summary-hours");
+    const address = [site.address_street || site.address, site.address_city, site.address_state, site.address_postal_code]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(", ");
+    const coordinates = site.latitude != null && site.longitude != null
+      ? `${site.latitude}, ${site.longitude}`
+      : "Not configured";
+    const network = site.direct_connect_host
+      ? `${site.direct_connect_host}:${site.direct_connect_port || 5002}`
+      : "Direct Connect not configured";
+    const hours = site.store_hours_monday_friday || site.store_hours_mf || "Not configured";
+    if (summaryName) summaryName.textContent = site.name || site.site_id || "Unnamed site";
+    if (summaryAddress) summaryAddress.textContent = address || "No address configured";
+    if (summaryLocation) summaryLocation.textContent = [site.address_city, site.address_state, site.address_postal_code].filter(Boolean).join(", ") || "Not configured";
+    if (summaryCoordinates) summaryCoordinates.textContent = coordinates;
+    if (summaryNetwork) summaryNetwork.textContent = network;
+    if (summaryHours) summaryHours.textContent = hours;
+
     const directLink = byId("direct-connect-link");
     const directStatus = byId("direct-connect-status");
     if (directConnect.available && directConnect.url && currentUser && currentUser.role !== "viewer") {
@@ -2534,6 +2680,10 @@ APP_SCRIPT = r"""
     const groupForm = byId("group-form");
     const importTemplateForm = byId("import-template-form");
     const siteInfoForm = byId("site-info-form");
+    const siteInfoModal = byId("site-info-modal");
+    const editSiteInfoButton = byId("edit-site-info");
+    const closeSiteInfoButton = byId("close-site-info");
+    const cancelSiteInfoButton = byId("cancel-site-info");
     const discoverButton = byId("discover-devices");
     const saveSelectedPointsButton = byId("save-selected-points");
     const selectAllPointsButton = byId("select-all-point-candidates");
@@ -2551,6 +2701,28 @@ APP_SCRIPT = r"""
       technicalSection.hidden = false;
     }
     const canEditSite = me.role === "admin";
+    const setSiteInfoModalOpen = (open) => {
+      if (!siteInfoModal) return;
+      siteInfoModal.hidden = !open;
+      document.body.classList.toggle("modal-open", open);
+      if (open) {
+        byId("site-name")?.focus();
+      } else {
+        editSiteInfoButton?.focus();
+      }
+    };
+    editSiteInfoButton.hidden = !canEditSite;
+    editSiteInfoButton.addEventListener("click", () => setSiteInfoModalOpen(true));
+    closeSiteInfoButton.addEventListener("click", () => setSiteInfoModalOpen(false));
+    cancelSiteInfoButton.addEventListener("click", () => setSiteInfoModalOpen(false));
+    siteInfoModal.addEventListener("click", (event) => {
+      if (event.target === siteInfoModal) setSiteInfoModalOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && siteInfoModal && !siteInfoModal.hidden) {
+        setSiteInfoModalOpen(false);
+      }
+    });
     loadCustomPointTableState();
     renderPropertyPicker();
     initPointWorkbenchSplitters();
@@ -2585,6 +2757,7 @@ APP_SCRIPT = r"""
           })
         });
         setText("status", "Site information saved.");
+        setSiteInfoModalOpen(false);
         await loadGatewayWorkspace();
       } catch (error) {
         setText("status", errorMessage(error), true);
@@ -3260,6 +3433,9 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       display: grid;
       gap: 18px;
     }}
+    body.modal-open {{
+      overflow: hidden;
+    }}
     body[data-page="gateway-workspace"] section {{
       border-bottom: 0;
       padding: 0;
@@ -3346,6 +3522,135 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       display: grid;
       gap: 16px;
       padding: 20px;
+    }}
+    .workspace-overview {{
+      display: grid;
+      gap: 16px;
+    }}
+    .workspace-overview-grid {{
+      display: grid;
+      grid-template-columns: minmax(300px, 0.85fr) minmax(420px, 1.15fr);
+      gap: 16px;
+      align-items: stretch;
+    }}
+    .workspace-tile {{
+      min-width: 0;
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, rgba(34, 211, 197, 0.08), rgba(118, 247, 166, 0.03)),
+        rgba(11, 20, 23, 0.86);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }}
+    body[data-page="gateway-workspace"][data-theme="light"] .workspace-tile {{
+      background:
+        linear-gradient(135deg, rgba(8, 127, 134, 0.08), rgba(12, 139, 95, 0.03)),
+        rgba(255, 255, 255, 0.9);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 14px 34px rgba(23, 42, 49, 0.08);
+    }}
+    .workspace-tile-header {{
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: flex-start;
+      margin-bottom: 14px;
+    }}
+    .workspace-tile-header p {{
+      margin: 6px 0 0;
+      color: var(--muted);
+      line-height: 1.45;
+    }}
+    .workspace-tile .grid {{
+      align-items: start;
+    }}
+    .workspace-tile pre {{
+      min-height: 44px;
+      margin: 0;
+      padding: 10px 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }}
+    .workspace-tile .button {{
+      min-height: 44px;
+    }}
+    .icon-button {{
+      width: 42px;
+      min-width: 42px;
+      height: 42px;
+      min-height: 42px;
+      padding: 0;
+      justify-content: center;
+      font-size: 20px;
+      line-height: 1;
+    }}
+    .site-summary {{
+      display: grid;
+      gap: 12px;
+    }}
+    .site-summary-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 16px;
+      margin: 0;
+    }}
+    .site-summary-grid div {{
+      min-width: 0;
+    }}
+    .site-summary-grid dt {{
+      color: var(--muted);
+      font: 700 10px/1.2 "JetBrains Mono", Consolas, monospace;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }}
+    .site-summary-grid dd {{
+      margin: 3px 0 0;
+      overflow-wrap: anywhere;
+    }}
+    .site-info-modal {{
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(2, 7, 8, 0.74);
+      backdrop-filter: blur(8px);
+    }}
+    .site-info-modal[hidden] {{
+      display: none;
+    }}
+    .site-info-dialog {{
+      width: min(1080px, 100%);
+      max-height: min(900px, calc(100vh - 48px));
+      overflow: auto;
+      padding: 22px;
+      border: 1px solid rgba(34, 211, 197, 0.4);
+      border-radius: 12px;
+      background: #0b1517;
+      box-shadow: 0 28px 90px rgba(0, 0, 0, 0.52), 0 0 0 1px rgba(118, 247, 166, 0.08);
+    }}
+    body[data-page="gateway-workspace"][data-theme="light"] .site-info-dialog {{
+      background: #f8fcfc;
+      box-shadow: 0 28px 90px rgba(23, 42, 49, 0.2);
+    }}
+    .site-info-dialog-header {{
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 18px;
+    }}
+    .site-info-dialog-header p {{
+      margin: 6px 0 0;
+      color: var(--muted);
+    }}
+    .site-info-form-actions {{
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      grid-column: 1 / -1;
+      padding-top: 4px;
     }}
     .panel-title {{
       display: flex;
@@ -3841,12 +4146,100 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     body[data-page="app"][data-theme="light"] .metric-card strong {{
       color: #122329;
     }}
-    .ops-grid {{
-      min-height: 520px;
+    .dashboard-workspace {{
+      --registry-pane-width: 75%;
+      min-height: 660px;
+      height: clamp(660px, 72vh, 900px);
       display: grid;
-      grid-template-columns: minmax(0, 1.75fr) minmax(330px, 0.7fr);
-      gap: 18px;
+      grid-template-columns: minmax(600px, var(--registry-pane-width)) 10px minmax(220px, 1fr);
+      gap: 0;
       align-items: stretch;
+    }}
+    .dashboard-context {{
+      --map-pane-height: 58%;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(260px, var(--map-pane-height)) 10px minmax(220px, 1fr);
+      gap: 0;
+    }}
+    .dashboard-workspace > .gateway-panel {{
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }}
+    .dashboard-workspace > .gateway-panel .table-wrap {{
+      min-height: 0;
+      flex: 1;
+      overscroll-behavior: contain;
+    }}
+    .dashboard-context > .map-panel {{
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      border-bottom-right-radius: 0;
+      border-bottom-left-radius: 0;
+    }}
+    .dashboard-context > .map-panel .panel-title {{
+      flex: 0 0 auto;
+      display: grid;
+    }}
+    .dashboard-context > .map-panel .map-toolbar {{
+      justify-content: flex-start;
+    }}
+    .dashboard-context > .inspector-panel {{
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      border-top-right-radius: 0;
+      border-top-left-radius: 0;
+    }}
+    .dashboard-splitter {{
+      position: relative;
+      z-index: 3;
+      border: 0;
+      background: rgba(34, 211, 197, 0.08);
+      touch-action: none;
+    }}
+    .dashboard-splitter::after {{
+      content: "";
+      position: absolute;
+      border-radius: 999px;
+      background: rgba(34, 211, 197, 0.42);
+      transition: background 120ms ease, box-shadow 120ms ease;
+    }}
+    .dashboard-column-splitter {{
+      width: 10px;
+      cursor: col-resize;
+    }}
+    .dashboard-column-splitter::after {{
+      top: 12%;
+      bottom: 12%;
+      left: 4px;
+      width: 2px;
+    }}
+    .dashboard-row-splitter {{
+      height: 10px;
+      cursor: row-resize;
+    }}
+    .dashboard-row-splitter::after {{
+      top: 4px;
+      right: 12%;
+      left: 12%;
+      height: 2px;
+    }}
+    .dashboard-splitter:hover::after,
+    .dashboard-splitter:focus-visible::after {{
+      background: var(--accent);
+      box-shadow: 0 0 14px rgba(34, 211, 197, 0.56);
+    }}
+    .dashboard-splitter:focus-visible {{
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
     }}
     .map-panel,
     .inspector-panel,
@@ -3904,6 +4297,12 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
         rgba(4, 12, 14, 0.82);
       scrollbar-color: rgba(34, 211, 197, 0.7) rgba(4, 12, 14, 0.9);
       scrollbar-width: thin;
+    }}
+    .dashboard-context .usa-map {{
+      min-height: 0;
+      height: auto;
+      max-height: none;
+      flex: 1;
     }}
     .map-zoom-content {{
       position: relative;
@@ -4447,15 +4846,44 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .event-ticker small {{
       color: var(--danger);
     }}
+    @media (max-width: 1200px) {{
+      .dashboard-workspace {{
+        height: auto;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 18px;
+      }}
+      .dashboard-context {{
+        grid-template-rows: auto;
+        gap: 18px;
+      }}
+      .dashboard-splitter {{
+        display: none;
+      }}
+      .dashboard-workspace > .gateway-panel {{
+        min-height: 560px;
+        border-radius: 8px;
+      }}
+      .dashboard-context > .map-panel,
+      .dashboard-context > .inspector-panel {{
+        border-radius: 8px;
+      }}
+      .dashboard-context > .inspector-panel {{
+        min-height: 320px;
+      }}
+      .dashboard-context .usa-map {{
+        min-height: 430px;
+        height: 54vh;
+        max-height: 680px;
+      }}
+    }}
     @media (max-width: 1080px) {{
       .command-strip {{
         grid-template-columns: repeat(3, minmax(0, 1fr));
       }}
-      .ops-grid {{
+    }}
+    @media (max-width: 900px) {{
+      .workspace-overview-grid {{
         grid-template-columns: 1fr;
-      }}
-      .usa-map {{
-        height: 54vh;
       }}
     }}
     @media (max-width: 760px) {{
@@ -4480,7 +4908,19 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       .gateway-toolbar {{
         grid-template-columns: 1fr;
       }}
-      .usa-map {{
+      .workspace-overview-grid,
+      .site-summary-grid {{
+        grid-template-columns: 1fr;
+      }}
+      .site-info-modal {{
+        padding: 12px;
+      }}
+      .site-info-dialog {{
+        max-height: calc(100vh - 24px);
+        padding: 16px;
+      }}
+      .usa-map,
+      .dashboard-context .usa-map {{
         min-height: 320px;
         height: 48vh;
       }}
@@ -4684,8 +5124,51 @@ def app_html() -> str:
       <div id="metric-offline" class="metric-card bad"><span>Offline</span><strong>0</strong><em>Loading</em></div>
       <div id="metric-jobs" class="metric-card"><span>Recent Jobs</span><strong>0</strong><em>Loading</em></div>
     </section>
-    <section class="ops-grid">
-      <div class="map-panel">
+    <section id="dashboard-workspace" class="dashboard-workspace" aria-label="Gateway operations workspace">
+      <section class="gateway-panel dashboard-registry-panel">
+        <div class="panel-title">
+          <div>
+            <span class="eyebrow">Gateway Registry</span>
+            <h2>Gateways</h2>
+          </div>
+          <span id="gateway-result-count" class="panel-counter">0 gateways</span>
+        </div>
+        <div class="gateway-toolbar">
+          <input id="gateway-search" type="search" placeholder="Search gateway, site, status, address, host, notes">
+          <div id="status" class="notice"></div>
+        </div>
+        <div class="table-wrap">
+          <table class="gateway-table">
+          <thead>
+            <tr>
+              <th><button class="sort-header" type="button" data-sort="gateway_id">Gateway</button></th>
+              <th><button class="sort-header" type="button" data-sort="site">Site</button></th>
+              <th><button class="sort-header" type="button" data-sort="address">Address</button></th>
+              <th><button class="sort-header" type="button" data-sort="hostname">Hostname</button></th>
+              <th><button class="sort-header" type="button" data-sort="status">Status</button></th>
+              <th><button class="sort-header" type="button" data-sort="network_status_notes">Network<br>Notes</button></th>
+              <th><button class="sort-header" type="button" data-sort="direct">Direct</button></th>
+              <th><button class="sort-header" type="button" data-sort="configure">Configure</button></th>
+            </tr>
+          </thead>
+          <tbody id="gateway-list"></tbody>
+        </table>
+        </div>
+      </section>
+      <div
+        id="dashboard-column-splitter"
+        class="dashboard-splitter dashboard-column-splitter"
+        role="separator"
+        tabindex="0"
+        aria-label="Resize gateway list and map details"
+        aria-orientation="vertical"
+        aria-valuemin="50"
+        aria-valuemax="80"
+        aria-valuenow="75"
+        title="Drag to resize. Double-click or press Home to reset."
+      ></div>
+      <div id="dashboard-context" class="dashboard-context">
+        <div class="map-panel">
         <div class="panel-title">
           <div>
             <span class="eyebrow">USA Gateway Mesh</span>
@@ -4721,39 +5204,22 @@ def app_html() -> str:
             <div id="gateway-map-nodes" class="map-node-layer"></div>
           </div>
         </div>
-      </div>
-      <aside id="gateway-inspector" class="inspector-panel">
-        <div class="empty-state">Loading gateway telemetry...</div>
-      </aside>
-    </section>
-    <section class="gateway-panel">
-      <div class="panel-title">
-        <div>
-          <span class="eyebrow">Gateway Registry</span>
-          <h2>Gateways</h2>
         </div>
-        <span id="gateway-result-count" class="panel-counter">0 gateways</span>
-      </div>
-      <div class="gateway-toolbar">
-        <input id="gateway-search" type="search" placeholder="Search gateway, site, status, address, host, notes">
-        <div id="status" class="notice"></div>
-      </div>
-      <div class="table-wrap">
-        <table class="gateway-table">
-        <thead>
-          <tr>
-            <th><button class="sort-header" type="button" data-sort="gateway_id">Gateway</button></th>
-            <th><button class="sort-header" type="button" data-sort="site">Site</button></th>
-            <th><button class="sort-header" type="button" data-sort="address">Address</button></th>
-            <th><button class="sort-header" type="button" data-sort="hostname">Hostname</button></th>
-            <th><button class="sort-header" type="button" data-sort="status">Status</button></th>
-            <th><button class="sort-header" type="button" data-sort="network_status_notes">Network<br>Notes</button></th>
-            <th><button class="sort-header" type="button" data-sort="direct">Direct</button></th>
-            <th><button class="sort-header" type="button" data-sort="configure">Configure</button></th>
-          </tr>
-        </thead>
-        <tbody id="gateway-list"></tbody>
-      </table>
+        <div
+          id="dashboard-row-splitter"
+          class="dashboard-splitter dashboard-row-splitter"
+          role="separator"
+          tabindex="0"
+          aria-label="Resize map and selected node details"
+          aria-orientation="horizontal"
+          aria-valuemin="38"
+          aria-valuemax="72"
+          aria-valuenow="58"
+          title="Drag to resize. Double-click or press Home to reset."
+        ></div>
+        <aside id="gateway-inspector" class="inspector-panel">
+          <div class="empty-state">Loading gateway telemetry...</div>
+        </aside>
       </div>
     </section>
     <section class="ticker-panel">
@@ -4784,19 +5250,52 @@ def gateway_workspace_html(gateway_id: str) -> str:
     </div>
   </header>
   <main>
-    <section>
-      <h2>Status</h2>
-      <pre id="gateway-status">Loading...</pre>
-      <div id="status" class="notice"></div>
-    </section>
-    <section>
-      <h2>Site Information</h2>
-      <div class="grid">
-        <div class="span-3"><label>Tunnel Status</label><pre id="tunnel-status">Loading...</pre></div>
-        <div class="span-3"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
-        <div class="span-3"><label>Action</label><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div>
+    <section class="workspace-overview">
+      <div class="workspace-overview-grid">
+        <article class="workspace-tile">
+          <div class="workspace-tile-header">
+            <div>
+              <span class="eyebrow">Connection</span>
+              <h2>Gateway status</h2>
+            </div>
+            <span class="panel-counter">Live access</span>
+          </div>
+          <pre id="gateway-status">Loading...</pre>
+          <div class="grid">
+            <div class="span-4"><label>Tunnel Status</label><pre id="tunnel-status">Loading...</pre></div>
+            <div class="span-4"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
+            <div class="span-4"><label>Action</label><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div>
+          </div>
+        </article>
+        <article class="workspace-tile site-summary">
+          <div class="workspace-tile-header">
+            <div>
+              <span class="eyebrow">Site Information</span>
+              <h2 id="site-summary-name">Loading site...</h2>
+              <p id="site-summary-address">Site details will appear here.</p>
+            </div>
+            <button id="edit-site-info" class="icon-button secondary" type="button" aria-label="Edit site information" title="Edit site information">&#9998;</button>
+          </div>
+          <dl class="site-summary-grid">
+            <div><dt>Location</dt><dd id="site-summary-location">&mdash;</dd></div>
+            <div><dt>Coordinates</dt><dd id="site-summary-coordinates">&mdash;</dd></div>
+            <div><dt>Network</dt><dd id="site-summary-network">&mdash;</dd></div>
+            <div><dt>Hours</dt><dd id="site-summary-hours">&mdash;</dd></div>
+          </dl>
+        </article>
       </div>
-      <form id="site-info-form" class="grid">
+      <div id="status" class="notice"></div>
+      <div id="site-info-modal" class="site-info-modal" role="dialog" aria-modal="true" aria-labelledby="site-info-dialog-title" hidden>
+        <div class="site-info-dialog">
+          <div class="site-info-dialog-header">
+            <div>
+              <span class="eyebrow">Edit site information</span>
+              <h2 id="site-info-dialog-title">Site details</h2>
+              <p>Update the address, connection routing, coordinates, hours, and operator notes.</p>
+            </div>
+            <button id="close-site-info" class="icon-button secondary" type="button" aria-label="Close site information editor" title="Close">&times;</button>
+          </div>
+          <form id="site-info-form" class="grid">
         <div class="span-4">
           <label for="site-name">Site name</label>
           <input id="site-name" type="text" maxlength="200">
@@ -4853,10 +5352,13 @@ def gateway_workspace_html(gateway_id: str) -> str:
           <label for="network-status-notes">Network status notes</label>
           <textarea id="network-status-notes" maxlength="500" rows="2"></textarea>
         </div>
-        <div class="span-2">
-          <button id="save-site-info" type="submit">Save site</button>
+            <div class="site-info-form-actions">
+              <button id="cancel-site-info" class="secondary" type="button">Cancel</button>
+              <button id="save-site-info" type="submit">Save site</button>
+            </div>
+          </form>
         </div>
-      </form>
+      </div>
     </section>
     <section class="workspace-panel">
       <div class="panel-title">
@@ -4893,7 +5395,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
         </div>
       </form>
       <div id="import-result" class="detail-panel compact-panel" hidden></div>
-      <div id="point-workbench" class="point-workbench">
+      <div id="point-workbench" class="tree-shell point-workbench">
         <div class="tree-panel">
           <div class="panel-title compact-title">
             <div>
