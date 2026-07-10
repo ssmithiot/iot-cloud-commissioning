@@ -157,6 +157,7 @@ def test_bacnet_bulk_read_uses_one_rpm_command_for_multiple_points(tmp_path: Pat
     assert result["read_mode"] == "rpm-bulk"
     assert result["requested_count"] == 2
     assert result["value_count"] == 2
+    assert result["single_read_fallback_count"] == 0
     assert result["values"] == [
         {
             "saved_point_id": "point-1",
@@ -165,6 +166,7 @@ def test_bacnet_bulk_read_uses_one_rpm_command_for_multiple_points(tmp_path: Pat
             "value": 72.4,
             "raw_value": "72.4",
             "status": "ok",
+            "read_source": "rpm-bulk",
         },
         {
             "saved_point_id": "point-2",
@@ -173,6 +175,67 @@ def test_bacnet_bulk_read_uses_one_rpm_command_for_multiple_points(tmp_path: Pat
             "value": "active",
             "raw_value": "active",
             "status": "ok",
+            "read_source": "rpm-bulk",
+        },
+    ]
+
+
+def test_bacnet_bulk_read_falls_back_to_single_reads_when_rpm_returns_no_values(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args[0])
+        if args[0] == [sys.executable, "1", "analog-value", "1", "85", "binary-value", "5", "85"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout="no parseable present values here\n", stderr="")
+        if args[0] == ["bacrp", "1", "analog-value", "1", "85"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout="present-value: Real: 72.4\n", stderr="")
+        if args[0] == ["bacrp", "1", "binary-value", "5", "85"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout="present-value: inactive\n", stderr="")
+        raise AssertionError(f"unexpected command: {args[0]}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    status, result, error = execute_job(
+        config(tmp_path, bacrpm_path=sys.executable),
+        bacnet_read_bulk_job(
+            {
+                "device_instance": 1,
+                "points": [
+                    {"saved_point_id": "point-1", "object_type": "analog-value", "object_instance": 1},
+                    {"saved_point_id": "point-2", "object_type": "binary-value", "object_instance": 5},
+                ],
+            }
+        ),
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert result is not None
+    assert result["value_count"] == 2
+    assert result["single_read_fallback_count"] == 2
+    assert calls == [
+        [sys.executable, "1", "analog-value", "1", "85", "binary-value", "5", "85"],
+        ["bacrp", "1", "analog-value", "1", "85"],
+        ["bacrp", "1", "binary-value", "5", "85"],
+    ]
+    assert result["values"] == [
+        {
+            "saved_point_id": "point-1",
+            "object_type": "analog-value",
+            "object_instance": 1,
+            "value": 72.4,
+            "raw_value": "72.4",
+            "status": "ok",
+            "read_source": "single-fallback",
+        },
+        {
+            "saved_point_id": "point-2",
+            "object_type": "binary-value",
+            "object_instance": 5,
+            "value": "inactive",
+            "raw_value": "inactive",
+            "status": "ok",
+            "read_source": "single-fallback",
         },
     ]
 

@@ -740,31 +740,71 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
     values: list[dict[str, object]] = []
     errors: list[str] = []
     raw_outputs: list[str] = []
+    fallback_count = 0
     try:
         for chunk in _chunks(list(normalized["points"]), BACNET_POINT_LOAD_BATCH_SIZE):
             args = build_bacnet_rpm_value_batch_args(config, int(normalized["device_instance"]), chunk)
             completed, error = _run_command(args, config, env, "BACnet value RPM batch read")
+            parsed: dict[tuple[str, int], tuple[object, str]] = {}
             if error is not None or completed is None:
                 errors.append(error or "BACnet value RPM batch read failed")
-                continue
-            raw_output = _combined_output(completed)
-            if raw_output:
-                raw_outputs.append(raw_output)
-            parsed = parse_bacnet_rpm_present_values(completed.stdout)
+            else:
+                raw_output = _combined_output(completed)
+                if raw_output:
+                    raw_outputs.append(raw_output)
+                parsed = parse_bacnet_rpm_present_values(completed.stdout)
             for point in chunk:
                 key = (str(point["object_type"]), int(point["object_instance"]))
                 parsed_value = parsed.get(key)
                 if parsed_value is None:
-                    values.append(
-                        {
-                            "saved_point_id": point.get("saved_point_id"),
-                            "object_type": point["object_type"],
-                            "object_instance": point["object_instance"],
-                            "status": "missing",
-                            "error": "present-value not returned",
-                        }
+                    fallback_request = {
+                        "job_type": "bacnet_read",
+                        "device_instance": normalized["device_instance"],
+                        "object_type": point["object_type"],
+                        "object_instance": point["object_instance"],
+                        "property": BACNET_PRESENT_VALUE,
+                        "property_id": BACNET_PRESENT_VALUE_PROPERTY_ID,
+                    }
+                    fallback_args = build_bacnet_read_args(config, fallback_request)
+                    fallback_completed, fallback_error = _run_command(
+                        fallback_args,
+                        config,
+                        env,
+                        "BACnet value single-read fallback",
                     )
-                    continue
+                    fallback_count += 1
+                    if fallback_error is not None or fallback_completed is None:
+                        values.append(
+                            {
+                                "saved_point_id": point.get("saved_point_id"),
+                                "object_type": point["object_type"],
+                                "object_instance": point["object_instance"],
+                                "status": "missing",
+                                "error": fallback_error or "present-value not returned",
+                                "read_source": "single-fallback",
+                            }
+                        )
+                        continue
+                    value, raw_value = parse_bacnet_read_value(fallback_completed.stdout)
+                    if raw_value is None:
+                        values.append(
+                            {
+                                "saved_point_id": point.get("saved_point_id"),
+                                "object_type": point["object_type"],
+                                "object_instance": point["object_instance"],
+                                "status": "missing",
+                                "error": "single-read fallback did not return present-value",
+                                "read_source": "single-fallback",
+                            }
+                        )
+                        continue
+                    raw_output = _combined_output(fallback_completed)
+                    if raw_output:
+                        raw_outputs.append(raw_output)
+                    parsed_value = (value, raw_value)
+                    read_source = "single-fallback"
+                else:
+                    read_source = "rpm-bulk"
                 value, raw_value = parsed_value
                 values.append(
                     {
@@ -774,6 +814,7 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
                         "value": value,
                         "raw_value": raw_value,
                         "status": "ok",
+                        "read_source": read_source,
                     }
                 )
     finally:
@@ -786,6 +827,7 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
             "read_mode": "rpm-bulk",
             "requested_count": len(normalized["points"]),
             "value_count": len([item for item in values if item.get("status") == "ok"]),
+            "single_read_fallback_count": fallback_count,
             "values": values,
         }
     )
