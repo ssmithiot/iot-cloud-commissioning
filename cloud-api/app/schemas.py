@@ -13,6 +13,7 @@ BACNET_READ_OBJECT_TYPES = {
     "multi-state-input",
     "multi-state-output",
     "multi-state-value",
+    "schedule",
 }
 BACNET_LOAD_POINT_OBJECT_TYPES = {
     "analog-input",
