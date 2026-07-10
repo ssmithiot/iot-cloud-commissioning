@@ -41,7 +41,6 @@ BACNET_LOAD_POINT_OBJECT_TYPES = {
     "schedule",
     "trend-log",
 }
-BACNET_OBJECT_TYPE_ALIASES = {"multi-state-valu": "multi-state-value"}
 BACNET_OBJECT_TYPE_BY_ID = {
     0: "analog-input",
     1: "analog-output",
@@ -360,8 +359,6 @@ def validate_bacnet_read_request(request: dict[str, Any]) -> dict[str, object]:
     object_instance = _required_int(request, "object_instance")
 
     object_type = request.get("object_type")
-    if isinstance(object_type, str):
-        object_type = BACNET_OBJECT_TYPE_ALIASES.get(object_type, object_type)
     if not isinstance(object_type, str) or object_type not in BACNET_READ_OBJECT_TYPES:
         allowed = ", ".join(sorted(BACNET_READ_OBJECT_TYPES))
         raise ValueError(f"object_type must be one of: {allowed}")
@@ -391,8 +388,6 @@ def validate_bacnet_read_bulk_request(request: dict[str, Any]) -> dict[str, obje
             raise ValueError(f"points[{index}] must be an object")
         object_instance = _required_int(point, "object_instance")
         object_type = point.get("object_type")
-        if isinstance(object_type, str):
-            object_type = BACNET_OBJECT_TYPE_ALIASES.get(object_type, object_type)
         if not isinstance(object_type, str) or object_type not in BACNET_READ_OBJECT_TYPES:
             allowed = ", ".join(sorted(BACNET_READ_OBJECT_TYPES))
             raise ValueError(f"points[{index}].object_type must be one of: {allowed}")
