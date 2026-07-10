@@ -1231,8 +1231,11 @@ def run_until_checkpoint(job_id: str) -> None:
             runner.run_phase(next_phase)
             with JOBS_LOCK:
                 status = JOBS[job_id].status
-            if status in {"waiting", "failed", "complete"}:
+            if status in {"failed", "complete"}:
                 return
+            # Selected phases are an ordered batch. Continue automatically
+            # after each successful phase; the phase selector is the operator's
+            # checkpoint, so a full run no longer requires clicking Continue.
     except Exception:
         runner.close()
 
