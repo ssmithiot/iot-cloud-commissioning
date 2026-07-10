@@ -1514,7 +1514,7 @@ APP_SCRIPT = r"""
     row.style.setProperty("--depth", String(depth));
     row.innerHTML = `
       <span class="twisty">${expanded ? "[-]" : "[+]"}</span>
-      <span class="node-icon">${kind === "point" ? "->" : kind === "device" ? "[D]" : "[F]"}</span>
+      <span class="node-icon" aria-hidden="true"></span>
       <span class="node-label">${escapeHtml(label)}</span>
       <span class="node-meta">${escapeHtml(meta)}</span>
     `;
@@ -1772,25 +1772,42 @@ APP_SCRIPT = r"""
 
   async function pollPointValueReads(jobIds) {
     const waiting = new Set(jobIds);
+    const terminalJobs = new Map();
     const startedAt = Date.now();
     while (waiting.size && Date.now() - startedAt < 120000) {
       const jobs = await api("/api/edge/jobs?limit=200");
       for (const job of jobs) {
         if (waiting.has(job.job_id) && ["completed", "failed", "deferred"].includes(job.status)) {
           waiting.delete(job.job_id);
+          terminalJobs.set(job.job_id, job);
         }
       }
       await loadGatewayWorkspace();
+      const completed = [...terminalJobs.values()].filter((job) => job.status === "completed").length;
+      const failed = [...terminalJobs.values()].filter((job) => job.status === "failed").length;
+      const deferred = [...terminalJobs.values()].filter((job) => job.status === "deferred").length;
       if (waiting.size) {
-        setText("status", `Waiting on ${waiting.size} point read job(s)...`);
+        const message = `Point reads: ${completed} completed, ${failed} failed, ${deferred} deferred, ${waiting.size} pending.`;
+        setText("status", message, Boolean(failed || deferred));
+        setText("point-read-status", message, Boolean(failed || deferred));
         await new Promise((resolve) => setTimeout(resolve, 2500));
       }
     }
     if (waiting.size) {
-      setText("status", `${waiting.size} point read job(s) still pending. Values will fill in as the edge completes them.`, true);
+      const message = `${waiting.size} point read job(s) still pending. Values will fill in as the edge completes them.`;
+      setText("status", message, true);
+      setText("point-read-status", message, true);
+      return;
+    }
+    const failedJobs = [...terminalJobs.values()].filter((job) => job.status === "failed" || job.status === "deferred");
+    if (failedJobs.length) {
+      const message = `Point values partially refreshed. ${failedJobs.length} read job(s) failed/deferred; check recent jobs for details.`;
+      setText("status", message, true);
+      setText("point-read-status", message, true);
       return;
     }
     setText("status", "Point values refreshed.");
+    setText("point-read-status", "Point values refreshed.");
   }
 
   function renderCustomPointTable() {
@@ -1912,6 +1929,16 @@ APP_SCRIPT = r"""
     renderSelectedSavedPoints();
   }
 
+  function setAllSavedPointCheckboxes(checked) {
+    selectedSavedPointIds = checked
+      ? new Set((currentGatewayTree?.points || []).map((point) => point.id))
+      : new Set();
+    document.querySelectorAll('[data-role="saved-point-select"]').forEach((checkbox) => {
+      checkbox.checked = checked;
+    });
+    renderSelectedSavedPoints();
+  }
+
   async function removeSelectedSavedPoints() {
     if (!canEditTree()) {
       setText("status", "Your role is read-only.", true);
@@ -1993,7 +2020,7 @@ APP_SCRIPT = r"""
     row.style.setProperty("--depth", String(depth));
     row.innerHTML = `
       <input type="checkbox" data-role="saved-point-select" title="Select for bulk actions" aria-label="Select ${escapeHtml(label)} for bulk actions">
-      <span class="node-icon">-></span>
+      <span class="node-icon" aria-hidden="true"></span>
       <span class="node-label">${escapeHtml(label)}</span>
       <span class="node-meta">${escapeHtml(meta)}</span>
       <button class="tree-add-point" type="button" title="Add point to custom table" aria-label="Add ${escapeHtml(label)} to custom table">Add</button>
@@ -2346,6 +2373,83 @@ APP_SCRIPT = r"""
     renderTree(tree);
   }
 
+  function initPointWorkbenchSplitters() {
+    const workbench = byId("point-workbench");
+    if (!workbench || workbench.dataset.splittersReady === "true") {
+      return;
+    }
+    workbench.dataset.splittersReady = "true";
+    const storageKey = `iot-cloud-point-workbench:${document.body.dataset.gatewayId || "gateway"}`;
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || "{}");
+      if (saved.treeWidth) {
+        workbench.style.setProperty("--tree-pane-width", `${saved.treeWidth}px`);
+      }
+      if (saved.sideWidth) {
+        workbench.style.setProperty("--side-pane-width", `${saved.sideWidth}px`);
+      }
+    } catch {
+      // Ignore split layout storage failures.
+    }
+
+    function paneWidth(name) {
+      const fallback = name === "tree" ? 220 : 260;
+      const value = getComputedStyle(workbench).getPropertyValue(name === "tree" ? "--tree-pane-width" : "--side-pane-width");
+      return Number.parseFloat(value) || fallback;
+    }
+
+    function saveWidths() {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify({
+          treeWidth: Math.round(paneWidth("tree")),
+          sideWidth: Math.round(paneWidth("side"))
+        }));
+      } catch {
+        // Ignore split layout storage failures.
+      }
+    }
+
+    function dragSplitter(splitter, onMove) {
+      splitter.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        splitter.setPointerCapture(event.pointerId);
+        const startX = event.clientX;
+        const startTree = paneWidth("tree");
+        const startSide = paneWidth("side");
+        const bounds = workbench.getBoundingClientRect();
+        const handleMove = (moveEvent) => {
+          onMove(moveEvent.clientX - startX, startTree, startSide, bounds.width);
+        };
+        const stopMove = () => {
+          splitter.removeEventListener("pointermove", handleMove);
+          splitter.removeEventListener("pointerup", stopMove);
+          splitter.removeEventListener("pointercancel", stopMove);
+          saveWidths();
+        };
+        splitter.addEventListener("pointermove", handleMove);
+        splitter.addEventListener("pointerup", stopMove);
+        splitter.addEventListener("pointercancel", stopMove);
+      });
+    }
+
+    const leftSplitter = byId("point-left-splitter");
+    const rightSplitter = byId("point-right-splitter");
+    if (leftSplitter) {
+      dragSplitter(leftSplitter, (delta, startTree, startSide, totalWidth) => {
+        const maxTree = Math.max(180, totalWidth - startSide - 560);
+        const nextTree = Math.min(Math.max(startTree + delta, 170), maxTree);
+        workbench.style.setProperty("--tree-pane-width", `${nextTree}px`);
+      });
+    }
+    if (rightSplitter) {
+      dragSplitter(rightSplitter, (delta, startTree, startSide, totalWidth) => {
+        const maxSide = Math.max(200, totalWidth - startTree - 620);
+        const nextSide = Math.min(Math.max(startSide - delta, 200), maxSide);
+        workbench.style.setProperty("--side-pane-width", `${nextSide}px`);
+      });
+    }
+  }
+
   function setFieldValue(id, value) {
     const element = byId(id);
     if (element) {
@@ -2423,6 +2527,7 @@ APP_SCRIPT = r"""
     const canEditSite = me.role === "admin";
     loadCustomPointTableState();
     renderPropertyPicker();
+    initPointWorkbenchSplitters();
     siteInfoForm.querySelectorAll("input, textarea").forEach((field) => {
       field.disabled = !canEditSite;
     });
@@ -2530,6 +2635,8 @@ APP_SCRIPT = r"""
     });
     removeSelectedPointsButton.addEventListener("click", removeSelectedSavedPoints);
     addSelectedToCustomTableButton.addEventListener("click", addSelectedPointsToCustomTable);
+    byId("select-all-saved-points").addEventListener("click", () => setAllSavedPointCheckboxes(true));
+    byId("clear-saved-point-selection").addEventListener("click", () => setAllSavedPointCheckboxes(false));
     clearCustomPointTableButton.addEventListener("click", clearCustomPointTable);
     byId("refresh-point-values").addEventListener("click", refreshCustomPointValues);
     byId("save-point-table").addEventListener("click", saveActivePointTableName);
@@ -3224,10 +3331,12 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       margin-bottom: 12px;
     }}
     .point-workbench {{
+      --tree-pane-width: 220px;
+      --side-pane-width: 260px;
       min-height: 560px;
       display: grid;
-      grid-template-columns: minmax(190px, 0.38fr) minmax(680px, 2.2fr) minmax(220px, 0.45fr);
-      gap: 16px;
+      grid-template-columns: minmax(170px, var(--tree-pane-width)) 8px minmax(620px, 1fr) 8px minmax(200px, var(--side-pane-width));
+      gap: 0;
       align-items: stretch;
     }}
     .point-workbench > .tree-panel,
@@ -3236,16 +3345,38 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       min-height: 0;
     }}
     .point-workbench > .tree-panel {{
-      min-width: 170px;
-      max-width: 520px;
-      resize: horizontal;
+      min-width: 0;
       overflow: auto;
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
     }}
     .point-side-panel {{
-      min-width: 200px;
-      max-width: 480px;
-      resize: horizontal;
+      min-width: 0;
       overflow: auto;
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+    }}
+    .pane-splitter {{
+      width: 8px;
+      min-width: 8px;
+      cursor: col-resize;
+      background: linear-gradient(180deg, transparent, rgba(34, 211, 197, 0.18), transparent);
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      touch-action: none;
+    }}
+    .pane-splitter:hover,
+    .pane-splitter:focus {{
+      background: rgba(34, 211, 197, 0.32);
+      outline: none;
+    }}
+    .tree-toolbar {{
+      margin-bottom: 10px;
+    }}
+    .tree-toolbar button {{
+      min-height: 28px;
+      padding: 4px 8px;
+      font-size: 11px;
     }}
     .tree-scroll {{
       min-height: 420px;
@@ -3258,27 +3389,37 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       font-size: 12px;
     }}
     .tree-row {{
-      grid-template-columns: 18px 20px minmax(0, 1fr) auto auto;
-      min-height: 32px;
-      border-radius: 6px;
-      padding: 4px 6px 4px calc(6px + (var(--depth) * 14px));
+      grid-template-columns: 18px 18px minmax(0, 1fr) auto auto;
+      min-height: 24px;
+      border: 0 !important;
+      border-radius: 0;
+      padding: 2px 4px 2px calc(4px + (var(--depth) * 13px));
       color: var(--ink);
+      background: transparent !important;
+      box-shadow: none !important;
     }}
     body[data-page="gateway-workspace"] .tree-row:hover {{
-      color: #ffffff;
-      background: rgba(34, 211, 197, 0.12);
+      color: var(--ink);
+      background: rgba(34, 211, 197, 0.05) !important;
     }}
     body[data-page="gateway-workspace"][data-theme="light"] .tree-row:hover {{
       color: #122329;
-      background: rgba(8, 127, 134, 0.1);
+      background: rgba(8, 127, 134, 0.06) !important;
+    }}
+    .tree-row[data-kind="folder"] {{
+      font-weight: 700;
+    }}
+    .tree-row[data-kind="point"] {{
+      font-weight: 500;
     }}
     .tree-add-point {{
       width: auto;
-      min-height: 26px;
-      padding: 0 7px;
+      min-height: 22px;
+      padding: 0 6px;
       justify-content: center;
       opacity: 0;
       font-size: 11px;
+      box-shadow: none !important;
     }}
     .tree-row:hover .tree-add-point,
     .tree-add-point:focus {{
@@ -3288,8 +3429,52 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       visibility: hidden;
     }}
     .node-icon {{
-      color: var(--accent);
-      font-weight: 900;
+      position: relative;
+      width: 14px;
+      height: 14px;
+      display: inline-block;
+    }}
+    .tree-row[data-kind="folder"] .node-icon::before {{
+      content: "";
+      position: absolute;
+      left: 1px;
+      top: 5px;
+      width: 12px;
+      height: 8px;
+      border: 1px solid rgba(245, 197, 66, 0.8);
+      border-radius: 2px;
+      background: rgba(245, 197, 66, 0.18);
+    }}
+    .tree-row[data-kind="folder"] .node-icon::after {{
+      content: "";
+      position: absolute;
+      left: 2px;
+      top: 3px;
+      width: 6px;
+      height: 3px;
+      border: 1px solid rgba(245, 197, 66, 0.8);
+      border-bottom: 0;
+      border-radius: 2px 2px 0 0;
+      background: rgba(245, 197, 66, 0.18);
+    }}
+    .tree-row[data-kind="device"] .node-icon::before {{
+      content: "";
+      position: absolute;
+      inset: 2px;
+      border: 1px solid rgba(118, 247, 166, 0.72);
+      border-radius: 3px;
+      background: rgba(118, 247, 166, 0.14);
+    }}
+    .tree-row[data-kind="point"] .node-icon::before {{
+      content: "";
+      position: absolute;
+      left: 5px;
+      top: 5px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px rgba(34, 211, 197, 0.45);
     }}
     .node-meta {{
       color: var(--muted);
@@ -3301,6 +3486,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
       gap: 12px;
+      border-radius: 0;
     }}
     .custom-table-panel .toolbar {{
       justify-content: flex-end;
@@ -4209,6 +4395,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       table {{ display: block; overflow-x: auto; white-space: nowrap; }}
       .tree-shell {{ grid-template-columns: 1fr; }}
       .point-workbench {{ grid-template-columns: 1fr; }}
+      .pane-splitter {{ display: none; }}
       .tree-scroll {{ max-height: 420px; }}
       .property-options {{ grid-template-columns: 1fr; }}
       .command-strip,
@@ -4628,7 +4815,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
         </div>
       </form>
       <div id="import-result" class="detail-panel compact-panel" hidden></div>
-      <div class="point-workbench">
+      <div id="point-workbench" class="point-workbench">
         <div class="tree-panel">
           <div class="panel-title compact-title">
             <div>
@@ -4636,8 +4823,13 @@ def gateway_workspace_html(gateway_id: str) -> str:
               <h2>Groups / Devices / Points</h2>
             </div>
           </div>
+          <div class="toolbar tree-toolbar">
+            <button id="select-all-saved-points" class="secondary" type="button">Select all</button>
+            <button id="clear-saved-point-selection" class="secondary" type="button">Clear all</button>
+          </div>
           <div id="tree" class="tree-scroll">Loading...</div>
         </div>
+        <div id="point-left-splitter" class="pane-splitter" role="separator" aria-orientation="vertical" aria-label="Resize tree and table panes"></div>
         <div id="custom-point-table-dropzone" class="custom-table-panel">
           <div class="panel-title compact-title">
             <div>
@@ -4670,7 +4862,9 @@ def gateway_workspace_html(gateway_id: str) -> str:
               <button id="cancel-point-columns" class="secondary" type="button">Cancel</button>
             </div>
           </div>
+          <div id="point-read-status" class="notice"></div>
         </div>
+        <div id="point-right-splitter" class="pane-splitter" role="separator" aria-orientation="vertical" aria-label="Resize table and details panes"></div>
         <aside class="point-side-panel">
           <div id="tree-details" class="detail-panel" hidden></div>
           <div id="selected-points-panel" class="detail-panel" hidden>
