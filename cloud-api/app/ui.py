@@ -4849,6 +4849,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .event-ticker small {{
       color: var(--danger);
+      min-width: 0;
+      max-height: 4.2em;
+      overflow: auto;
+      overflow-wrap: anywhere;
+      text-align: left;
+      white-space: normal;
+      line-height: 1.35;
     }}
     @media (max-width: 1200px) {{
       .dashboard-workspace {{
