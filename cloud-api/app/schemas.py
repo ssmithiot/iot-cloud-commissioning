@@ -34,6 +34,7 @@ BACNET_LOAD_POINT_OBJECT_TYPES = {
     "schedule",
     "trend-log",
 }
+BACNET_OBJECT_TYPE_ALIASES = {"multi-state-valu": "multi-state-value"}
 
 
 def _read_required_int(request: dict[str, object], field_name: str) -> int:
@@ -48,6 +49,8 @@ def normalize_bacnet_read_request(request: dict[str, object]) -> dict[str, objec
     object_instance = _read_required_int(request, "object_instance")
 
     object_type = request.get("object_type")
+    if isinstance(object_type, str):
+        object_type = BACNET_OBJECT_TYPE_ALIASES.get(object_type, object_type)
     if not isinstance(object_type, str) or object_type not in BACNET_READ_OBJECT_TYPES:
         allowed = ", ".join(sorted(BACNET_READ_OBJECT_TYPES))
         raise ValueError(f"object_type must be one of: {allowed}")
