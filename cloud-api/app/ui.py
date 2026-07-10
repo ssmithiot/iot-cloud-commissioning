@@ -182,7 +182,8 @@ APP_SCRIPT = r"""
       return;
     }
     element.textContent = value || "";
-    element.className = isError ? "notice error" : "notice";
+    element.classList.add("notice");
+    element.classList.toggle("error", Boolean(isError));
   }
 
   function errorMessage(error, fallback = "Something went wrong.") {
@@ -1578,7 +1579,18 @@ APP_SCRIPT = r"""
 
   function normalizePointTableColumns(columns, fallback = ["object_identifier", "present_value", "units"]) {
     const sanitized = sanitizePointTableColumns(columns);
-    return sanitized.length ? sanitized : fallback;
+    const ordered = [];
+    for (const key of ["present_value", "object_identifier", "units"]) {
+      if ((sanitized.length ? sanitized : fallback).includes(key)) {
+        ordered.push(key);
+      }
+    }
+    for (const key of sanitized.length ? sanitized : fallback) {
+      if (!ordered.includes(key)) {
+        ordered.push(key);
+      }
+    }
+    return ordered;
   }
 
   function loadCustomPointTableState() {
@@ -1837,7 +1849,7 @@ APP_SCRIPT = r"""
     if (refreshButton) {
       refreshButton.disabled = !points.length;
     }
-    const columns = sanitizePointTableColumns(visiblePointTableColumns);
+    const columns = normalizePointTableColumns(visiblePointTableColumns);
     head.innerHTML = `
       <tr>
         <th>Name</th>
@@ -1861,7 +1873,7 @@ APP_SCRIPT = r"""
         <td>
           <strong>${escapeHtml(point.object_name || "unnamed")}</strong>
         </td>
-        ${columns.map((key) => `<td>${escapeHtml(pointTableValue(point, key))}</td>`).join("")}
+        ${columns.map((key) => `<td data-column="${escapeHtml(key)}">${escapeHtml(pointTableValue(point, key))}</td>`).join("")}
         <td><button class="secondary table-command" type="button" data-remove-table-point="${escapeHtml(point.id)}">Remove</button></td>
       `;
       body.appendChild(row);
@@ -3500,6 +3512,26 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .custom-table-panel .toolbar {{
       justify-content: flex-end;
     }}
+    .point-read-inline {{
+      max-width: 280px;
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      padding: 7px 10px;
+      border: 1px solid rgba(34, 211, 197, 0.22);
+      border-radius: 6px;
+      color: var(--muted);
+      background: rgba(3, 12, 14, 0.22);
+      white-space: normal;
+    }}
+    .point-read-inline.error {{
+      border-color: rgba(220, 38, 38, 0.28);
+      color: var(--danger);
+      background: rgba(220, 38, 38, 0.07);
+    }}
+    body[data-theme="light"] .point-read-inline {{
+      background: rgba(255, 255, 255, 0.58);
+    }}
     .custom-table-panel .toolbar select,
     .custom-table-panel .toolbar input {{
       width: auto;
@@ -3527,6 +3559,19 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .point-table td:first-child strong,
     .point-table td:first-child span {{
       display: block;
+    }}
+    .point-table td[data-column="present_value"] {{
+      min-width: 120px;
+      color: var(--ink);
+      font-weight: 800;
+    }}
+    .point-table td[data-column="present_value"] {{
+      color: var(--accent-strong);
+      text-shadow: 0 0 12px rgba(34, 211, 197, 0.16);
+    }}
+    body[data-theme="light"] .point-table td[data-column="present_value"] {{
+      color: #075f66;
+      text-shadow: none;
     }}
     .empty-table-cell {{
       height: 220px;
@@ -4850,6 +4895,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
               <input id="point-table-name" class="point-table-name" type="text" maxlength="80" value="New Table View" aria-label="Point table name">
               <button id="save-point-table" type="button">Save table</button>
               <button id="refresh-point-values" type="button" disabled>Refresh values</button>
+              <span id="point-read-status" class="notice point-read-inline" role="status" aria-live="polite"></span>
               <button id="new-point-table" class="secondary" type="button">New</button>
               <button id="edit-point-columns" class="secondary" type="button">Columns</button>
               <button id="clear-custom-point-table" class="secondary" type="button" disabled>Clear</button>
@@ -4871,7 +4917,6 @@ def gateway_workspace_html(gateway_id: str) -> str:
               <button id="cancel-point-columns" class="secondary" type="button">Cancel</button>
             </div>
           </div>
-          <div id="point-read-status" class="notice"></div>
         </div>
         <div id="point-right-splitter" class="pane-splitter" role="separator" aria-orientation="vertical" aria-label="Resize table and details panes"></div>
         <aside class="point-side-panel">
