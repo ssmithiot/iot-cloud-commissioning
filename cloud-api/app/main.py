@@ -32,6 +32,7 @@ from app.auth import (
     require_operator_auth,
     require_supabase_user_auth,
 )
+from app.access import require_site_access, visible_site_ids
 from app.config import settings
 from app.database import Base, engine, get_db
 from app.models import (
@@ -44,14 +45,19 @@ from app.models import (
     PointTrendConfig,
     PointTrendSample,
     OperatorUser,
+    Organization,
+    OrganizationMembership,
     SavedBacnetDevice,
     SavedBacnetPoint,
     Site,
+    SiteMembership,
     SiteWeather,
     utc_now,
 )
 from app.schema import require_current_schema, schema_revision_status
 from app.schemas import (
+    AccessMembershipOut,
+    AccessMembershipUpsertIn,
     CommissioningTemplateImportOut,
     CommissioningTemplateIn,
     CurrentOperatorOut,
@@ -76,6 +82,8 @@ from app.schemas import (
     JobResultIn,
     OperatorUserOut,
     OperatorUserUpsertIn,
+    OrganizationCreateIn,
+    OrganizationOut,
     PublicAuthConfigOut,
     PointTrendConfigIn,
     PointTrendConfigOut,
@@ -246,6 +254,20 @@ def _get_gateway_with_site_or_404(db: Session, gateway_id: str) -> EdgeNode:
     if edge_node is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
     return edge_node
+
+
+def _require_gateway_site_access(db: Session, auth: AdminAuthContext, gateway_id: str) -> EdgeNode:
+    edge_node = _get_gateway_with_site_or_404(db, gateway_id)
+    require_site_access(db, auth, edge_node.site)
+    return edge_node
+
+
+def _scoped_gateway_statement(db: Session, auth: AdminAuthContext):
+    statement = select(EdgeNode).options(joinedload(EdgeNode.site)).order_by(EdgeNode.gateway_id)
+    allowed_site_ids = visible_site_ids(db, auth)
+    if allowed_site_ids is not None:
+        statement = statement.where(EdgeNode.site_id.in_(select(Site.site_id).where(Site.id.in_(allowed_site_ids))))
+    return statement
 
 
 def _gateway_update_out(update: GatewayUpdateRequest, edge_node: EdgeNode) -> dict[str, object]:
@@ -1026,16 +1048,119 @@ def upsert_operator_user(
     return operator
 
 
+@app.get("/api/admin/organizations", response_model=list[OrganizationOut])
+def list_organizations(
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> list[Organization]:
+    return list(db.scalars(select(Organization).order_by(Organization.name)).all())
+
+
+@app.post("/api/admin/organizations", response_model=OrganizationOut)
+def create_organization(
+    payload: OrganizationCreateIn,
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> Organization:
+    organization = Organization(name=payload.name.strip())
+    db.add(organization)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Organization name already exists") from None
+    db.refresh(organization)
+    return organization
+
+
+def _operator_for_membership_or_404(db: Session, email: str) -> OperatorUser:
+    operator = db.scalar(select(OperatorUser).where(OperatorUser.email == email.strip().lower()))
+    if operator is None:
+        raise HTTPException(status_code=404, detail="Operator user not found")
+    return operator
+
+
+@app.put("/api/admin/organizations/{organization_id}/members", response_model=AccessMembershipOut)
+def upsert_organization_membership(
+    organization_id: str,
+    payload: AccessMembershipUpsertIn,
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> AccessMembershipOut:
+    organization = db.get(Organization, _uuid(organization_id))
+    if organization is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    operator = _operator_for_membership_or_404(db, payload.email)
+    membership = db.scalar(
+        select(OrganizationMembership).where(
+            OrganizationMembership.organization_id == organization.id,
+            OrganizationMembership.operator_user_id == operator.id,
+        )
+    )
+    if membership is None:
+        membership = OrganizationMembership(organization_id=organization.id, operator_user_id=operator.id)
+        db.add(membership)
+    membership.role = payload.role
+    membership.updated_at = utc_now()
+    db.commit()
+    return AccessMembershipOut(email=operator.email, role=membership.role)
+
+
+@app.put("/api/admin/sites/{site_id}/organization/{organization_id}", response_model=SiteOut)
+def assign_site_organization(
+    site_id: str,
+    organization_id: str,
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> Site:
+    site = db.scalar(select(Site).where(Site.site_id == site_id))
+    if site is None:
+        raise HTTPException(status_code=404, detail="Site not found")
+    organization = db.get(Organization, _uuid(organization_id))
+    if organization is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    site.organization_id = organization.id
+    db.commit()
+    db.refresh(site)
+    return site
+
+
+@app.put("/api/admin/sites/{site_id}/members", response_model=AccessMembershipOut)
+def upsert_site_membership(
+    site_id: str,
+    payload: AccessMembershipUpsertIn,
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> AccessMembershipOut:
+    site = db.scalar(select(Site).where(Site.site_id == site_id))
+    if site is None:
+        raise HTTPException(status_code=404, detail="Site not found")
+    operator = _operator_for_membership_or_404(db, payload.email)
+    membership = db.scalar(
+        select(SiteMembership).where(
+            SiteMembership.site_uuid == site.id,
+            SiteMembership.operator_user_id == operator.id,
+        )
+    )
+    if membership is None:
+        membership = SiteMembership(site_uuid=site.id, operator_user_id=operator.id)
+        db.add(membership)
+    membership.role = payload.role
+    membership.updated_at = utc_now()
+    db.commit()
+    return AccessMembershipOut(email=operator.email, role=membership.role)
+
+
 @app.get("/api/ui/gateways", response_model=list[GatewayOut])
 def ui_list_gateways(
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
     status_filter: str = "all",
 ) -> list[dict[str, object]]:
     now = utc_now()
     gateways = [
         _gateway_out(edge_node, now)
-        for edge_node in db.scalars(select(EdgeNode).options(joinedload(EdgeNode.site)).order_by(EdgeNode.gateway_id)).all()
+        for edge_node in db.scalars(_scoped_gateway_statement(db, auth)).all()
     ]
     if status_filter != "all":
         gateways = [gateway for gateway in gateways if gateway["effective_status"] == status_filter]
@@ -1055,7 +1180,7 @@ def ui_request_gateway_updates(
     now = utc_now()
     updates: list[GatewayUpdateRequest] = []
     for gateway_id in gateway_ids:
-        _get_gateway_with_site_or_404(db, gateway_id)
+        _require_gateway_site_access(db, auth, gateway_id)
         existing = db.scalar(
             select(GatewayUpdateRequest)
             .where(
@@ -1084,7 +1209,7 @@ def ui_request_gateway_updates(
 
 @app.get("/api/ui/gateway-updates", response_model=list[GatewayUpdateRequestOut])
 def ui_list_gateway_updates(
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
     limit: int = 100,
 ) -> list[dict[str, object]]:
@@ -1095,20 +1220,23 @@ def ui_list_gateway_updates(
         .order_by(GatewayUpdateRequest.requested_at.desc())
         .limit(limit)
     ).all()
-    return [
-        _gateway_update_out(update, _get_gateway_with_site_or_404(db, update.gateway_id))
-        for update in updates
-    ]
+    allowed_site_ids = visible_site_ids(db, auth)
+    visible_updates: list[dict[str, object]] = []
+    for update in updates:
+        gateway = _get_gateway_with_site_or_404(db, update.gateway_id)
+        if allowed_site_ids is None or str(gateway.site.id) in allowed_site_ids:
+            visible_updates.append(_gateway_update_out(update, gateway))
+    return visible_updates
 
 
 @app.get("/api/ui/gateways/summary", response_model=GatewaySummaryOut)
 def ui_gateway_summary(
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> GatewaySummaryOut:
     counts = {"total": 0, "online": 0, "stale": 0, "offline": 0}
     now = utc_now()
-    for edge_node in db.scalars(select(EdgeNode)).all():
+    for edge_node in db.scalars(_scoped_gateway_statement(db, auth)).all():
         counts["total"] += 1
         counts[str(_effective_status(edge_node, now)["effective_status"])] += 1
     return GatewaySummaryOut(**counts)
@@ -1116,21 +1244,26 @@ def ui_gateway_summary(
 
 @app.get("/api/ui/sites", response_model=list[SiteOut])
 def ui_list_sites(
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> list[Site]:
-    return list(db.scalars(select(Site).order_by(Site.site_id)).all())
+    statement = select(Site).order_by(Site.site_id)
+    allowed_site_ids = visible_site_ids(db, auth)
+    if allowed_site_ids is not None:
+        statement = statement.where(Site.id.in_(allowed_site_ids))
+    return list(db.scalars(statement).all())
 
 
 @app.get("/api/ui/sites/{site_id}", response_model=SiteOut)
 def ui_get_site(
     site_id: str,
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> Site:
     site = db.scalar(select(Site).where(Site.site_id == site_id))
     if site is None:
         raise HTTPException(status_code=404, detail="Site not found")
+    require_site_access(db, auth, site)
     return site
 
 
@@ -1164,21 +1297,21 @@ def ui_update_site(
 @app.get("/api/ui/gateways/{gateway_id}", response_model=GatewayOut)
 def ui_get_gateway(
     gateway_id: str,
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return _gateway_out(_get_gateway_with_site_or_404(db, gateway_id))
+    return _gateway_out(_require_gateway_site_access(db, auth, gateway_id))
 
 
 @app.get("/api/ui/gateways/{gateway_id}/heartbeat-trend", response_model=list[GatewayHeartbeatTrendOut])
 def ui_gateway_heartbeat_trend(
     gateway_id: str,
     limit: int = Query(default=96, ge=1, le=720),
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> list[dict[str, object]]:
     """Return recorded edge heartbeats, oldest first, for the dashboard trend."""
-    _get_gateway_or_404(db, gateway_id)
+    _require_gateway_site_access(db, auth, gateway_id)
     heartbeats = list(
         db.scalars(
             select(EdgeHeartbeat)
@@ -1207,19 +1340,19 @@ def ui_gateway_heartbeat_trend(
 @app.get("/api/ui/gateways/{gateway_id}/site", response_model=SiteOut)
 def ui_get_gateway_site(
     gateway_id: str,
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> Site:
-    return _get_gateway_with_site_or_404(db, gateway_id).site
+    return _require_gateway_site_access(db, auth, gateway_id).site
 
 
 @app.get("/api/ui/gateways/{gateway_id}/weather", response_model=SiteWeatherOut)
 def ui_get_gateway_weather(
     gateway_id: str,
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> SiteWeatherOut:
-    gateway = _get_gateway_with_site_or_404(db, gateway_id)
+    gateway = _require_gateway_site_access(db, auth, gateway_id)
     return _refresh_site_weather(gateway.site, db)
 
 
@@ -1237,20 +1370,20 @@ def ui_update_gateway_site(
 @app.get("/api/ui/gateways/{gateway_id}/direct-connect", response_model=DirectConnectOut)
 def ui_gateway_direct_connect(
     gateway_id: str,
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> DirectConnectOut:
-    gateway = _get_gateway_with_site_or_404(db, gateway_id)
+    gateway = _require_gateway_site_access(db, auth, gateway_id)
     return _direct_connect_for_site(gateway.site)
 
 
 @app.get("/api/ui/gateways/{gateway_id}/tunnel-status", response_model=TunnelStatusOut)
 def ui_gateway_tunnel_status(
     gateway_id: str,
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> TunnelStatusOut:
-    _get_gateway_or_404(db, gateway_id)
+    _require_gateway_site_access(db, auth, gateway_id)
     connected = tunnel_manager.is_connected(gateway_id)
     return TunnelStatusOut(connected=connected, status="connected" if connected else "not_connected")
 
@@ -1262,7 +1395,7 @@ def ui_create_gateway_tunnel_session(
     auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> TunnelSessionOut:
-    _get_gateway_or_404(db, gateway_id)
+    _require_gateway_site_access(db, auth, gateway_id)
     if not tunnel_manager.is_connected(gateway_id):
         raise HTTPException(status_code=503, detail="Gateway tunnel is not connected")
     subject = auth.email or auth.auth_type

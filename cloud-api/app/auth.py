@@ -37,6 +37,7 @@ class AdminAuthContext:
     email: str | None = None
     role: str = "admin"
     status: str = "active"
+    operator_user_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -254,6 +255,7 @@ def require_operator_auth(
         email=operator.email,
         role=operator.role,
         status=operator.status,
+        operator_user_id=str(operator.id),
     )
 
 
@@ -286,6 +288,7 @@ def require_known_user_auth(
         email=operator.email,
         role=operator.role,
         status=operator.status,
+        operator_user_id=str(operator.id),
     )
 
 

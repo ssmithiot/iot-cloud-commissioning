@@ -12,6 +12,7 @@ os.environ.setdefault("IOT_ADMIN_API_TOKEN", "test-admin-token")
 
 from app.config import settings
 from app.database import Base
+from app.schema import expected_revisions
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,9 @@ def test_migrations_reconcile_a_database_previously_changed_by_startup_ddl(tmp_p
         engine = create_engine(database_url)
         Base.metadata.create_all(bind=engine)
         with sqlite3.connect(tmp_path / "legacy.db") as connection:
+            # These tables did not exist before the Phase 1 migration.
+            connection.execute("DROP TABLE site_memberships")
+            connection.execute("DROP TABLE organization_memberships")
             for column in (
                 "external_ip VARCHAR(64)", "address VARCHAR(500)",
                 "store_hours_mf VARCHAR(120)", "store_hours_sat VARCHAR(120)", "store_hours_sun VARCHAR(120)",
@@ -58,6 +62,6 @@ def test_migrations_reconcile_a_database_previously_changed_by_startup_ddl(tmp_p
         command.upgrade(config, "head")
 
         with sqlite3.connect(tmp_path / "legacy.db") as connection:
-            assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0011_edge_resource_metrics",)
+            assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (expected_revisions()[0],)
     finally:
         settings.database_url = previous_database_url

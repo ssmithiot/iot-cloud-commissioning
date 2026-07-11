@@ -79,6 +79,7 @@ class Organization(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     sites: Mapped[list["Site"]] = relationship(back_populates="organization")
+    memberships: Mapped[list["OrganizationMembership"]] = relationship(back_populates="organization", cascade="all, delete-orphan")
 
 
 class Site(Base):
@@ -112,6 +113,7 @@ class Site(Base):
     organization: Mapped[Organization | None] = relationship(back_populates="sites")
     edge_nodes: Mapped[list["EdgeNode"]] = relationship(back_populates="site")
     weather: Mapped["SiteWeather | None"] = relationship(back_populates="site")
+    memberships: Mapped[list["SiteMembership"]] = relationship(back_populates="site", cascade="all, delete-orphan")
 
 
 class SiteWeather(Base):
@@ -268,6 +270,8 @@ class OperatorUser(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    organization_memberships: Mapped[list["OrganizationMembership"]] = relationship(back_populates="operator", cascade="all, delete-orphan")
+    site_memberships: Mapped[list["SiteMembership"]] = relationship(back_populates="operator", cascade="all, delete-orphan")
 
 
 class GatewayGroup(Base):
@@ -348,6 +352,35 @@ class SavedBacnetPoint(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
     trend_config: Mapped["PointTrendConfig | None"] = relationship(back_populates="point", cascade="all, delete-orphan", uselist=False)
     trend_samples: Mapped[list["PointTrendSample"]] = relationship(back_populates="point", cascade="all, delete-orphan")
+
+
+class OrganizationMembership(Base):
+    __tablename__ = "organization_memberships"
+    __table_args__ = (UniqueConstraint("organization_id", "operator_user_id", name="uq_org_memberships_org_operator"),)
+
+    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True)
+    operator_user_id: Mapped[UUID] = mapped_column(ForeignKey("operator_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(40), nullable=False, default="viewer")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    organization: Mapped[Organization] = relationship(back_populates="memberships")
+    operator: Mapped[OperatorUser] = relationship(back_populates="organization_memberships")
+
+
+class SiteMembership(Base):
+    __tablename__ = "site_memberships"
+    __table_args__ = (UniqueConstraint("site_uuid", "operator_user_id", name="uq_site_memberships_site_operator"),)
+
+    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    site_uuid: Mapped[UUID] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"), nullable=False, index=True)
+    operator_user_id: Mapped[UUID] = mapped_column(ForeignKey("operator_users.id", ondelete="CASCADE"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(40), nullable=False, default="viewer")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+    site: Mapped[Site] = relationship(back_populates="memberships")
+    operator: Mapped[OperatorUser] = relationship(back_populates="site_memberships")
 
 
 class PointTrendConfig(Base):
