@@ -870,7 +870,7 @@ def _device_out(device: SavedBacnetDevice) -> dict[str, object]:
     }
 
 
-def _point_out(point: SavedBacnetPoint) -> dict[str, object]:
+def _point_out(point: SavedBacnetPoint, trend_config: PointTrendConfig | None = None) -> dict[str, object]:
     return {
         "id": str(point.id),
         "gateway_id": point.gateway_id,
@@ -885,6 +885,8 @@ def _point_out(point: SavedBacnetPoint) -> dict[str, object]:
         "writable": point.writable,
         "latest_read_at": point.latest_read_at,
         "enabled": point.enabled,
+        "trend_enabled": bool(trend_config and trend_config.enabled),
+        "trend_interval_sec": trend_config.interval_sec if trend_config else None,
         "created_at": point.created_at,
         "updated_at": point.updated_at,
     }
@@ -1517,11 +1519,15 @@ def ui_get_gateway_tree(
             .order_by(SavedBacnetPoint.device_instance, SavedBacnetPoint.object_type, SavedBacnetPoint.object_instance)
         ).all()
     )
+    trend_configs = {
+        config.point_id: config
+        for config in db.scalars(select(PointTrendConfig).where(PointTrendConfig.point_id.in_([point.id for point in points]))).all()
+    }
     return GatewayTreeOut(
         gateway=GatewayOut(**_gateway_out(gateway)),
         groups=[GatewayGroupOut(**_group_out(group)) for group in groups],
         devices=[SavedDeviceOut(**_device_out(device)) for device in devices],
-        points=[SavedPointOut(**_point_out(point)) for point in points],
+        points=[SavedPointOut(**_point_out(point, trend_configs.get(point.id))) for point in points],
     )
 
 

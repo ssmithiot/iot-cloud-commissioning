@@ -580,6 +580,8 @@ class SavedPointOut(BaseModel):
     writable: bool | None
     latest_read_at: datetime | None
     enabled: bool
+    trend_enabled: bool = False
+    trend_interval_sec: int | None = None
     created_at: datetime
     updated_at: datetime
 
