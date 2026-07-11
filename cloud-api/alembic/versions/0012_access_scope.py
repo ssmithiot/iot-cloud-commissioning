@@ -50,6 +50,32 @@ def upgrade() -> None:
         )
 
     inspector = sa.inspect(op.get_bind())
+    # Earlier experimental deployments could have created an incomplete
+    # membership table outside Alembic. Reconcile its columns before creating
+    # indexes so an interrupted historical deployment can safely resume.
+    organization_columns = {column["name"] for column in inspector.get_columns("organization_memberships")}
+    for column in (
+        sa.Column("organization_id", organization_id_type, nullable=True),
+        sa.Column("operator_user_id", operator_id_type, nullable=True),
+        sa.Column("role", sa.String(length=40), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    ):
+        if column.name not in organization_columns:
+            op.add_column("organization_memberships", column)
+
+    site_columns = {column["name"] for column in inspector.get_columns("site_memberships")}
+    for column in (
+        sa.Column("site_uuid", site_id_type, nullable=True),
+        sa.Column("operator_user_id", operator_id_type, nullable=True),
+        sa.Column("role", sa.String(length=40), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True),
+    ):
+        if column.name not in site_columns:
+            op.add_column("site_memberships", column)
+
+    inspector = sa.inspect(op.get_bind())
     organization_indexes = {index["name"] for index in inspector.get_indexes("organization_memberships")}
     if "ix_organization_memberships_organization_id" not in organization_indexes:
         op.create_index("ix_organization_memberships_organization_id", "organization_memberships", ["organization_id"], unique=False)
