@@ -195,19 +195,19 @@ def test_load_config_reads_tunnel_settings(tmp_path: Path) -> None:
     assert agent_config.local_ui_url == "http://127.0.0.1:5100"
 
 
-def test_load_config_defaults_missing_versions(tmp_path: Path) -> None:
+def test_load_config_uses_installed_edge_app_version(tmp_path: Path) -> None:
     config_path = tmp_path / "agent.yaml"
     config_path.write_text(
         "gateway_id: GW001\n"
         "site_id: demo-site\n"
         "cloud_url: http://localhost:8000\n"
-        "agent_version: ''\n",
+        "agent_version: current\n",
         encoding="utf-8",
     )
 
     agent_config = load_config(config_path)
 
-    assert agent_config.agent_version == "0.1.0"
+    assert agent_config.agent_version == "0.1.1"
     assert agent_config.ui_version == "0.1.0"
 
 

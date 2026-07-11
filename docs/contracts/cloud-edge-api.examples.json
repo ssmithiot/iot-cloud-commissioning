@@ -6,7 +6,7 @@
       "hostname": "edge-demo",
       "lan_ip": "192.168.1.10",
       "bacnet_port": 47814,
-      "agent_version": "0.1.0",
+      "agent_version": "0.1.1",
       "ui_version": "0.1.0",
       "sqlite_db_ok": true,
       "queued_upload_count": 0,

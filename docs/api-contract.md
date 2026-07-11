@@ -130,13 +130,15 @@ Request:
   "hostname": "edge-demo",
   "lan_ip": "192.168.1.10",
   "bacnet_port": 47814,
-  "agent_version": "0.1.0",
+  "agent_version": "0.1.1",
   "ui_version": "0.1.0",
   "sqlite_db_ok": true,
   "queued_upload_count": 0,
   "timestamp_utc": "2026-06-19T00:00:00Z"
 }
 ```
+
+`agent_version` is the installed edge application package version. The agent reads it from package code rather than mutable gateway configuration so the registry receives a real release number. `ui_version` remains the separately reported local UI version.
 
 Response:
 
@@ -324,7 +326,7 @@ Response:
     "hostname": "edge-demo",
     "lan_ip": "192.168.1.10",
     "bacnet_port": 47814,
-    "agent_version": "0.1.0",
+    "agent_version": "0.1.1",
     "ui_version": "0.1.0",
     "sqlite_db_ok": true,
     "queued_upload_count": 0,

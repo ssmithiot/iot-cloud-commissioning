@@ -52,7 +52,7 @@ def heartbeat_payload(gateway_id: str = "GW001") -> dict[str, object]:
         "hostname": "edge-demo",
         "lan_ip": "192.168.1.10",
         "bacnet_port": 47814,
-        "agent_version": "0.1.0",
+        "agent_version": "0.1.1",
         "ui_version": "0.1.0",
         "sqlite_db_ok": True,
         "queued_upload_count": 0,
@@ -348,7 +348,13 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert "gatewaySearchText" in response.text
     assert "sortedDashboardGateways" in response.text
     assert 'data-sort="gateway_id"' in response.text
+    assert 'data-sort="version"' in response.text
     assert 'data-sort="status"' in response.text
+    assert "edgeAppVersion(gateway)" in response.text
+    assert 'version.toLowerCase() !== "current"' in response.text
+    assert 'data-sort="version">Edge App</button>' in response.text
+    assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
+    assert 'colspan="9"' in response.text
     assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
 
 
@@ -453,6 +459,7 @@ def test_heartbeat_creates_gateway_and_history() -> None:
     assert gateways.status_code == 200
     assert gateways.json()[0]["gateway_id"] == "GW001"
     assert gateways.json()[0]["site_id"] == "demo-site"
+    assert gateways.json()[0]["agent_version"] == "0.1.1"
 
 
 def test_configure_gateway_redirects_to_cloud_tunnel() -> None:

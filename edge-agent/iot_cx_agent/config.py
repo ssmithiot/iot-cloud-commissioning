@@ -9,6 +9,7 @@ from iot_cx_agent import __version__
 
 DEFAULT_CONFIG_PATH = Path("/etc/iot-cx-agent/agent.yaml")
 DEFAULT_SQLITE_PATH = Path("/var/lib/iot-cx-agent/edge.db")
+DEFAULT_UI_VERSION = "0.1.0"
 DEFAULT_BACNET_PORT = 47814
 BAC_RTR_BACNET_PORT = 47809
 DEFAULT_BACNET_LOCK_DIR = Path("/tmp")
@@ -41,8 +42,8 @@ class AgentConfig:
     bacnet_lock_timeout_sec: float = 30.0
     bacnet_lock_stale_sec: float = 120.0
     heartbeat_interval_sec: int = 30
-    agent_version: str = "0.1.0"
-    ui_version: str = "0.1.0"
+    agent_version: str = __version__
+    ui_version: str = DEFAULT_UI_VERSION
     sqlite_path: Path = DEFAULT_SQLITE_PATH
     gateway_api_token: str | None = None
 
@@ -63,11 +64,11 @@ class AgentConfig:
         return self.bacnet_lock_path / f"{DEFAULT_BACNET_LOCK_PREFIX}-{resolved_port}.lock"
 
 
-def _configured_version(value: object | None) -> str:
+def _configured_ui_version(value: object | None) -> str:
     if value is None:
-        return __version__
+        return DEFAULT_UI_VERSION
     version = str(value).strip()
-    return version or __version__
+    return version or DEFAULT_UI_VERSION
 
 
 def _parse_port(raw_port: object, source: str) -> int:
@@ -139,8 +140,8 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         bacnet_lock_timeout_sec=float(bacnet.get("lock_timeout_sec", 30)),
         bacnet_lock_stale_sec=float(bacnet.get("lock_stale_sec", 120)),
         heartbeat_interval_sec=int(raw.get("heartbeat_interval_sec", 30)),
-        agent_version=_configured_version(raw.get("agent_version")),
-        ui_version=_configured_version(raw.get("ui_version")),
+        agent_version=__version__,
+        ui_version=_configured_ui_version(raw.get("ui_version")),
         sqlite_path=sqlite_path,
         gateway_api_token=os.getenv("GATEWAY_API_TOKEN") or raw.get("gateway_api_token"),
     )
