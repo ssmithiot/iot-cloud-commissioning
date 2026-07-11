@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import select, text
+from sqlalchemy import String, cast, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -333,6 +333,40 @@ def _site_compact_address(site: Site | None) -> str | None:
     locality = ", ".join(part for part in [city, city_state_zip] if part)
     compact = ", ".join(part for part in [street, locality] if part)
     return compact or _clean_optional_text(site.address)
+
+
+def _site_out_columns():
+    """Select SiteOut fields without hydrating the legacy primary-key column.
+
+    Early databases used integer site IDs while the current model uses UUIDs.
+    The browser-facing list does not need that internal key, so this preserves
+    existing sites while the legacy identity migration remains isolated.
+    """
+    columns = Site.__table__.c
+    return (
+        columns.site_id,
+        columns.name,
+        columns.external_ip,
+        columns.address,
+        columns.address_street,
+        columns.address_city,
+        columns.address_state,
+        columns.address_postal_code,
+        columns.latitude,
+        columns.longitude,
+        columns.store_hours_mf,
+        columns.store_hours_sat,
+        columns.store_hours_sun,
+        columns.cradlepoint_ip,
+        columns.direct_connect_host,
+        columns.direct_connect_port,
+        columns.gateway_ui_port,
+        columns.store_hours_monday_friday,
+        columns.store_hours_saturday,
+        columns.store_hours_sunday,
+        columns.network_status_notes,
+        cast(columns.organization_id, String).label("organization_id"),
+    )
 
 
 def _weather_condition(code: int | None) -> str | None:
@@ -1103,8 +1137,12 @@ def upsert_operator_user(
 def list_organizations(
     _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
     db: Session = Depends(get_db),
-) -> list[Organization]:
-    return list(db.scalars(select(Organization).order_by(Organization.name)).all())
+) -> list[dict[str, object]]:
+    columns = Organization.__table__.c
+    rows = db.execute(
+        select(cast(columns.id, String).label("id"), columns.name, columns.created_at).order_by(columns.name)
+    ).mappings()
+    return [dict(row) for row in rows]
 
 
 @app.post("/api/admin/organizations", response_model=OrganizationOut)
@@ -1337,12 +1375,12 @@ def ui_gateway_summary(
 def ui_list_sites(
     auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
-) -> list[Site]:
-    statement = select(Site).order_by(Site.site_id)
+) -> list[dict[str, object]]:
+    statement = select(*_site_out_columns()).order_by(Site.__table__.c.site_id)
     allowed_site_ids = visible_site_ids(db, auth)
     if allowed_site_ids is not None:
-        statement = statement.where(Site.id.in_(allowed_site_ids))
-    return list(db.scalars(statement).all())
+        statement = statement.where(Site.__table__.c.id.in_(allowed_site_ids))
+    return [dict(row) for row in db.execute(statement).mappings()]
 
 
 @app.get("/api/ui/sites/{site_id}", response_model=SiteOut)
