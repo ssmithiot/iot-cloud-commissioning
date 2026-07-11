@@ -1885,15 +1885,17 @@ def ui_upsert_point_trend(
 def ui_point_trend_samples(
     point_id: str,
     limit: int = Query(default=288, ge=1, le=5000),
+    since: datetime | None = Query(default=None),
     _: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> list[PointTrendSample]:
     point = db.get(SavedBacnetPoint, _tree_id(point_id))
     if point is None:
         raise HTTPException(status_code=404, detail="Point not found")
-    samples = db.scalars(
-        select(PointTrendSample).where(PointTrendSample.point_id == point.id).order_by(PointTrendSample.sampled_at.desc()).limit(limit)
-    ).all()
+    statement = select(PointTrendSample).where(PointTrendSample.point_id == point.id)
+    if since is not None:
+        statement = statement.where(PointTrendSample.sampled_at >= since)
+    samples = db.scalars(statement.order_by(PointTrendSample.sampled_at.desc()).limit(limit)).all()
     return list(reversed(samples))
 
 

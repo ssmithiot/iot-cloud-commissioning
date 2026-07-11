@@ -432,12 +432,14 @@ def test_gateway_workspace_stacks_trends_for_selected_points() -> None:
     assert "renderSelectedPointTrends(selected);" in response.text
     assert 'class="point-trend-list"' in response.text
     assert 'class="point-trend-card"' in response.text
-    assert "loadSelectedPointTrend(card, points[index]);" in response.text
+    assert "loadSelectedPointTrend(card, points[index], chartRange);" in response.text
     assert "pointTrendResizeObservers" in response.text
     assert "trendCardControls(point)" in response.text
     assert 'class="trend-chart-size"' in response.text
     assert 'class="trend-chart-theme"' in response.text
     assert "trendChartThemeStorageKey" in response.text
+    assert "trendChartRangeStorageKey" in response.text
+    assert 'class="trend-chart-range"' in response.text
     assert "trend-edit-button" in response.text
     assert "disable-point-trend" in response.text
     assert "updatePointTrend(point, false" in response.text
@@ -2439,6 +2441,7 @@ def test_point_trend_config_and_edge_sample_upload() -> None:
         json=[{"point_id": point["id"], "sampled_at": "2026-07-11T12:00:00Z", "value": "72.5"}],
     )
     history = client.get(f"/api/ui/points/{point['id']}/trend", headers=headers)
+    recent_history = client.get(f"/api/ui/points/{point['id']}/trend?since=2026-07-11T12:00:01Z", headers=headers)
     tree = client.get("/api/ui/gateways/GW001/tree", headers=headers)
 
     assert configured.status_code == 200
@@ -2446,6 +2449,7 @@ def test_point_trend_config_and_edge_sample_upload() -> None:
     assert edge_configs.json()[0]["device_instance"] == 1001
     assert uploaded.status_code == 200
     assert history.json()[0]["value"] == "72.5"
+    assert recent_history.json() == []
     assert tree.json()["points"][0]["trend_enabled"] is True
     assert tree.json()["points"][0]["trend_interval_sec"] == 60
 
