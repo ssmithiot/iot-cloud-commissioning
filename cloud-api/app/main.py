@@ -13,7 +13,7 @@ from urllib.request import urlopen
 from uuid import UUID
 from uuid import uuid4
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
@@ -56,6 +56,7 @@ from app.schemas import (
     EdgeJobClaimOut,
     GatewayGroupIn,
     GatewayGroupOut,
+    GatewayHeartbeatTrendOut,
     GatewayOut,
     GatewayProvisionIn,
     GatewayProvisionOut,
@@ -1179,6 +1180,37 @@ def ui_get_gateway(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     return _gateway_out(_get_gateway_with_site_or_404(db, gateway_id))
+
+
+@app.get("/api/ui/gateways/{gateway_id}/heartbeat-trend", response_model=list[GatewayHeartbeatTrendOut])
+def ui_gateway_heartbeat_trend(
+    gateway_id: str,
+    limit: int = Query(default=96, ge=1, le=720),
+    _: AdminAuthContext = Depends(require_operator_auth),
+    db: Session = Depends(get_db),
+) -> list[dict[str, object]]:
+    """Return recorded edge heartbeats, oldest first, for the dashboard trend."""
+    _get_gateway_or_404(db, gateway_id)
+    heartbeats = list(
+        db.scalars(
+            select(EdgeHeartbeat)
+            .where(EdgeHeartbeat.gateway_id == gateway_id)
+            .order_by(EdgeHeartbeat.timestamp_utc.desc())
+            .limit(limit)
+        ).all()
+    )
+    return [
+        {
+            "timestamp_utc": heartbeat.timestamp_utc,
+            "received_at": heartbeat.received_at,
+            "status": "online" if heartbeat.sqlite_db_ok else "degraded",
+            "sqlite_db_ok": heartbeat.sqlite_db_ok,
+            "queued_upload_count": heartbeat.queued_upload_count,
+            "agent_version": heartbeat.agent_version,
+            "ui_version": heartbeat.ui_version,
+        }
+        for heartbeat in reversed(heartbeats)
+    ]
 
 
 @app.get("/api/ui/gateways/{gateway_id}/site", response_model=SiteOut)

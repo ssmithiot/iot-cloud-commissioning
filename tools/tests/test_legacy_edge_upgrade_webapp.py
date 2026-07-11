@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import base64
+import socket
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import tools.legacy_edge_upgrade_webapp as legacy_webapp  # noqa: E402
 from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     LegacyUpgradeRunner,
     NESTED_UPLOAD_CHUNK_SIZE,
@@ -27,6 +31,21 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     sudo_systemctl_timeout,
     update_start_sh_command,
 )
+
+
+def test_duplicate_server_launch_does_not_start_an_orphaned_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    worker_started = []
+    monkeypatch.setattr(legacy_webapp, "gateway_update_worker", lambda: worker_started.append(True))
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    try:
+        with pytest.raises(OSError):
+            legacy_webapp.run_server(listener.getsockname()[1])
+    finally:
+        listener.close()
+
+    assert worker_started == []
 
 
 def make_request() -> UpgradeRequest:
