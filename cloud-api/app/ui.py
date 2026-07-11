@@ -2228,14 +2228,47 @@ APP_SCRIPT = r"""
     renderSelectedPointTrend(selected[0] || null);
   }
 
-  function trendChart(samples) {
-    const numeric = samples.map((sample) => Number(sample.value)).filter((value) => Number.isFinite(value));
-    if (numeric.length < 2) return `<span class="muted">No numeric samples yet.</span>`;
-    const minimum = Math.min(...numeric);
-    const maximum = Math.max(...numeric);
-    const span = maximum - minimum || 1;
-    const points = numeric.map((value, index) => `${(index / (numeric.length - 1)) * 100},${36 - ((value - minimum) / span) * 32}`).join(" ");
-    return `<svg class="point-trend-chart" viewBox="0 0 100 40" preserveAspectRatio="none" role="img" aria-label="${numeric.length} point samples from ${minimum} to ${maximum}"><polyline points="${points}"/></svg><small>${numeric.length} samples · ${minimum} to ${maximum}</small>`;
+  function numericTrendSamples(samples) {
+    return samples.map((sample) => ({ ...sample, valueNumber: Number(sample.value), time: new Date(sample.sampled_at).getTime() })).filter((sample) => Number.isFinite(sample.valueNumber) && Number.isFinite(sample.time));
+  }
+
+  function formatTrendTime(value) {
+    return new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
+  function trendChart(samples, units = "") {
+    const points = numericTrendSamples(samples);
+    if (points.length < 2) return `<span class="muted">Two numeric samples are needed before a trend line can be drawn.</span>`;
+    const width = 600, height = 270, left = 64, right = 16, top = 18, bottom = 48;
+    const plotWidth = width - left - right, plotHeight = height - top - bottom;
+    const minimum = Math.min(...points.map((point) => point.valueNumber));
+    const maximum = Math.max(...points.map((point) => point.valueNumber));
+    const valuePadding = Math.max((maximum - minimum) * 0.08, Math.abs(maximum || 1) * 0.02, 0.1);
+    const yMin = minimum - valuePadding, yMax = maximum + valuePadding;
+    const firstTime = points[0].time, lastTime = points.at(-1).time, timeSpan = lastTime - firstTime || 1;
+    points.forEach((point, index) => {
+      point.x = left + ((point.time - firstTime) / timeSpan || index / (points.length - 1)) * plotWidth;
+      point.y = top + (1 - ((point.valueNumber - yMin) / (yMax - yMin))) * plotHeight;
+    });
+    const ticks = [0, 0.25, 0.5, 0.75, 1];
+    const path = points.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
+    return `<div class="trend-plot-shell"><svg class="point-trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${points.length} samples from ${minimum} to ${maximum}${units ? ` ${units}` : ""}"><rect class="trend-plot-bg" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}"/>${ticks.map((tick) => { const y = top + (1 - tick) * plotHeight; const value = yMin + tick * (yMax - yMin); return `<line class="trend-grid" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="trend-axis-text" x="${left - 8}" y="${y + 4}" text-anchor="end">${value.toFixed(1)}</text>`; }).join("")}<line class="trend-axis" x1="${left}" y1="${top + plotHeight}" x2="${width - right}" y2="${top + plotHeight}"/><line class="trend-axis" x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}"/><text class="trend-axis-text" x="${left}" y="${height - 18}" text-anchor="start">${escapeHtml(formatTrendTime(points[0].sampled_at))}</text><text class="trend-axis-text" x="${width - right}" y="${height - 18}" text-anchor="end">${escapeHtml(formatTrendTime(points.at(-1).sampled_at))}</text><text class="trend-axis-label" transform="translate(15 ${top + plotHeight / 2}) rotate(-90)" text-anchor="middle">Value${units ? ` (${escapeHtml(units)})` : ""}</text><text class="trend-axis-label" x="${left + plotWidth / 2}" y="${height - 2}" text-anchor="middle">Time</text><polyline class="trend-line" points="${path}"/><line class="trend-crosshair trend-crosshair-x"/><line class="trend-crosshair trend-crosshair-y"/><circle class="trend-hover-dot" r="4"/></svg><div class="trend-tooltip" hidden></div></div><small>${points.length} samples · range ${minimum.toFixed(2)}–${maximum.toFixed(2)}${units ? ` ${escapeHtml(units)}` : ""}</small>`;
+  }
+
+  function attachTrendHover(chart, samples, units = "") {
+    const points = numericTrendSamples(samples);
+    const svg = chart.querySelector("svg");
+    const tooltip = chart.querySelector(".trend-tooltip");
+    if (!svg || !tooltip || points.length < 2) return;
+    const width = 600, height = 270, left = 64, right = 16, top = 18, bottom = 48;
+    const plotWidth = width - left - right, plotHeight = height - top - bottom;
+    const yMin = Math.min(...points.map((point) => point.valueNumber)) - Math.max((Math.max(...points.map((point) => point.valueNumber)) - Math.min(...points.map((point) => point.valueNumber))) * 0.08, Math.abs(Math.max(...points.map((point) => point.valueNumber)) || 1) * 0.02, 0.1);
+    const yMax = Math.max(...points.map((point) => point.valueNumber)) + Math.max((Math.max(...points.map((point) => point.valueNumber)) - Math.min(...points.map((point) => point.valueNumber))) * 0.08, Math.abs(Math.max(...points.map((point) => point.valueNumber)) || 1) * 0.02, 0.1);
+    const firstTime = points[0].time, timeSpan = points.at(-1).time - firstTime || 1;
+    points.forEach((point, index) => { point.x = left + ((point.time - firstTime) / timeSpan || index / (points.length - 1)) * plotWidth; point.y = top + (1 - ((point.valueNumber - yMin) / (yMax - yMin))) * plotHeight; });
+    const vertical = svg.querySelector(".trend-crosshair-x"), horizontal = svg.querySelector(".trend-crosshair-y"), dot = svg.querySelector(".trend-hover-dot");
+    const show = (event) => { const box = svg.getBoundingClientRect(); const targetX = ((event.clientX - box.left) / box.width) * width; const point = points.reduce((closest, candidate) => Math.abs(candidate.x - targetX) < Math.abs(closest.x - targetX) ? candidate : closest); vertical.setAttribute("x1", point.x); vertical.setAttribute("x2", point.x); vertical.setAttribute("y1", top); vertical.setAttribute("y2", top + plotHeight); horizontal.setAttribute("x1", left); horizontal.setAttribute("x2", left + plotWidth); horizontal.setAttribute("y1", point.y); horizontal.setAttribute("y2", point.y); dot.setAttribute("cx", point.x); dot.setAttribute("cy", point.y); [vertical, horizontal, dot].forEach((element) => element.classList.add("visible")); tooltip.hidden = false; tooltip.textContent = `${formatTrendTime(point.sampled_at)} · ${point.valueNumber}${units ? ` ${units}` : ""}`; tooltip.style.left = `${Math.min(Math.max(event.clientX - chart.getBoundingClientRect().left + 12, 0), chart.clientWidth - tooltip.offsetWidth)}px`; tooltip.style.top = `${Math.max(event.clientY - chart.getBoundingClientRect().top - 34, 0)}px`; };
+    svg.addEventListener("mousemove", show); svg.addEventListener("mouseleave", () => { tooltip.hidden = true; [vertical, horizontal, dot].forEach((element) => element.classList.remove("visible")); });
   }
 
   async function renderSelectedPointTrend(point) {
@@ -2249,7 +2282,8 @@ APP_SCRIPT = r"""
     const chart = byId("point-trend-chart");
     try {
       const samples = await api(`/api/ui/points/${encodeURIComponent(point.id)}/trend?limit=288`);
-      chart.innerHTML = trendChart(samples);
+      chart.innerHTML = trendChart(samples, point.units || "");
+      attachTrendHover(chart, samples, point.units || "");
     } catch (error) {
       chart.innerHTML = `<span class="muted">Trend samples are unavailable.</span>`;
     }
@@ -3805,17 +3839,63 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       display: grid;
       gap: 6px;
       min-height: 48px;
+      position: relative;
     }}
     .point-trend-chart {{
       width: 100%;
-      height: 86px;
+      height: 230px;
       overflow: visible;
     }}
-    .point-trend-chart polyline {{
+    .trend-plot-bg {{
+      fill: #fff;
+      stroke: #c8d1d5;
+    }}
+    .trend-grid {{
+      stroke: #dce4e7;
+      stroke-width: 1;
+    }}
+    .trend-axis {{
+      stroke: #76858c;
+      stroke-width: 1;
+    }}
+    .trend-axis-text {{
+      fill: #526067;
+      font: 11px/1 "JetBrains Mono", Consolas, monospace;
+    }}
+    .trend-axis-label {{
+      fill: #1d2a30;
+      font: 700 11px/1 "JetBrains Mono", Consolas, monospace;
+    }}
+    .trend-line {{
       fill: none;
-      stroke: var(--accent-strong);
-      stroke-width: 2;
+      stroke: #008b88;
+      stroke-width: 2.5;
       vector-effect: non-scaling-stroke;
+    }}
+    .trend-crosshair {{
+      display: none;
+      stroke: #45565d;
+      stroke-width: 1;
+      stroke-dasharray: 3 3;
+    }}
+    .trend-hover-dot {{
+      display: none;
+      fill: #008b88;
+      stroke: #fff;
+      stroke-width: 2;
+    }}
+    .trend-crosshair.visible, .trend-hover-dot.visible {{ display: block; }}
+    .trend-tooltip {{
+      position: absolute;
+      z-index: 2;
+      padding: 5px 7px;
+      border: 1px solid #607078;
+      border-radius: 4px;
+      background: #17242a;
+      color: #fff;
+      font: 700 11px/1.25 "JetBrains Mono", Consolas, monospace;
+      pointer-events: none;
+      white-space: nowrap;
     }}
     .site-summary-grid dt {{
       color: var(--muted);
