@@ -332,3 +332,31 @@ class SavedBacnetPoint(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    trend_config: Mapped["PointTrendConfig | None"] = relationship(back_populates="point", cascade="all, delete-orphan", uselist=False)
+    trend_samples: Mapped[list["PointTrendSample"]] = relationship(back_populates="point", cascade="all, delete-orphan")
+
+
+class PointTrendConfig(Base):
+    __tablename__ = "point_trend_configs"
+
+    point_id: Mapped[str] = mapped_column(String(36), ForeignKey("saved_bacnet_points.id", ondelete="CASCADE"), primary_key=True)
+    gateway_id: Mapped[str] = mapped_column(String(120), ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"), nullable=False, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    interval_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+    point: Mapped["SavedBacnetPoint"] = relationship(back_populates="trend_config")
+
+
+class PointTrendSample(Base):
+    __tablename__ = "point_trend_samples"
+    __table_args__ = (UniqueConstraint("point_id", "sampled_at", name="uq_point_trend_sample_time"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    point_id: Mapped[str] = mapped_column(String(36), ForeignKey("saved_bacnet_points.id", ondelete="CASCADE"), nullable=False, index=True)
+    gateway_id: Mapped[str] = mapped_column(String(120), ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"), nullable=False, index=True)
+    sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    point: Mapped["SavedBacnetPoint"] = relationship(back_populates="trend_samples")

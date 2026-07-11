@@ -2225,6 +2225,43 @@ APP_SCRIPT = r"""
     if (addButton) {
       addButton.disabled = !selected.length;
     }
+    renderSelectedPointTrend(selected[0] || null);
+  }
+
+  function trendChart(samples) {
+    const numeric = samples.map((sample) => Number(sample.value)).filter((value) => Number.isFinite(value));
+    if (numeric.length < 2) return `<span class="muted">No numeric samples yet.</span>`;
+    const minimum = Math.min(...numeric);
+    const maximum = Math.max(...numeric);
+    const span = maximum - minimum || 1;
+    const points = numeric.map((value, index) => `${(index / (numeric.length - 1)) * 100},${36 - ((value - minimum) / span) * 32}`).join(" ");
+    return `<svg class="point-trend-chart" viewBox="0 0 100 40" preserveAspectRatio="none" role="img" aria-label="${numeric.length} point samples from ${minimum} to ${maximum}"><polyline points="${points}"/></svg><small>${numeric.length} samples · ${minimum} to ${maximum}</small>`;
+  }
+
+  async function renderSelectedPointTrend(point) {
+    const panel = byId("point-trend-panel");
+    if (!panel) return;
+    if (!point) {
+      panel.innerHTML = `<h2>Trend</h2><span class="muted">Select one saved point to configure its trend.</span>`;
+      return;
+    }
+    panel.innerHTML = `<h2>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h2><div class="toolbar"><label>Interval <select id="point-trend-interval"><option value="60">1 minute</option><option value="300" selected>5 minutes</option><option value="900">15 minutes</option></select></label><button id="enable-point-trend" type="button"${canEditTree() ? "" : " disabled"}>Enable trend</button></div><div id="point-trend-chart" class="point-trend-chart-wrap">Loading samples...</div>`;
+    const chart = byId("point-trend-chart");
+    try {
+      const samples = await api(`/api/ui/points/${encodeURIComponent(point.id)}/trend?limit=288`);
+      chart.innerHTML = trendChart(samples);
+    } catch (error) {
+      chart.innerHTML = `<span class="muted">Trend samples are unavailable.</span>`;
+    }
+    byId("enable-point-trend")?.addEventListener("click", async () => {
+      try {
+        const interval = Number(byId("point-trend-interval").value);
+        await api(`/api/ui/points/${encodeURIComponent(point.id)}/trend`, { method: "PUT", body: JSON.stringify({ enabled: true, interval_sec: interval }) });
+        setText("status", `Trend enabled for ${savedPointLabel(point)} every ${interval} seconds.`);
+      } catch (error) {
+        setText("status", errorMessage(error), true);
+      }
+    });
   }
 
   function setSavedPointSelected(point, checked) {
@@ -3759,6 +3796,26 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .site-summary-grid div {{
       min-width: 0;
+    }}
+    .point-trend-panel {{
+      display: grid;
+      gap: 10px;
+    }}
+    .point-trend-chart-wrap {{
+      display: grid;
+      gap: 6px;
+      min-height: 48px;
+    }}
+    .point-trend-chart {{
+      width: 100%;
+      height: 86px;
+      overflow: visible;
+    }}
+    .point-trend-chart polyline {{
+      fill: none;
+      stroke: var(--accent-strong);
+      stroke-width: 2;
+      vector-effect: non-scaling-stroke;
     }}
     .site-summary-grid dt {{
       color: var(--muted);
@@ -5656,6 +5713,10 @@ def gateway_workspace_html(gateway_id: str) -> str:
               <button id="add-selected-to-custom-table" type="button" disabled>Add to table</button>
               <button id="remove-selected-points" class="secondary" type="button" disabled>Remove selected</button>
             </div>
+          </div>
+          <div id="point-trend-panel" class="detail-panel point-trend-panel">
+            <h2>Trend</h2>
+            <span class="muted">Select one saved point to configure its trend.</span>
           </div>
         </aside>
       </div>

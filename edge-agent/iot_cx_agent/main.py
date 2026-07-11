@@ -12,6 +12,7 @@ from iot_cx_agent.heartbeat import send_heartbeat
 from iot_cx_agent.jobs import process_next_job
 from iot_cx_agent.status import collect_status, utc_timestamp
 from iot_cx_agent.tunnel import run_tunnel_forever
+from iot_cx_agent.trends import sample_configured_trends, upload_pending_trend_samples
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -58,6 +59,13 @@ def run_once(config: AgentConfig) -> bool:
         logger.warning("Heartbeat upload failed: %s", exc)
 
     if sqlite_db_ok:
+        try:
+            sample_configured_trends(config)
+            upload_pending_trend_samples(config)
+        except requests.RequestException as exc:
+            logger.warning("Trend sync failed: %s", exc)
+        except Exception:
+            logger.exception("Trend sampling failed")
         process_next_job(config)
     return heartbeat_success
 

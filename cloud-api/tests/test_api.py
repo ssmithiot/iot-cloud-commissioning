@@ -2380,6 +2380,33 @@ def test_ui_operator_can_soft_remove_point_from_tree() -> None:
     assert tree_response.json()["points"] == []
 
 
+def test_point_trend_config_and_edge_sample_upload() -> None:
+    raw_token = create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    device = client.post("/api/ui/gateways/GW001/devices", headers=headers, json={"device_instance": 1001, "device_name": "AHU-1"}).json()
+    point = client.post(
+        f"/api/ui/devices/{device['id']}/points",
+        headers=headers,
+        json={"object_type": "analog-value", "object_instance": 10, "object_name": "Setpoint"},
+    ).json()
+
+    configured = client.put(f"/api/ui/points/{point['id']}/trend", headers=headers, json={"enabled": True, "interval_sec": 60})
+    edge_configs = client.get("/api/edge/GW001/trend-configs", headers=auth_headers(raw_token))
+    uploaded = client.post(
+        "/api/edge/GW001/trend-samples",
+        headers=auth_headers(raw_token),
+        json=[{"point_id": point["id"], "sampled_at": "2026-07-11T12:00:00Z", "value": "72.5"}],
+    )
+    history = client.get(f"/api/ui/points/{point['id']}/trend", headers=headers)
+
+    assert configured.status_code == 200
+    assert edge_configs.status_code == 200
+    assert edge_configs.json()[0]["device_instance"] == 1001
+    assert uploaded.status_code == 200
+    assert history.json()[0]["value"] == "72.5"
+
+
 def test_ui_operator_can_bulk_remove_points_from_tree() -> None:
     create_gateway_token("GW001")
     user_id = create_operator_user("operator@example.com", role="operator", status="active")

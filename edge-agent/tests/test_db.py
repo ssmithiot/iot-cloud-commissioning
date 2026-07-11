@@ -8,6 +8,9 @@ from iot_cx_agent.db import (
     record_claimed_job,
     record_heartbeat_attempt,
     record_job_result,
+    queue_trend_sample,
+    pending_trend_samples,
+    mark_trend_samples_uploaded,
 )
 
 
@@ -45,3 +48,16 @@ def test_job_history_round_trip(tmp_path: Path) -> None:
     assert stored["job_id"] == "job-1"
     assert stored["status"] == "completed"
     assert stored["result_json"] == '{"echo": true}'
+
+
+def test_trend_sample_queue_is_durable_until_uploaded(tmp_path: Path) -> None:
+    db_path = tmp_path / "edge.db"
+    initialize_database(db_path)
+    queue_trend_sample(db_path, {"point_id": "point-1", "sampled_at": "2026-07-11T12:00:00+00:00", "value": "72.5"}, "2026-07-11T12:00:00+00:00")
+
+    pending = pending_trend_samples(db_path)
+
+    assert queued_upload_count(db_path) == 1
+    assert pending[0][1]["value"] == "72.5"
+    mark_trend_samples_uploaded(db_path, [pending[0][0]], "2026-07-11T12:01:00+00:00")
+    assert queued_upload_count(db_path) == 0
