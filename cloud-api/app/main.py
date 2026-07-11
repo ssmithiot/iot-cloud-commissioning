@@ -56,8 +56,10 @@ from app.models import (
 )
 from app.schema import require_current_schema, schema_revision_status
 from app.schemas import (
+    AccessMembershipRecordOut,
     AccessMembershipOut,
     AccessMembershipUpsertIn,
+    AccessOverviewOut,
     CommissioningTemplateImportOut,
     CommissioningTemplateIn,
     CurrentOperatorOut,
@@ -260,6 +262,30 @@ def _require_gateway_site_access(db: Session, auth: AdminAuthContext, gateway_id
     edge_node = _get_gateway_with_site_or_404(db, gateway_id)
     require_site_access(db, auth, edge_node.site)
     return edge_node
+
+
+def _require_group_site_access(db: Session, auth: AdminAuthContext, group_id: str) -> GatewayGroup:
+    group = db.get(GatewayGroup, _tree_id(group_id))
+    if group is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+    _require_gateway_site_access(db, auth, group.gateway_id)
+    return group
+
+
+def _require_device_site_access(db: Session, auth: AdminAuthContext, device_id: str) -> SavedBacnetDevice:
+    device = db.get(SavedBacnetDevice, _tree_id(device_id))
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    _require_gateway_site_access(db, auth, device.gateway_id)
+    return device
+
+
+def _require_point_site_access(db: Session, auth: AdminAuthContext, point_id: str) -> SavedBacnetPoint:
+    point = db.get(SavedBacnetPoint, _tree_id(point_id))
+    if point is None:
+        raise HTTPException(status_code=404, detail="Point not found")
+    _require_gateway_site_access(db, auth, point.gateway_id)
+    return point
 
 
 def _scoped_gateway_statement(db: Session, auth: AdminAuthContext):
@@ -833,6 +859,23 @@ def _tree_id(value: str) -> str:
     return str(_uuid(value))
 
 
+def _mark_device_seen(device: SavedBacnetDevice, now: datetime) -> None:
+    device.first_seen_at = device.first_seen_at or now
+    device.last_seen_at = now
+    device.latest_discovered_at = now
+    device.lifecycle_state = "active"
+    device.retired_at = None
+    device.enabled = True
+
+
+def _mark_point_seen(point: SavedBacnetPoint, now: datetime) -> None:
+    point.first_seen_at = point.first_seen_at or now
+    point.last_seen_at = now
+    point.lifecycle_state = "active"
+    point.retired_at = None
+    point.enabled = True
+
+
 def _group_out(group: GatewayGroup) -> dict[str, object]:
     return {
         "id": str(group.id),
@@ -854,6 +897,10 @@ def _device_out(device: SavedBacnetDevice) -> dict[str, object]:
         "network_number": device.network_number,
         "mac_address": device.mac_address,
         "latest_discovered_at": device.latest_discovered_at,
+        "first_seen_at": device.first_seen_at,
+        "last_seen_at": device.last_seen_at,
+        "lifecycle_state": device.lifecycle_state,
+        "retired_at": device.retired_at,
         "enabled": device.enabled,
         "created_at": device.created_at,
         "updated_at": device.updated_at,
@@ -874,6 +921,10 @@ def _point_out(point: SavedBacnetPoint, trend_config: PointTrendConfig | None = 
         "units": point.units,
         "writable": point.writable,
         "latest_read_at": point.latest_read_at,
+        "first_seen_at": point.first_seen_at,
+        "last_seen_at": point.last_seen_at,
+        "lifecycle_state": point.lifecycle_state,
+        "retired_at": point.retired_at,
         "enabled": point.enabled,
         "trend_enabled": bool(trend_config and trend_config.enabled),
         "trend_interval_sec": trend_config.interval_sec if trend_config else None,
@@ -1078,6 +1129,46 @@ def _operator_for_membership_or_404(db: Session, email: str) -> OperatorUser:
     if operator is None:
         raise HTTPException(status_code=404, detail="Operator user not found")
     return operator
+
+
+@app.get("/api/admin/access-overview", response_model=AccessOverviewOut)
+def admin_access_overview(
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> AccessOverviewOut:
+    organization_memberships = db.execute(
+        select(OrganizationMembership, Organization, OperatorUser)
+        .join(Organization, OrganizationMembership.organization_id == Organization.id)
+        .join(OperatorUser, OrganizationMembership.operator_user_id == OperatorUser.id)
+        .order_by(Organization.name, OperatorUser.email)
+    ).all()
+    site_memberships = db.execute(
+        select(SiteMembership, Site, OperatorUser)
+        .join(Site, SiteMembership.site_uuid == Site.id)
+        .join(OperatorUser, SiteMembership.operator_user_id == OperatorUser.id)
+        .order_by(Site.name, OperatorUser.email)
+    ).all()
+    memberships = [
+        AccessMembershipRecordOut(
+            email=operator.email,
+            role=membership.role,
+            scope_kind="organization",
+            scope_id=str(organization.id),
+            scope_name=organization.name,
+        )
+        for membership, organization, operator in organization_memberships
+    ]
+    memberships.extend(
+        AccessMembershipRecordOut(
+            email=operator.email,
+            role=membership.role,
+            scope_kind="site",
+            scope_id=site.site_id,
+            scope_name=site.name,
+        )
+        for membership, site, operator in site_memberships
+    )
+    return AccessOverviewOut(memberships=memberships)
 
 
 @app.put("/api/admin/organizations/{organization_id}/members", response_model=AccessMembershipOut)
@@ -1609,10 +1700,10 @@ async def _proxy_gateway_tunnel_request(
 @app.get("/api/ui/gateways/{gateway_id}/tree", response_model=GatewayTreeOut)
 def ui_get_gateway_tree(
     gateway_id: str,
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> GatewayTreeOut:
-    gateway = _get_gateway_or_404(db, gateway_id)
+    gateway = _require_gateway_site_access(db, auth, gateway_id)
     groups = list(db.scalars(select(GatewayGroup).where(GatewayGroup.gateway_id == gateway_id).order_by(GatewayGroup.name)).all())
     devices = list(
         db.scalars(
@@ -1644,10 +1735,10 @@ def ui_get_gateway_tree(
 def ui_create_group(
     gateway_id: str,
     payload: GatewayGroupIn,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    _get_gateway_or_404(db, gateway_id)
+    _require_gateway_site_access(db, auth, gateway_id)
     group = GatewayGroup(gateway_id=gateway_id, name=payload.name.strip())
     db.add(group)
     try:
@@ -1663,12 +1754,10 @@ def ui_create_group(
 def ui_rename_group(
     group_id: str,
     payload: GatewayGroupIn,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    group = db.get(GatewayGroup, _tree_id(group_id))
-    if group is None:
-        raise HTTPException(status_code=404, detail="Group not found")
+    group = _require_group_site_access(db, auth, group_id)
     group.name = payload.name.strip()
     group.updated_at = utc_now()
     db.commit()
@@ -1679,12 +1768,10 @@ def ui_rename_group(
 @app.delete("/api/ui/groups/{group_id}", status_code=204)
 def ui_delete_group(
     group_id: str,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> None:
-    group = db.get(GatewayGroup, _tree_id(group_id))
-    if group is None:
-        raise HTTPException(status_code=404, detail="Group not found")
+    group = _require_group_site_access(db, auth, group_id)
     has_devices = db.scalar(select(SavedBacnetDevice).where(SavedBacnetDevice.group_id == group.id).limit(1))
     if has_devices is not None:
         raise HTTPException(status_code=409, detail="Group is not empty")
@@ -1696,10 +1783,10 @@ def ui_delete_group(
 def ui_save_device(
     gateway_id: str,
     payload: SavedDeviceIn,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    _get_gateway_or_404(db, gateway_id)
+    _require_gateway_site_access(db, auth, gateway_id)
     group_id = _tree_id(payload.group_id) if payload.group_id else None
     if group_id is not None:
         group = db.get(GatewayGroup, group_id)
@@ -1714,6 +1801,9 @@ def ui_save_device(
         network_number=payload.network_number,
         mac_address=payload.mac_address,
         latest_discovered_at=utc_now(),
+        first_seen_at=utc_now(),
+        last_seen_at=utc_now(),
+        lifecycle_state="active",
         enabled=payload.enabled,
     )
     db.add(device)
@@ -1730,12 +1820,10 @@ def ui_save_device(
 def ui_patch_device(
     device_id: str,
     payload: SavedDevicePatchIn,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    device = db.get(SavedBacnetDevice, _tree_id(device_id))
-    if device is None:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = _require_device_site_access(db, auth, device_id)
     if payload.group_id is not None:
         group_id = _tree_id(payload.group_id)
         group = db.get(GatewayGroup, group_id)
@@ -1757,17 +1845,19 @@ def ui_patch_device(
 @app.delete("/api/ui/devices/{device_id}", response_model=SavedDeviceOut)
 def ui_remove_device(
     device_id: str,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    device = db.get(SavedBacnetDevice, _tree_id(device_id))
-    if device is None:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = _require_device_site_access(db, auth, device_id)
     device.enabled = False
     device.updated_at = utc_now()
+    device.lifecycle_state = "retired"
+    device.retired_at = device.updated_at
     for point in db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id)).all():
         point.enabled = False
         point.updated_at = utc_now()
+        point.lifecycle_state = "retired"
+        point.retired_at = point.updated_at
     db.commit()
     db.refresh(device)
     return _device_out(device)
@@ -1776,13 +1866,13 @@ def ui_remove_device(
 @app.post("/api/ui/devices/{device_id}/load-points", response_model=JobOut)
 def ui_load_device_points(
     device_id: str,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> EdgeJob:
-    device = db.get(SavedBacnetDevice, _tree_id(device_id))
-    if device is None or not device.enabled:
+    device = _require_device_site_access(db, auth, device_id)
+    if not device.enabled:
         raise HTTPException(status_code=404, detail="Device not found")
-    edge_node = _get_gateway_or_404(db, device.gateway_id)
+    edge_node = _require_gateway_site_access(db, auth, device.gateway_id)
     _require_online_gateway(edge_node)
     bacnet_port = edge_node.bacnet_port
     job = EdgeJob(
@@ -1809,12 +1899,10 @@ def ui_load_device_points(
 def ui_save_point(
     device_id: str,
     payload: SavedPointIn,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    device = db.get(SavedBacnetDevice, _tree_id(device_id))
-    if device is None:
-        raise HTTPException(status_code=404, detail="Device not found")
+    device = _require_device_site_access(db, auth, device_id)
     point = SavedBacnetPoint(
         gateway_id=device.gateway_id,
         saved_device_id=device.id,
@@ -1827,6 +1915,9 @@ def ui_save_point(
         units=payload.units,
         writable=payload.writable,
         latest_read_at=utc_now() if payload.present_value is not None else None,
+        first_seen_at=utc_now(),
+        last_seen_at=utc_now(),
+        lifecycle_state="active",
         enabled=payload.enabled,
     )
     db.add(point)
@@ -1842,14 +1933,14 @@ def ui_save_point(
 @app.delete("/api/ui/points/{point_id}", response_model=SavedPointOut)
 def ui_remove_point(
     point_id: str,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    point = db.get(SavedBacnetPoint, _tree_id(point_id))
-    if point is None:
-        raise HTTPException(status_code=404, detail="Point not found")
+    point = _require_point_site_access(db, auth, point_id)
     point.enabled = False
     point.updated_at = utc_now()
+    point.lifecycle_state = "retired"
+    point.retired_at = point.updated_at
     db.commit()
     db.refresh(point)
     return _point_out(point)
@@ -1858,13 +1949,15 @@ def ui_remove_point(
 @app.post("/api/ui/points/bulk-remove", response_model=SavedPointsBulkRemoveOut)
 def ui_bulk_remove_points(
     payload: SavedPointsBulkRemoveIn,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> SavedPointsBulkRemoveOut:
     point_ids: list[str] = []
     for point_id in payload.point_ids:
         point_ids.append(_tree_id(point_id))
     points = list(db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.id.in_(point_ids))).all())
+    for point in points:
+        _require_gateway_site_access(db, auth, point.gateway_id)
     points_by_id = {str(point.id): point for point in points}
     now = utc_now()
     removed_count = 0
@@ -1872,6 +1965,8 @@ def ui_bulk_remove_points(
         if point.enabled:
             point.enabled = False
             point.updated_at = now
+            point.lifecycle_state = "retired"
+            point.retired_at = now
             removed_count += 1
     db.commit()
     missing_ids = [point_id for point_id in payload.point_ids if _tree_id(point_id) not in points_by_id]
@@ -1886,10 +1981,10 @@ def ui_bulk_remove_points(
 def ui_read_saved_points(
     gateway_id: str,
     payload: SavedPointsReadIn,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> SavedPointsReadOut:
-    edge_node = _get_gateway_or_404(db, gateway_id)
+    edge_node = _require_gateway_site_access(db, auth, gateway_id)
     _require_online_gateway(edge_node)
     point_ids = [_tree_id(point_id) for point_id in payload.point_ids]
     points = list(
@@ -1945,12 +2040,10 @@ def ui_read_saved_points(
 def ui_patch_point(
     point_id: str,
     payload: SavedPointPatchIn,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    point = db.get(SavedBacnetPoint, _tree_id(point_id))
-    if point is None:
-        raise HTTPException(status_code=404, detail="Point not found")
+    point = _require_point_site_access(db, auth, point_id)
     if payload.object_name is not None:
         point.object_name = payload.object_name
     if payload.present_value is not None:
@@ -1972,12 +2065,10 @@ def ui_patch_point(
 def ui_upsert_point_trend(
     point_id: str,
     payload: PointTrendConfigIn,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> PointTrendConfig:
-    point = db.get(SavedBacnetPoint, _tree_id(point_id))
-    if point is None:
-        raise HTTPException(status_code=404, detail="Point not found")
+    point = _require_point_site_access(db, auth, point_id)
     config = db.get(PointTrendConfig, point.id)
     if config is None:
         config = PointTrendConfig(point_id=point.id, gateway_id=point.gateway_id)
@@ -1995,12 +2086,10 @@ def ui_point_trend_samples(
     point_id: str,
     limit: int = Query(default=288, ge=1, le=5000),
     since: datetime | None = Query(default=None),
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> list[PointTrendSample]:
-    point = db.get(SavedBacnetPoint, _tree_id(point_id))
-    if point is None:
-        raise HTTPException(status_code=404, detail="Point not found")
+    point = _require_point_site_access(db, auth, point_id)
     statement = select(PointTrendSample).where(PointTrendSample.point_id == point.id)
     if since is not None:
         statement = statement.where(PointTrendSample.sampled_at >= since)
@@ -2012,10 +2101,10 @@ def ui_point_trend_samples(
 def ui_import_commissioning_template(
     gateway_id: str,
     payload: CommissioningTemplateIn,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> CommissioningTemplateImportOut:
-    _get_gateway_or_404(db, gateway_id)
+    _require_gateway_site_access(db, auth, gateway_id)
     if payload.gateway_id and payload.gateway_id != gateway_id:
         raise HTTPException(status_code=400, detail="Template gateway_id does not match target gateway")
 
@@ -2074,6 +2163,9 @@ def ui_import_commissioning_template(
                 network_number=device_payload.network_number,
                 mac_address=device_payload.mac_address,
                 latest_discovered_at=now,
+                first_seen_at=now,
+                last_seen_at=now,
+                lifecycle_state="active",
                 enabled=True,
             )
             db.add(device)
@@ -2085,8 +2177,7 @@ def ui_import_commissioning_template(
             device.vendor_name = device_payload.vendor_name or device.vendor_name
             device.network_number = device_payload.network_number if device_payload.network_number is not None else device.network_number
             device.mac_address = device_payload.mac_address or device.mac_address
-            device.latest_discovered_at = now
-            device.enabled = True
+            _mark_device_seen(device, now)
             device.updated_at = now
             updated_devices += 1
 
@@ -2110,6 +2201,9 @@ def ui_import_commissioning_template(
                     property_name=point_payload.property,
                     units=point_payload.units,
                     writable=point_payload.writable,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    lifecycle_state="active",
                     enabled=True,
                 )
                 db.add(point)
@@ -2118,7 +2212,7 @@ def ui_import_commissioning_template(
                 point.object_name = point_payload.object_name or point.object_name
                 point.units = point_payload.units if point_payload.units is not None else point.units
                 point.writable = point_payload.writable if point_payload.writable is not None else point.writable
-                point.enabled = True
+                _mark_point_seen(point, now)
                 point.updated_at = now
                 updated_points += 1
 
@@ -2139,10 +2233,10 @@ def ui_import_commissioning_template(
 @app.post("/api/ui/gateways/{gateway_id}/discover-devices", response_model=JobOut)
 def ui_discover_devices(
     gateway_id: str,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> EdgeJob:
-    edge_node = _get_gateway_or_404(db, gateway_id)
+    edge_node = _require_gateway_site_access(db, auth, gateway_id)
     _require_online_gateway(edge_node)
     bacnet_port = edge_node.bacnet_port
     job = EdgeJob(
@@ -2467,6 +2561,84 @@ def receive_job_result(
     job.result_json = payload.result
     job.error_message = payload.error_message
     job.completed_at = utc_now()
+    if job.job_type == "bacnet_discover" and payload.status == "completed" and isinstance(payload.result, dict):
+        discovered = payload.result.get("devices")
+        now = utc_now()
+        if isinstance(discovered, list):
+            for item in discovered:
+                if not isinstance(item, dict):
+                    continue
+                device_instance = item.get("device_id")
+                if isinstance(device_instance, bool) or not isinstance(device_instance, int):
+                    continue
+                device = db.scalar(
+                    select(SavedBacnetDevice).where(
+                        SavedBacnetDevice.gateway_id == job.gateway_id,
+                        SavedBacnetDevice.device_instance == device_instance,
+                    )
+                )
+                if device is None:
+                    device = SavedBacnetDevice(
+                        gateway_id=job.gateway_id,
+                        device_instance=device_instance,
+                        network_number=item.get("network") if isinstance(item.get("network"), int) else None,
+                        mac_address=item.get("mac") if isinstance(item.get("mac"), str) else None,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                        latest_discovered_at=now,
+                        lifecycle_state="active",
+                        enabled=True,
+                    )
+                    db.add(device)
+                else:
+                    if isinstance(item.get("network"), int):
+                        device.network_number = item["network"]
+                    if isinstance(item.get("mac"), str):
+                        device.mac_address = item["mac"]
+                    _mark_device_seen(device, now)
+                    device.updated_at = now
+    if job.job_type == "bacnet_load_points" and payload.status == "completed" and isinstance(payload.result, dict):
+        saved_device_id = job.request_json.get("saved_device_id") if isinstance(job.request_json, dict) else None
+        loaded_points = payload.result.get("points")
+        device = db.get(SavedBacnetDevice, _tree_id(saved_device_id)) if isinstance(saved_device_id, str) else None
+        now = utc_now()
+        if device is not None and device.gateway_id == job.gateway_id and isinstance(loaded_points, list):
+            _mark_device_seen(device, now)
+            for item in loaded_points:
+                if not isinstance(item, dict):
+                    continue
+                object_type = item.get("object_type")
+                object_instance = item.get("object_instance")
+                if not isinstance(object_type, str) or isinstance(object_instance, bool) or not isinstance(object_instance, int):
+                    continue
+                point = db.scalar(
+                    select(SavedBacnetPoint).where(
+                        SavedBacnetPoint.saved_device_id == device.id,
+                        SavedBacnetPoint.object_type == object_type,
+                        SavedBacnetPoint.object_instance == object_instance,
+                        SavedBacnetPoint.property_name == "present-value",
+                    )
+                )
+                if point is None:
+                    point = SavedBacnetPoint(
+                        gateway_id=job.gateway_id,
+                        saved_device_id=device.id,
+                        device_instance=device.device_instance,
+                        object_type=object_type,
+                        object_instance=object_instance,
+                        object_name=item.get("object_name") if isinstance(item.get("object_name"), str) else None,
+                        property_name="present-value",
+                        first_seen_at=now,
+                        last_seen_at=now,
+                        lifecycle_state="active",
+                        enabled=True,
+                    )
+                    db.add(point)
+                else:
+                    if isinstance(item.get("object_name"), str):
+                        point.object_name = item["object_name"]
+                    _mark_point_seen(point, now)
+                    point.updated_at = now
     if job.job_type == "bacnet_read" and payload.status == "completed" and isinstance(payload.result, dict):
         saved_point_id = job.request_json.get("saved_point_id") if isinstance(job.request_json, dict) else None
         value = payload.result.get("value", payload.result.get("raw_value"))
@@ -2499,9 +2671,17 @@ def receive_job_result(
 
 @app.get("/api/edge/jobs", response_model=list[JobOut])
 def list_jobs(
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
     limit: int = 50,
 ) -> list[EdgeJob]:
     limit = max(1, min(limit, 200))
-    return list(db.scalars(select(EdgeJob).order_by(EdgeJob.created_at.desc(), EdgeJob.id.desc()).limit(limit)).all())
+    statement = select(EdgeJob).order_by(EdgeJob.created_at.desc(), EdgeJob.id.desc())
+    allowed_site_ids = visible_site_ids(db, auth)
+    if allowed_site_ids is not None:
+        statement = statement.where(
+            EdgeJob.gateway_id.in_(
+                select(EdgeNode.gateway_id).where(EdgeNode.site_id.in_(select(Site.site_id).where(Site.id.in_(allowed_site_ids))))
+            )
+        )
+    return list(db.scalars(statement.limit(limit)).all())

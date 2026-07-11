@@ -3488,6 +3488,102 @@ APP_SCRIPT = r"""
     const users = await api("/api/admin/users");
     renderUsers(users);
     setText("status", `Loaded ${users.length} user(s).`);
+    return users;
+  }
+
+  function fillSelect(select, options, placeholder) {
+    select.textContent = "";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = placeholder;
+    select.appendChild(empty);
+    for (const option of options) {
+      const element = document.createElement("option");
+      element.value = option.value;
+      element.textContent = option.label;
+      select.appendChild(element);
+    }
+  }
+
+  function renderAccessMemberships(memberships) {
+    const target = byId("access-memberships");
+    target.textContent = "";
+    for (const membership of memberships) {
+      const row = document.createElement("tr");
+      row.innerHTML = `<td>${escapeHtml(membership.scope_kind)}</td><td>${escapeHtml(membership.scope_name)}</td><td>${escapeHtml(membership.email)}</td><td>${escapeHtml(membership.role)}</td>`;
+      target.appendChild(row);
+    }
+  }
+
+  async function loadAccessManagement() {
+    const [organizations, sites, overview, users] = await Promise.all([
+      api("/api/admin/organizations"),
+      api("/api/ui/sites"),
+      api("/api/admin/access-overview"),
+      api("/api/admin/users")
+    ]);
+    fillSelect(byId("membership-email"), users.map((user) => ({ value: user.email, label: user.email })), "Select a user");
+    fillSelect(byId("membership-scope"), [
+      ...organizations.map((organization) => ({ value: `organization:${organization.id}`, label: `Organization — ${organization.name}` })),
+      ...sites.map((site) => ({ value: `site:${site.site_id}`, label: `Site — ${site.site_id}: ${site.name}` }))
+    ], "Select a scope");
+    fillSelect(byId("site-organization"), [
+      ...organizations.map((organization) => ({ value: organization.id, label: organization.name }))
+    ], "No organization");
+    fillSelect(byId("site-assignment"), sites.map((site) => ({ value: site.site_id, label: `${site.site_id}: ${site.name}` })), "Select a site");
+    renderAccessMemberships(overview.memberships);
+  }
+
+  function initAccessManagement() {
+    byId("organization-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        await api("/api/admin/organizations", {
+          method: "POST",
+          body: JSON.stringify({ name: byId("organization-name").value.trim() })
+        });
+        byId("organization-name").value = "";
+        await loadAccessManagement();
+        setText("status", "Organization created.");
+      } catch (error) {
+        setText("status", errorMessage(error), true);
+      }
+    });
+    byId("membership-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const [kind, scopeId] = byId("membership-scope").value.split(":", 2);
+      const email = byId("membership-email").value;
+      if (!kind || !scopeId || !email) {
+        setText("status", "Choose a user and an organization or site.", true);
+        return;
+      }
+      try {
+        await api(kind === "organization" ? `/api/admin/organizations/${encodeURIComponent(scopeId)}/members` : `/api/admin/sites/${encodeURIComponent(scopeId)}/members`, {
+          method: "PUT",
+          body: JSON.stringify({ email, role: byId("membership-role").value })
+        });
+        await loadAccessManagement();
+        setText("status", "Access scope saved.");
+      } catch (error) {
+        setText("status", errorMessage(error), true);
+      }
+    });
+    byId("site-organization-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const siteId = byId("site-assignment").value;
+      const organizationId = byId("site-organization").value;
+      if (!siteId || !organizationId) {
+        setText("status", "Choose both a site and an organization.", true);
+        return;
+      }
+      try {
+        await api(`/api/admin/sites/${encodeURIComponent(siteId)}/organization/${encodeURIComponent(organizationId)}`, { method: "PUT" });
+        await loadAccessManagement();
+        setText("status", "Site organization saved.");
+      } catch (error) {
+        setText("status", errorMessage(error), true);
+      }
+    });
   }
 
   async function initAdminUsers() {
@@ -3518,6 +3614,8 @@ APP_SCRIPT = r"""
     });
     try {
       await loadUsers();
+      initAccessManagement();
+      await loadAccessManagement();
     } catch (error) {
       setText("status", errorMessage(error), true);
     }
@@ -6411,6 +6509,47 @@ def admin_users_html() -> str:
           </tr>
         </thead>
         <tbody id="users"></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Organizations and Site Access</h2>
+      <p class="muted">Assigning a user's first organization or site scope activates scoped visibility for that user. Platform admins retain full access.</p>
+      <form id="organization-form" class="grid">
+        <div class="span-4">
+          <label for="organization-name">New organization</label>
+          <input id="organization-name" type="text" required maxlength="200">
+        </div>
+        <div class="span-2"><button type="submit">Create organization</button></div>
+      </form>
+      <form id="site-organization-form" class="grid">
+        <div class="span-4">
+          <label for="site-assignment">Site</label>
+          <select id="site-assignment"></select>
+        </div>
+        <div class="span-4">
+          <label for="site-organization">Organization</label>
+          <select id="site-organization"></select>
+        </div>
+        <div class="span-2"><button type="submit">Assign site</button></div>
+      </form>
+      <form id="membership-form" class="grid">
+        <div class="span-3">
+          <label for="membership-email">User</label>
+          <select id="membership-email"></select>
+        </div>
+        <div class="span-4">
+          <label for="membership-scope">Organization or site</label>
+          <select id="membership-scope"></select>
+        </div>
+        <div class="span-2">
+          <label for="membership-role">Scope role</label>
+          <select id="membership-role"><option value="viewer">viewer</option><option value="operator">operator</option><option value="admin">admin</option></select>
+        </div>
+        <div class="span-2"><button type="submit">Grant access</button></div>
+      </form>
+      <table>
+        <thead><tr><th>Scope type</th><th>Scope</th><th>User</th><th>Scope role</th></tr></thead>
+        <tbody id="access-memberships"></tbody>
       </table>
     </section>
   </main>"""

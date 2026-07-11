@@ -34,6 +34,12 @@ Membership requests use:
 
 The operator must already exist in `operator_users`. The membership role is stored for the forthcoming site-level capability rules; current mutation authority remains governed by the existing application role.
 
-## Next Phase 1 work
+## Completed Phase 1 scope
 
-Apply the same scope dependency to the remaining tree, point, trend, job-history, and commissioning routes; then expose organization and membership management in the admin UI. Do not infer organization ownership for existing sites automatically.
+- Site scope is enforced for workspace trees, groups, devices, point reads and edits, trend configuration and history, discovery, template import, and operator job history.
+- The Cloud admin page can create organizations, assign a site to an organization, and grant an existing operator a direct-site or organization-wide scope.
+- Existing sites remain unassigned until an administrator deliberately assigns them; no ownership was inferred from legacy data.
+
+## Remaining product work outside this foundation
+
+Membership removal and richer capability rules can be added when the operator workflow requires them. Current scope roles are recorded for that purpose; platform `admin` remains the authority for access administration.
