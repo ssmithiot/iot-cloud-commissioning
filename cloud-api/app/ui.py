@@ -1208,6 +1208,15 @@ APP_SCRIPT = r"""
     return `<a class="button table-command secondary" href="/api/ui/gateways/${encodeURIComponent(gateway.gateway_id)}/direct-connect" data-direct-connect="${escapeHtml(gateway.gateway_id)}">Direct Connect</a>`;
   }
 
+  function edgeAppVersion(gateway) {
+    const version = String(gateway.agent_version || "").trim();
+    return version && version.toLowerCase() !== "current" ? version : "Update required";
+  }
+
+  function gatewayVersionCell(gateway) {
+    return `<strong>${escapeHtml(edgeAppVersion(gateway))}</strong>`;
+  }
+
   function statusLabel(gateway) {
     return `${gateway.effective_status || gateway.latest_status || "unknown"} | ${heartbeatLabel(gateway)}`;
   }
@@ -1225,6 +1234,7 @@ APP_SCRIPT = r"""
       site: `${gateway.site_name || ""} ${gateway.site_id || ""}`,
       address: gatewayAddress(gateway) || "",
       hostname: gateway.hostname,
+      version: edgeAppVersion(gateway),
       status: statusLabel(gateway),
       network_status_notes: gateway.network_status_notes || "",
       direct: gateway.direct_connect_available ? "configured" : "not configured",
@@ -1244,6 +1254,7 @@ APP_SCRIPT = r"""
       gateway.site_compact_address,
       gateway.site_address,
       gateway.hostname,
+      edgeAppVersion(gateway),
       statusLabel(gateway),
       gateway.network_status_notes,
       gateway.direct_connect_available ? "configured" : "not configured"
@@ -1555,7 +1566,7 @@ APP_SCRIPT = r"""
     table.textContent = "";
     if (!gateways.length) {
       const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="8">No gateways found.</td>`;
+      row.innerHTML = `<td colspan="9">No gateways found.</td>`;
       table.appendChild(row);
       return;
     }
@@ -1567,6 +1578,7 @@ APP_SCRIPT = r"""
         <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
         <td>${escapeHtml(gatewayAddress(gateway) || "")}</td>
         <td>${escapeHtml(gateway.hostname)}</td>
+        <td>${gatewayVersionCell(gateway)}</td>
         <td><span class="status-text">${dashboardStatusCell(gateway)}</span></td>
         <td>${escapeHtml(gateway.network_status_notes || "")}</td>
         <td>${directConnectCell(gateway)}</td>
@@ -5145,7 +5157,7 @@ def app_html() -> str:
           <span id="gateway-result-count" class="panel-counter">0 gateways</span>
         </div>
         <div class="gateway-toolbar">
-          <input id="gateway-search" type="search" placeholder="Search gateway, site, status, address, host, notes">
+          <input id="gateway-search" type="search" placeholder="Search gateway, site, status, address, host, app version, notes">
           <div id="status" class="notice"></div>
         </div>
         <div class="table-wrap">
@@ -5156,6 +5168,7 @@ def app_html() -> str:
               <th><button class="sort-header" type="button" data-sort="site">Site</button></th>
               <th><button class="sort-header" type="button" data-sort="address">Address</button></th>
               <th><button class="sort-header" type="button" data-sort="hostname">Hostname</button></th>
+              <th><button class="sort-header" type="button" data-sort="version">Edge App</button></th>
               <th><button class="sort-header" type="button" data-sort="status">Status</button></th>
               <th><button class="sort-header" type="button" data-sort="network_status_notes">Network<br>Notes</button></th>
               <th><button class="sort-header" type="button" data-sort="direct">Direct</button></th>

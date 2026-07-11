@@ -15,7 +15,7 @@ tunnel_request_timeout_sec: 900
 # BACNET_IP_PORT in the service environment overrides these profile defaults.
 bacnet_default_port: 47814
 heartbeat_interval_sec: 30
-agent_version: 0.1.0
+# agent_version is read from the installed edge app package and cannot be overridden here.
 ui_version: 0.1.0
 bacnet:
   router_profile: contemporary
