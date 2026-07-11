@@ -27,8 +27,10 @@ RESOURCE_COLUMNS = (
 
 def upgrade() -> None:
     for table_name in ("edge_nodes", "edge_heartbeats"):
+        existing = {column["name"] for column in sa.inspect(op.get_bind()).get_columns(table_name)}
         for column_name, column_type in RESOURCE_COLUMNS:
-            op.add_column(table_name, sa.Column(column_name, column_type, nullable=True))
+            if column_name not in existing:
+                op.add_column(table_name, sa.Column(column_name, column_type, nullable=True))
 
 
 def downgrade() -> None:
