@@ -42,6 +42,8 @@ APP_SCRIPT = r"""
   };
   const themeStorageKey = "iot-cloud-command-theme";
   const trendChartFrame = Object.freeze({ minWidth: 360, height: 230, left: 72, right: 20, top: 14, bottom: 48 });
+  const trendChartSizeStorageKey = "iot-cloud-trend-chart-size";
+  const trendChartThemeStorageKey = "iot-cloud-trend-chart-theme";
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
   const pointTableColumns = [
@@ -2239,11 +2241,42 @@ APP_SCRIPT = r"""
     return new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
 
-  function trendChart(samples, units = "", chartWidth = 600) {
+  function trendChartSize() {
+    try {
+      const stored = localStorage.getItem(trendChartSizeStorageKey);
+      return ["compact", "standard", "tall"].includes(stored) ? stored : "standard";
+    } catch {
+      return "standard";
+    }
+  }
+
+  function trendChartTheme() {
+    try {
+      const stored = localStorage.getItem(trendChartThemeStorageKey);
+      return ["light", "dark"].includes(stored) ? stored : "light";
+    } catch {
+      return "light";
+    }
+  }
+
+  function pointTrendChartHeight(chart) {
+    const height = Number.parseFloat(getComputedStyle(chart).getPropertyValue("--point-trend-chart-height"));
+    return Math.max(150, Math.round(Number.isFinite(height) ? height : trendChartFrame.height));
+  }
+
+  function trendIntervalLabel(seconds) {
+    const value = Number(seconds) || 300;
+    if (value % 60) return `${value} seconds`;
+    const minutes = value / 60;
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+
+  function trendChart(samples, units = "", chartWidth = 600, chartHeight = trendChartFrame.height) {
     const points = numericTrendSamples(samples);
     if (points.length < 2) return `<span class="muted">Two numeric samples are needed before a trend line can be drawn.</span>`;
     const width = Math.max(trendChartFrame.minWidth, Math.round(Number(chartWidth) || trendChartFrame.minWidth));
-    const { height, left, right, top, bottom } = trendChartFrame;
+    const height = Math.max(150, Math.round(Number(chartHeight) || trendChartFrame.height));
+    const { left, right, top, bottom } = trendChartFrame;
     const plotWidth = width - left - right, plotHeight = height - top - bottom;
     const minimum = Math.min(...points.map((point) => point.valueNumber));
     const maximum = Math.max(...points.map((point) => point.valueNumber));
@@ -2265,7 +2298,8 @@ APP_SCRIPT = r"""
     const tooltip = chart.querySelector(".trend-tooltip");
     if (!svg || !tooltip || points.length < 2) return;
     const width = svg.viewBox.baseVal.width;
-    const { height, left, right, top, bottom } = trendChartFrame;
+    const height = svg.viewBox.baseVal.height;
+    const { left, right, top, bottom } = trendChartFrame;
     const plotWidth = width - left - right, plotHeight = height - top - bottom;
     const yMin = Math.min(...points.map((point) => point.valueNumber)) - Math.max((Math.max(...points.map((point) => point.valueNumber)) - Math.min(...points.map((point) => point.valueNumber))) * 0.08, Math.abs(Math.max(...points.map((point) => point.valueNumber)) || 1) * 0.02, 0.1);
     const yMax = Math.max(...points.map((point) => point.valueNumber)) + Math.max((Math.max(...points.map((point) => point.valueNumber)) - Math.min(...points.map((point) => point.valueNumber))) * 0.08, Math.abs(Math.max(...points.map((point) => point.valueNumber)) || 1) * 0.02, 0.1);
@@ -2285,12 +2319,15 @@ APP_SCRIPT = r"""
 
   function renderResponsivePointTrend(chart, samples, units = "") {
     let lastWidth = 0;
+    let lastHeight = 0;
     let resizeFrame = null;
     const draw = (measuredWidth) => {
       const width = Math.max(trendChartFrame.minWidth, Math.round(Number(measuredWidth) || chart.clientWidth || trendChartFrame.minWidth));
-      if (width === lastWidth) return;
+      const height = pointTrendChartHeight(chart);
+      if (width === lastWidth && height === lastHeight) return;
       lastWidth = width;
-      chart.innerHTML = trendChart(samples, units, width);
+      lastHeight = height;
+      chart.innerHTML = trendChart(samples, units, width, height);
       attachTrendHover(chart, samples, units);
     };
     draw(chart.getBoundingClientRect().width);
@@ -2298,7 +2335,8 @@ APP_SCRIPT = r"""
     const observer = new ResizeObserver((entries) => {
       const nextWidth = entries[0]?.contentRect.width || chart.getBoundingClientRect().width;
       const normalizedWidth = Math.max(trendChartFrame.minWidth, Math.round(nextWidth));
-      if (normalizedWidth === lastWidth) return;
+      const normalizedHeight = pointTrendChartHeight(chart);
+      if (normalizedWidth === lastWidth && normalizedHeight === lastHeight) return;
       if (resizeFrame !== null) {
         window.cancelAnimationFrame(resizeFrame);
         pointTrendResizeFrames.delete(resizeFrame);
@@ -2329,11 +2367,21 @@ APP_SCRIPT = r"""
       try {
         const interval = Number(card.querySelector(".point-trend-interval").value);
         await api(`/api/ui/points/${encodeURIComponent(point.id)}/trend`, { method: "PUT", body: JSON.stringify({ enabled: true, interval_sec: interval }) });
+        point.trend_enabled = true;
+        point.trend_interval_sec = interval;
+        renderSelectedPointTrends(selectedSavedPoints());
         setText("status", `Trend enabled for ${savedPointLabel(point)} every ${interval} seconds.`);
       } catch (error) {
         setText("status", errorMessage(error), true);
       }
     });
+  }
+
+  function trendCardControls(point) {
+    if (point.trend_enabled) {
+      return `<span class="trend-status">Trend enabled · every ${trendIntervalLabel(point.trend_interval_sec)}</span>`;
+    }
+    return `<div class="toolbar"><label>Interval <select class="point-trend-interval"><option value="60">1 minute</option><option value="300" selected>5 minutes</option><option value="900">15 minutes</option></select></label><button class="enable-point-trend" type="button"${canEditTree() ? "" : " disabled"}>Enable trend</button></div>`;
   }
 
   function renderSelectedPointTrends(points) {
@@ -2344,7 +2392,29 @@ APP_SCRIPT = r"""
       panel.innerHTML = `<h2>Trends</h2><span class="muted">Select one or more saved points to configure their trends.</span>`;
       return;
     }
-    panel.innerHTML = `<h2>Trends (${points.length})</h2><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3><div class="toolbar"><label>Interval <select class="point-trend-interval"><option value="60">1 minute</option><option value="300" selected>5 minutes</option><option value="900">15 minutes</option></select></label><button class="enable-point-trend" type="button"${canEditTree() ? "" : " disabled"}>Enable trend</button></div><div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
+    const chartSize = trendChartSize();
+    const chartTheme = trendChartTheme();
+    panel.dataset.chartSize = chartSize;
+    panel.dataset.chartTheme = chartTheme;
+    panel.innerHTML = `<div class="trend-panel-header"><h2>Trends (${points.length})</h2><div class="trend-panel-controls"><label>Chart size <select class="trend-chart-size"><option value="compact"${chartSize === "compact" ? " selected" : ""}>Compact</option><option value="standard"${chartSize === "standard" ? " selected" : ""}>Standard</option><option value="tall"${chartSize === "tall" ? " selected" : ""}>Tall</option></select></label><label>Theme <select class="trend-chart-theme"><option value="light"${chartTheme === "light" ? " selected" : ""}>Light</option><option value="dark"${chartTheme === "dark" ? " selected" : ""}>Dark</option></select></label></div></div><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3>${trendCardControls(point)}<div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
+    panel.querySelector(".trend-chart-size")?.addEventListener("change", (event) => {
+      const size = event.target.value;
+      panel.dataset.chartSize = size;
+      try {
+        localStorage.setItem(trendChartSizeStorageKey, size);
+      } catch {
+        // Keep the chart size for this page even when browser storage is unavailable.
+      }
+    });
+    panel.querySelector(".trend-chart-theme")?.addEventListener("change", (event) => {
+      const theme = event.target.value;
+      panel.dataset.chartTheme = theme;
+      try {
+        localStorage.setItem(trendChartThemeStorageKey, theme);
+      } catch {
+        // Keep the chart theme for this page even when browser storage is unavailable.
+      }
+    });
     panel.querySelectorAll(".point-trend-card").forEach((card, index) => {
       loadSelectedPointTrend(card, points[index]);
     });
@@ -2569,10 +2639,12 @@ APP_SCRIPT = r"""
     setText("status", `Loaded ${points.length} point candidate(s). Select the ones to save.`);
   }
 
-  function addCollapsible(parent, row, children, onSelect = null) {
+  function addCollapsible(parent, row, children, onSelect = null, expanded = true) {
     parent.appendChild(row);
     const childWrap = document.createElement("div");
     childWrap.className = "tree-children";
+    childWrap.hidden = !expanded;
+    row.querySelector(".twisty").textContent = expanded ? "[-]" : "[+]";
     for (const child of children) {
       childWrap.appendChild(child);
     }
@@ -2609,7 +2681,7 @@ APP_SCRIPT = r"""
         pointGroups.set(label, [...(pointGroups.get(label) || []), point]);
       }
       const deviceLabel = `[${device.device_instance}] ${device.device_name || "Device " + device.device_instance}`;
-      const row = treeRow("device", deviceLabel, device.network_number ? `network ${device.network_number}` : "", depth);
+      const row = treeRow("device", deviceLabel, device.network_number ? `network ${device.network_number}` : "", depth, false);
       const showDeviceDetails = () => setTreeDetails(deviceLabel, {
         gateway_id: device.gateway_id,
         device_instance: device.device_instance,
@@ -2625,13 +2697,13 @@ APP_SCRIPT = r"""
         }
       ]);
       const container = document.createElement("div");
-      addCollapsible(container, row, [], showDeviceDetails);
+      addCollapsible(container, row, [], showDeviceDetails, false);
       for (const [folderLabel, folderPoints] of pointGroups.entries()) {
         const pointRows = folderPoints.map((point) => {
           const pointLabel = savedPointLabel(point);
           return pointSelectionRow(point, pointLabel, point.present_value ?? "", depth + 2);
         });
-        addCollapsible(container.querySelector(".tree-children"), treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1), pointRows);
+        addCollapsible(container.querySelector(".tree-children"), treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1, false), pointRows, null, false);
       }
       if (!points.length) {
         container.querySelector(".tree-children").appendChild(leafRow("empty", "No imported points", "import edge template", depth + 1));
@@ -3884,7 +3956,56 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       min-width: 0;
     }}
     .point-trend-panel {{
+      --point-trend-chart-height: 230px;
+      --trend-plot-fill: #fff;
+      --trend-plot-border: #c8d1d5;
+      --trend-grid: #dce4e7;
+      --trend-axis: #76858c;
+      --trend-axis-text: #526067;
+      --trend-axis-label: #1d2a30;
+      --trend-line: #008b88;
+      --trend-crosshair: #45565d;
+      --trend-dot-stroke: #fff;
+      --trend-tooltip-background: #17242a;
+      --trend-tooltip-color: #fff;
       display: grid;
+      gap: 10px;
+    }}
+    .point-trend-panel[data-chart-size="compact"] {{
+      --point-trend-chart-height: 150px;
+    }}
+    .point-trend-panel[data-chart-size="tall"] {{
+      --point-trend-chart-height: 300px;
+    }}
+    .point-trend-panel[data-chart-theme="dark"] {{
+      --trend-plot-fill: #0c171a;
+      --trend-plot-border: #466167;
+      --trend-grid: #254148;
+      --trend-axis: #76959b;
+      --trend-axis-text: #b8d0d3;
+      --trend-axis-label: #edf8f9;
+      --trend-line: #28d8ce;
+      --trend-crosshair: #bdd3d6;
+      --trend-dot-stroke: #0c171a;
+      --trend-tooltip-background: #effafa;
+      --trend-tooltip-color: #102023;
+    }}
+    .trend-panel-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }}
+    .trend-panel-header h2 {{
+      margin: 0;
+    }}
+    .trend-panel-header label {{
+      margin: 0;
+      font-size: 12px;
+    }}
+    .trend-panel-controls {{
+      display: flex;
+      align-items: end;
       gap: 10px;
     }}
     .point-trend-list {{
@@ -3904,6 +4025,10 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       margin: 0;
       font-size: 15px;
     }}
+    .trend-status {{
+      color: var(--accent-strong);
+      font: 700 12px/1.3 "JetBrains Mono", Consolas, monospace;
+    }}
     .point-trend-chart-wrap {{
       display: grid;
       gap: 6px;
@@ -3918,45 +4043,45 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .point-trend-chart {{
       display: block;
       width: 100%;
-      height: 230px;
+      height: var(--point-trend-chart-height);
       overflow: visible;
     }}
     .trend-plot-bg {{
-      fill: #fff;
-      stroke: #c8d1d5;
+      fill: var(--trend-plot-fill);
+      stroke: var(--trend-plot-border);
     }}
     .trend-grid {{
-      stroke: #dce4e7;
+      stroke: var(--trend-grid);
       stroke-width: 1;
     }}
     .trend-axis {{
-      stroke: #76858c;
+      stroke: var(--trend-axis);
       stroke-width: 1;
     }}
     .trend-axis-text {{
-      fill: #526067;
+      fill: var(--trend-axis-text);
       font: 13px/1 "JetBrains Mono", Consolas, monospace;
     }}
     .trend-axis-label {{
-      fill: #1d2a30;
+      fill: var(--trend-axis-label);
       font: 700 13px/1 "JetBrains Mono", Consolas, monospace;
     }}
     .trend-line {{
       fill: none;
-      stroke: #008b88;
+      stroke: var(--trend-line);
       stroke-width: 2.5;
       vector-effect: non-scaling-stroke;
     }}
     .trend-crosshair {{
       display: none;
-      stroke: #45565d;
+      stroke: var(--trend-crosshair);
       stroke-width: 1;
       stroke-dasharray: 3 3;
     }}
     .trend-hover-dot {{
       display: none;
-      fill: #008b88;
-      stroke: #fff;
+      fill: var(--trend-line);
+      stroke: var(--trend-dot-stroke);
       stroke-width: 2;
     }}
     .trend-crosshair.visible, .trend-hover-dot.visible {{ display: block; }}
@@ -3966,8 +4091,8 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       padding: 5px 7px;
       border: 1px solid #607078;
       border-radius: 4px;
-      background: #17242a;
-      color: #fff;
+      background: var(--trend-tooltip-background);
+      color: var(--trend-tooltip-color);
       font: 700 12px/1.25 "JetBrains Mono", Consolas, monospace;
       pointer-events: none;
       white-space: nowrap;
