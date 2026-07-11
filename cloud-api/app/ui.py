@@ -1244,23 +1244,27 @@ APP_SCRIPT = r"""
     return !hasResourceMetric(gateway.cpu_load_pct) && !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);
   }
 
+  function gatewayRequiresUpdate(gateway) {
+    return edgeAppVersion(gateway) === "Update required" || gatewayNeedsResourceHealthUpdate(gateway);
+  }
+
   function gatewayUpdateState(gatewayId) {
     return dashboardGatewayUpdates.get(gatewayId) || null;
   }
 
   function gatewayVersionCell(gateway) {
     const version = edgeAppVersion(gateway);
-    if (gatewayNeedsResourceHealthUpdate(gateway)) {
-      return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Health update required (${edgeResourceHealthMinimumVersion}+)</small>`;
-    }
-    if (version !== "Update required") {
-      return `<strong>${escapeHtml(version)}</strong>`;
-    }
     const update = gatewayUpdateState(gateway.gateway_id);
     if (update?.status === "queued" || update?.status === "running") {
       return `<strong>Update ${escapeHtml(update.status)}</strong>`;
     }
     const actionLabel = update?.status === "failed" ? "Retry" : "Update";
+    if (gatewayNeedsResourceHealthUpdate(gateway)) {
+      return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Health update required (${edgeResourceHealthMinimumVersion}+)</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+    }
+    if (version !== "Update required") {
+      return `<strong>${escapeHtml(version)}</strong>`;
+    }
     return `<strong>Update required</strong> <button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
   }
 
@@ -1287,7 +1291,7 @@ APP_SCRIPT = r"""
       count.textContent = selectedCount ? `${selectedCount} selected` : "Select gateways needing an update";
     }
     if (selectAll) {
-      const candidates = sortedDashboardGateways().filter((gateway) => edgeAppVersion(gateway) === "Update required");
+      const candidates = sortedDashboardGateways().filter(gatewayRequiresUpdate);
       selectAll.checked = candidates.length > 0 && candidates.every((gateway) => selectedGatewayUpdateIds.has(gateway.gateway_id));
       selectAll.indeterminate = selectedCount > 0 && !selectAll.checked;
     }
@@ -1322,7 +1326,7 @@ APP_SCRIPT = r"""
     if (selectAll && selectAll.dataset.ready !== "true") {
       selectAll.dataset.ready = "true";
       selectAll.addEventListener("change", () => {
-        const candidates = sortedDashboardGateways().filter((gateway) => edgeAppVersion(gateway) === "Update required");
+        const candidates = sortedDashboardGateways().filter(gatewayRequiresUpdate);
         if (selectAll.checked) {
           candidates.forEach((gateway) => selectedGatewayUpdateIds.add(gateway.gateway_id));
         } else {
@@ -1742,7 +1746,7 @@ APP_SCRIPT = r"""
       const row = document.createElement("tr");
       row.className = gateway.gateway_id === selectedDashboardGatewayId ? "selected-row" : "";
       row.innerHTML = `
-        <td><input type="checkbox" aria-label="Select ${escapeHtml(gateway.gateway_id)} for application update" data-select-update="${escapeHtml(gateway.gateway_id)}"${selectedGatewayUpdateIds.has(gateway.gateway_id) ? " checked" : ""}${edgeAppVersion(gateway) !== "Update required" ? " disabled" : ""}></td>
+        <td><input type="checkbox" aria-label="Select ${escapeHtml(gateway.gateway_id)} for application update" data-select-update="${escapeHtml(gateway.gateway_id)}"${selectedGatewayUpdateIds.has(gateway.gateway_id) ? " checked" : ""}${gatewayRequiresUpdate(gateway) ? "" : " disabled"}></td>
         <td><a class="gateway-link" href="/gateways/${encodeURIComponent(gateway.gateway_id)}" data-select-gateway="${escapeHtml(gateway.gateway_id)}">${escapeHtml(gateway.gateway_id)}</a></td>
         <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
         <td>${escapeHtml(gatewayAddress(gateway) || "")}</td>
