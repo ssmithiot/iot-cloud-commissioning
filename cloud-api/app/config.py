@@ -8,7 +8,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("DATABASE_URL", "CLOUD_DATABASE_URL"),
     )
     auto_create_tables: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices("AUTO_CREATE_TABLES", "CLOUD_AUTO_CREATE_TABLES"),
     )
     gateway_auth_pepper: str = Field(min_length=1, validation_alias="GATEWAY_AUTH_PEPPER")

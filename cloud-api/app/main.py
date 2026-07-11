@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import inspect, select, text
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -50,6 +50,7 @@ from app.models import (
     SiteWeather,
     utc_now,
 )
+from app.schema import require_current_schema, schema_revision_status
 from app.schemas import (
     CommissioningTemplateImportOut,
     CommissioningTemplateIn,
@@ -117,75 +118,13 @@ from app.ui import (
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if settings.auto_create_tables:
         Base.metadata.create_all(bind=engine)
-    _ensure_site_coordinate_columns()
-    _ensure_site_weather_table()
-    _ensure_gateway_update_request_table()
-    _ensure_point_trend_tables()
-    _ensure_edge_resource_metric_columns()
+    else:
+        require_current_schema(engine)
     yield
 
 
 app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lifespan)
 logger = logging.getLogger("iot-cloud-api.tunnel")
-
-
-def _ensure_site_coordinate_columns() -> None:
-    inspector = inspect(engine)
-    if not inspector.has_table("sites"):
-        return
-    columns = {column["name"] for column in inspector.get_columns("sites")}
-    missing = [column for column in ("latitude", "longitude") if column not in columns]
-    if not missing:
-        return
-    column_type = "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT"
-    with engine.begin() as connection:
-        for column in missing:
-            connection.execute(text(f"ALTER TABLE sites ADD COLUMN {column} {column_type}"))
-
-
-def _ensure_site_weather_table() -> None:
-    SiteWeather.__table__.create(bind=engine, checkfirst=True)
-    inspector = inspect(engine)
-    if not inspector.has_table("site_weather"):
-        return
-    columns = {column["name"] for column in inspector.get_columns("site_weather")}
-    missing = [column for column in ("sunrise_at", "sunset_at", "solar_noon_at") if column not in columns]
-    if not missing:
-        return
-    column_type = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "DATETIME"
-    with engine.begin() as connection:
-        for column in missing:
-            connection.execute(text(f"ALTER TABLE site_weather ADD COLUMN {column} {column_type}"))
-
-
-def _ensure_gateway_update_request_table() -> None:
-    GatewayUpdateRequest.__table__.create(bind=engine, checkfirst=True)
-
-
-def _ensure_point_trend_tables() -> None:
-    PointTrendConfig.__table__.create(bind=engine, checkfirst=True)
-    PointTrendSample.__table__.create(bind=engine, checkfirst=True)
-
-
-def _ensure_edge_resource_metric_columns() -> None:
-    inspector = inspect(engine)
-    column_types = {
-        "cpu_count": "INTEGER",
-        "cpu_load_1m": "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT",
-        "cpu_load_pct": "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT",
-        "memory_used_pct": "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT",
-        "memory_available_mb": "INTEGER",
-        "disk_used_pct": "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT",
-        "disk_free_mb": "INTEGER",
-    }
-    with engine.begin() as connection:
-        for table_name in ("edge_nodes", "edge_heartbeats"):
-            if not inspector.has_table(table_name):
-                continue
-            existing = {column["name"] for column in inspector.get_columns(table_name)}
-            for column_name, column_type in column_types.items():
-                if column_name not in existing:
-                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
 
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -935,6 +874,11 @@ def health() -> dict[str, str]:
 def database_health(db: Session = Depends(get_db)) -> dict[str, str]:
     db.execute(text("select 1"))
     return {"status": "ok"}
+
+
+@app.get("/health/schema")
+def schema_health() -> dict[str, object]:
+    return schema_revision_status(engine, auto_create_tables=settings.auto_create_tables).as_dict()
 
 
 @app.get("/login", response_class=HTMLResponse, include_in_schema=False)
