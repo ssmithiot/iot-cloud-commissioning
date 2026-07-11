@@ -121,6 +121,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _ensure_site_weather_table()
     _ensure_gateway_update_request_table()
     _ensure_point_trend_tables()
+    _ensure_edge_resource_metric_columns()
     yield
 
 
@@ -164,6 +165,27 @@ def _ensure_gateway_update_request_table() -> None:
 def _ensure_point_trend_tables() -> None:
     PointTrendConfig.__table__.create(bind=engine, checkfirst=True)
     PointTrendSample.__table__.create(bind=engine, checkfirst=True)
+
+
+def _ensure_edge_resource_metric_columns() -> None:
+    inspector = inspect(engine)
+    column_types = {
+        "cpu_count": "INTEGER",
+        "cpu_load_1m": "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT",
+        "cpu_load_pct": "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT",
+        "memory_used_pct": "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT",
+        "memory_available_mb": "INTEGER",
+        "disk_used_pct": "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT",
+        "disk_free_mb": "INTEGER",
+    }
+    with engine.begin() as connection:
+        for table_name in ("edge_nodes", "edge_heartbeats"):
+            if not inspector.has_table(table_name):
+                continue
+            existing = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, column_type in column_types.items():
+                if column_name not in existing:
+                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
 
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
