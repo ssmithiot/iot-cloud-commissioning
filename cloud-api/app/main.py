@@ -111,6 +111,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         Base.metadata.create_all(bind=engine)
     _ensure_site_coordinate_columns()
     _ensure_site_weather_table()
+    _ensure_gateway_update_request_table()
     yield
 
 
@@ -145,6 +146,10 @@ def _ensure_site_weather_table() -> None:
     with engine.begin() as connection:
         for column in missing:
             connection.execute(text(f"ALTER TABLE site_weather ADD COLUMN {column} {column_type}"))
+
+
+def _ensure_gateway_update_request_table() -> None:
+    GatewayUpdateRequest.__table__.create(bind=engine, checkfirst=True)
 
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
