@@ -413,6 +413,18 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert "Unexpected token" not in response.text
 
 
+def test_gateway_workspace_trend_chart_tracks_resized_detail_pane() -> None:
+    response = client.get("/gateways/GW777")
+
+    assert response.status_code == 200
+    assert "function renderResponsivePointTrend" in response.text
+    assert '"ResizeObserver" in window' in response.text
+    assert "svg.viewBox.baseVal.width" in response.text
+    assert 'renderResponsivePointTrend(chart, samples, point.units || "");' in response.text
+    assert 'fill: #fff;' in response.text
+    assert 'font: 13px/1 "JetBrains Mono", Consolas, monospace;' in response.text
+
+
 def test_public_auth_config_reports_missing_browser_config() -> None:
     response = client.get("/api/auth/public-config")
 
