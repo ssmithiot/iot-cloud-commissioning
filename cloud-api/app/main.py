@@ -243,6 +243,13 @@ def _gateway_out(edge_node: EdgeNode, now: datetime | None = None) -> dict[str, 
         "ui_version": edge_node.ui_version,
         "sqlite_db_ok": edge_node.sqlite_db_ok,
         "queued_upload_count": edge_node.queued_upload_count,
+        "cpu_count": edge_node.cpu_count,
+        "cpu_load_1m": edge_node.cpu_load_1m,
+        "cpu_load_pct": edge_node.cpu_load_pct,
+        "memory_used_pct": edge_node.memory_used_pct,
+        "memory_available_mb": edge_node.memory_available_mb,
+        "disk_used_pct": edge_node.disk_used_pct,
+        "disk_free_mb": edge_node.disk_free_mb,
         "latest_status": edge_node.latest_status,
         "latest_heartbeat_at": edge_node.latest_heartbeat_at,
         "updated_at": edge_node.updated_at,
@@ -1221,6 +1228,9 @@ def ui_gateway_heartbeat_trend(
             "status": "online" if heartbeat.sqlite_db_ok else "degraded",
             "sqlite_db_ok": heartbeat.sqlite_db_ok,
             "queued_upload_count": heartbeat.queued_upload_count,
+            "cpu_load_pct": heartbeat.cpu_load_pct,
+            "memory_used_pct": heartbeat.memory_used_pct,
+            "disk_used_pct": heartbeat.disk_used_pct,
             "agent_version": heartbeat.agent_version,
             "ui_version": heartbeat.ui_version,
         }
@@ -2117,6 +2127,13 @@ def receive_heartbeat(
     edge_node.ui_version = payload.ui_version
     edge_node.sqlite_db_ok = payload.sqlite_db_ok
     edge_node.queued_upload_count = payload.queued_upload_count
+    edge_node.cpu_count = payload.cpu_count
+    edge_node.cpu_load_1m = payload.cpu_load_1m
+    edge_node.cpu_load_pct = payload.cpu_load_pct
+    edge_node.memory_used_pct = payload.memory_used_pct
+    edge_node.memory_available_mb = payload.memory_available_mb
+    edge_node.disk_used_pct = payload.disk_used_pct
+    edge_node.disk_free_mb = payload.disk_free_mb
     edge_node.latest_status = status
     edge_node.latest_heartbeat_at = payload.timestamp_utc
     edge_node.updated_at = now
@@ -2134,6 +2151,13 @@ def receive_heartbeat(
             ui_version=payload.ui_version,
             sqlite_db_ok=payload.sqlite_db_ok,
             queued_upload_count=payload.queued_upload_count,
+            cpu_count=payload.cpu_count,
+            cpu_load_1m=payload.cpu_load_1m,
+            cpu_load_pct=payload.cpu_load_pct,
+            memory_used_pct=payload.memory_used_pct,
+            memory_available_mb=payload.memory_available_mb,
+            disk_used_pct=payload.disk_used_pct,
+            disk_free_mb=payload.disk_free_mb,
             timestamp_utc=payload.timestamp_utc,
         )
     )

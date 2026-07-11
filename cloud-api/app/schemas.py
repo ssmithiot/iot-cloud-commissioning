@@ -123,6 +123,13 @@ class HeartbeatIn(BaseModel):
     ui_version: str = Field(min_length=1, max_length=80)
     sqlite_db_ok: bool
     queued_upload_count: int = Field(ge=0)
+    cpu_count: int | None = Field(default=None, ge=1)
+    cpu_load_1m: float | None = Field(default=None, ge=0)
+    cpu_load_pct: float | None = Field(default=None, ge=0)
+    memory_used_pct: float | None = Field(default=None, ge=0, le=100)
+    memory_available_mb: int | None = Field(default=None, ge=0)
+    disk_used_pct: float | None = Field(default=None, ge=0, le=100)
+    disk_free_mb: int | None = Field(default=None, ge=0)
     timestamp_utc: datetime
 
 
@@ -237,6 +244,13 @@ class GatewayOut(BaseModel):
     ui_version: str
     sqlite_db_ok: bool
     queued_upload_count: int
+    cpu_count: int | None = None
+    cpu_load_1m: float | None = None
+    cpu_load_pct: float | None = None
+    memory_used_pct: float | None = None
+    memory_available_mb: int | None = None
+    disk_used_pct: float | None = None
+    disk_free_mb: int | None = None
     latest_status: str
     latest_heartbeat_at: datetime | None
     updated_at: datetime
@@ -272,6 +286,9 @@ class GatewayHeartbeatTrendOut(BaseModel):
     status: Literal["online", "degraded"]
     sqlite_db_ok: bool
     queued_upload_count: int
+    cpu_load_pct: float | None = None
+    memory_used_pct: float | None = None
+    disk_used_pct: float | None = None
     agent_version: str
     ui_version: str
 

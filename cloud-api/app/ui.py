@@ -2944,6 +2944,7 @@ APP_SCRIPT = r"""
     ]);
     byId("gateway-title").textContent = `${gateway.gateway_id} Workspace`;
     byId("gateway-status").textContent = `${statusLabel(gateway)} | BACnet ${gateway.bacnet_port} | ${gateway.lan_ip || "no LAN IP"}`;
+    renderGatewayResourceHealth(gateway);
     renderSiteInfo(site, directConnect, tunnelStatus);
     const details = byId("gateway-details");
     if (details) {
@@ -2957,6 +2958,30 @@ APP_SCRIPT = r"""
       }, null, 2);
     }
     renderTree(tree);
+  }
+
+  function resourcePercent(value) {
+    const numeric = Number(value);
+    return value !== null && value !== undefined && Number.isFinite(numeric) ? `${numeric.toFixed(1)}%` : "Awaiting agent update";
+  }
+
+  function hasResourceMetric(value) {
+    return value !== null && value !== undefined && Number.isFinite(Number(value));
+  }
+
+  function renderGatewayResourceHealth(gateway) {
+    setText("edge-health-cpu", hasResourceMetric(gateway.cpu_load_pct)
+      ? `${resourcePercent(gateway.cpu_load_pct)} of ${gateway.cpu_count || "?"} cores · load ${Number(gateway.cpu_load_1m).toFixed(2)}`
+      : "Awaiting agent update");
+    setText("edge-health-memory", hasResourceMetric(gateway.memory_used_pct)
+      ? `${resourcePercent(gateway.memory_used_pct)} used · ${Number(gateway.memory_available_mb || 0).toLocaleString()} MB free`
+      : "Awaiting agent update");
+    setText("edge-health-disk", hasResourceMetric(gateway.disk_used_pct)
+      ? `${resourcePercent(gateway.disk_used_pct)} used · ${Number(gateway.disk_free_mb || 0).toLocaleString()} MB free`
+      : "Awaiting agent update");
+    setText("edge-health-queue", `${Number(gateway.queued_upload_count || 0).toLocaleString()} pending uploads`);
+    setText("edge-health-sqlite", gateway.sqlite_db_ok ? "Healthy" : "Unavailable");
+    setText("edge-health-heartbeat", heartbeatLabel(gateway));
   }
 
   function initPointWorkbenchSplitters() {
@@ -3971,7 +3996,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .workspace-overview-grid {{
       display: grid;
-      grid-template-columns: minmax(300px, 0.85fr) minmax(420px, 1.15fr);
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
       gap: 16px;
       align-items: stretch;
     }}
@@ -5957,6 +5982,24 @@ def gateway_workspace_html(gateway_id: str) -> str:
             <div><dt>Coordinates</dt><dd id="site-summary-coordinates">&mdash;</dd></div>
             <div><dt>Network</dt><dd id="site-summary-network">&mdash;</dd></div>
             <div><dt>Hours</dt><dd id="site-summary-hours">&mdash;</dd></div>
+          </dl>
+        </article>
+        <article class="workspace-tile edge-health">
+          <div class="workspace-tile-header">
+            <div>
+              <span class="eyebrow">Edge Health</span>
+              <h2>Resource headroom</h2>
+              <p>Reported with each heartbeat; measures the gateway as a whole.</p>
+            </div>
+            <span class="panel-counter">30 sec</span>
+          </div>
+          <dl class="site-summary-grid">
+            <div><dt>CPU</dt><dd id="edge-health-cpu">Loading...</dd></div>
+            <div><dt>Memory</dt><dd id="edge-health-memory">Loading...</dd></div>
+            <div><dt>Disk</dt><dd id="edge-health-disk">Loading...</dd></div>
+            <div><dt>Upload queue</dt><dd id="edge-health-queue">Loading...</dd></div>
+            <div><dt>SQLite</dt><dd id="edge-health-sqlite">Loading...</dd></div>
+            <div><dt>Heartbeat</dt><dd id="edge-health-heartbeat">Loading...</dd></div>
           </dl>
         </article>
       </div>
