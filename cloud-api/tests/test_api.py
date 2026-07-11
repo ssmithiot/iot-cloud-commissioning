@@ -56,6 +56,13 @@ def heartbeat_payload(gateway_id: str = "GW001") -> dict[str, object]:
         "ui_version": "0.1.0",
         "sqlite_db_ok": True,
         "queued_upload_count": 0,
+        "cpu_count": 4,
+        "cpu_load_1m": 0.5,
+        "cpu_load_pct": 12.5,
+        "memory_used_pct": 42.0,
+        "memory_available_mb": 2048,
+        "disk_used_pct": 31.5,
+        "disk_free_mb": 16384,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -371,14 +378,13 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert response.status_code == 200
     assert 'id="discovery-progress"' in response.text
     assert 'id="discovered-devices"' in response.text
-    assert 'class="tree-shell"' in response.text
+    assert 'class="tree-shell point-workbench"' in response.text
     assert 'id="tree-details"' in response.text
     assert "renderDiscoveredDevices" in response.text
     assert "Load points" not in response.text
-    assert "Saved Tree" not in response.text
+    assert "Saved Tree" in response.text
     assert "Imported Commissioning Model" in response.text
     assert "Last Import" in response.text
-    assert "Use the edge commissioning UI for BACnet discovery and point selection" in response.text
     assert "Site Information" in response.text
     assert 'id="site-info-form"' in response.text
     assert 'id="site-address-street"' in response.text
@@ -397,7 +403,7 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert "/commissioning-template/import" in response.text
     assert 'id="selected-points-panel"' in response.text
     assert 'id="selected-points-list"' in response.text
-    assert "Remove selected points" in response.text
+    assert "Remove selected" in response.text
     assert "saved-point-select" in response.text
     assert "/api/ui/points/bulk-remove" in response.text
     assert 'id="point-candidates-panel"' in response.text
@@ -411,6 +417,9 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert "pollDiscoveryJob" in response.text
     assert "/api/edge/jobs?limit=50" in response.text
     assert "Unexpected token" not in response.text
+    assert 'id="edge-health-cpu"' in response.text
+    assert 'id="edge-health-memory"' in response.text
+    assert "renderGatewayResourceHealth(gateway);" in response.text
 
 
 def test_gateway_workspace_trend_chart_tracks_resized_detail_pane() -> None:
@@ -513,6 +522,8 @@ def test_heartbeat_creates_gateway_and_history() -> None:
     assert gateways.json()[0]["gateway_id"] == "GW001"
     assert gateways.json()[0]["site_id"] == "demo-site"
     assert gateways.json()[0]["agent_version"] == "0.1.1"
+    assert gateways.json()[0]["cpu_load_pct"] == 12.5
+    assert gateways.json()[0]["memory_available_mb"] == 2048
 
 
 def test_ui_gateway_heartbeat_trend_returns_ordered_history() -> None:
@@ -536,6 +547,9 @@ def test_ui_gateway_heartbeat_trend_returns_ordered_history() -> None:
             "status": "degraded",
             "sqlite_db_ok": False,
             "queued_upload_count": 0,
+            "cpu_load_pct": 12.5,
+            "memory_used_pct": 42.0,
+            "disk_used_pct": 31.5,
             "agent_version": "0.1.1",
             "ui_version": "0.1.0",
         }
