@@ -44,6 +44,7 @@ APP_SCRIPT = r"""
   const trendChartFrame = Object.freeze({ minWidth: 360, height: 230, left: 72, right: 20, top: 14, bottom: 48 });
   const trendChartSizeStorageKey = "iot-cloud-trend-chart-size";
   const trendChartThemeStorageKey = "iot-cloud-trend-chart-theme";
+  const trendChartRangeStorageKey = "iot-cloud-trend-chart-range";
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
   const pointTableColumns = [
@@ -2259,6 +2260,27 @@ APP_SCRIPT = r"""
     }
   }
 
+  function trendChartRange() {
+    try {
+      const stored = localStorage.getItem(trendChartRangeStorageKey);
+      return ["1h", "4h", "12h", "24h", "7d", "all"].includes(stored) ? stored : "24h";
+    } catch {
+      return "24h";
+    }
+  }
+
+  function trendRangeStart(range) {
+    const durations = { "1h": 1, "4h": 4, "12h": 12, "24h": 24, "7d": 24 * 7 };
+    return durations[range] ? new Date(Date.now() - durations[range] * 60 * 60 * 1000).toISOString() : null;
+  }
+
+  function trendSamplesUrl(pointId, range) {
+    const query = new URLSearchParams({ limit: "5000" });
+    const since = trendRangeStart(range);
+    if (since) query.set("since", since);
+    return `/api/ui/points/${encodeURIComponent(pointId)}/trend?${query}`;
+  }
+
   function pointTrendChartHeight(chart) {
     const height = Number.parseFloat(getComputedStyle(chart).getPropertyValue("--point-trend-chart-height"));
     return Math.max(150, Math.round(Number.isFinite(height) ? height : trendChartFrame.height));
@@ -2352,11 +2374,11 @@ APP_SCRIPT = r"""
     observer.observe(chart);
   }
 
-  async function loadSelectedPointTrend(card, point) {
+  async function loadSelectedPointTrend(card, point, range) {
     const chart = card.querySelector(".point-trend-chart-wrap");
     if (!chart) return;
     try {
-      const samples = await api(`/api/ui/points/${encodeURIComponent(point.id)}/trend?limit=288`);
+      const samples = await api(trendSamplesUrl(point.id, range));
       if (!chart.isConnected) return;
       renderResponsivePointTrend(chart, samples, point.units || "");
     } catch (error) {
@@ -2435,9 +2457,10 @@ APP_SCRIPT = r"""
     }
     const chartSize = trendChartSize();
     const chartTheme = trendChartTheme();
+    const chartRange = trendChartRange();
     panel.dataset.chartSize = chartSize;
     panel.dataset.chartTheme = chartTheme;
-    panel.innerHTML = `<div class="trend-panel-header"><h2>Trends (${points.length})</h2><div class="trend-panel-controls"><label>Chart size <select class="trend-chart-size"><option value="compact"${chartSize === "compact" ? " selected" : ""}>Compact</option><option value="standard"${chartSize === "standard" ? " selected" : ""}>Standard</option><option value="tall"${chartSize === "tall" ? " selected" : ""}>Tall</option></select></label><label>Theme <select class="trend-chart-theme"><option value="light"${chartTheme === "light" ? " selected" : ""}>Light</option><option value="dark"${chartTheme === "dark" ? " selected" : ""}>Dark</option></select></label></div></div><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3><div class="trend-card-controls">${trendCardControls(point)}</div><div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
+    panel.innerHTML = `<div class="trend-panel-header"><h2>Trends (${points.length})</h2><div class="trend-panel-controls"><label>Chart size <select class="trend-chart-size"><option value="compact"${chartSize === "compact" ? " selected" : ""}>Compact</option><option value="standard"${chartSize === "standard" ? " selected" : ""}>Standard</option><option value="tall"${chartSize === "tall" ? " selected" : ""}>Tall</option></select></label><label>Time range <select class="trend-chart-range"><option value="1h"${chartRange === "1h" ? " selected" : ""}>1 hour</option><option value="4h"${chartRange === "4h" ? " selected" : ""}>4 hours</option><option value="12h"${chartRange === "12h" ? " selected" : ""}>12 hours</option><option value="24h"${chartRange === "24h" ? " selected" : ""}>24 hours</option><option value="7d"${chartRange === "7d" ? " selected" : ""}>7 days</option><option value="all"${chartRange === "all" ? " selected" : ""}>All history</option></select></label><label>Theme <select class="trend-chart-theme"><option value="light"${chartTheme === "light" ? " selected" : ""}>Light</option><option value="dark"${chartTheme === "dark" ? " selected" : ""}>Dark</option></select></label></div></div><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3><div class="trend-card-controls">${trendCardControls(point)}</div><div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
     panel.querySelector(".trend-chart-size")?.addEventListener("change", (event) => {
       const size = event.target.value;
       panel.dataset.chartSize = size;
@@ -2456,8 +2479,16 @@ APP_SCRIPT = r"""
         // Keep the chart theme for this page even when browser storage is unavailable.
       }
     });
+    panel.querySelector(".trend-chart-range")?.addEventListener("change", (event) => {
+      try {
+        localStorage.setItem(trendChartRangeStorageKey, event.target.value);
+      } catch {
+        // Continue with the chosen range even when browser storage is unavailable.
+      }
+      renderSelectedPointTrends(points);
+    });
     panel.querySelectorAll(".point-trend-card").forEach((card, index) => {
-      loadSelectedPointTrend(card, points[index]);
+      loadSelectedPointTrend(card, points[index], chartRange);
     });
   }
 
@@ -4047,6 +4078,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .trend-panel-controls {{
       display: flex;
       align-items: end;
+      flex-wrap: wrap;
       gap: 10px;
     }}
     .point-trend-list {{
