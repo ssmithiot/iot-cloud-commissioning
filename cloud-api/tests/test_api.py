@@ -440,6 +440,9 @@ def test_gateway_workspace_stacks_trends_for_selected_points() -> None:
     assert "trendChartThemeStorageKey" in response.text
     assert "trendChartRangeStorageKey" in response.text
     assert 'class="trend-chart-range"' in response.text
+    assert 'class="trend-card-header"' in response.text
+    assert 'class="trend-card-summary"' in response.text
+    assert "trendSummary(samples, point.units || \"\")" in response.text
     assert "trend-edit-button" in response.text
     assert "disable-point-trend" in response.text
     assert "updatePointTrend(point, false" in response.text

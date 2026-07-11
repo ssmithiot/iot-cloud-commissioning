@@ -2293,6 +2293,14 @@ APP_SCRIPT = r"""
     return `${minutes} minute${minutes === 1 ? "" : "s"}`;
   }
 
+  function trendSummary(samples, units = "") {
+    const points = numericTrendSamples(samples);
+    if (!points.length) return "No numeric samples";
+    const minimum = Math.min(...points.map((point) => point.valueNumber));
+    const maximum = Math.max(...points.map((point) => point.valueNumber));
+    return `${points.length} samples · range ${minimum.toFixed(2)}–${maximum.toFixed(2)}${units ? ` ${units}` : ""}`;
+  }
+
   function trendChart(samples, units = "", chartWidth = 600, chartHeight = trendChartFrame.height) {
     const points = numericTrendSamples(samples);
     if (points.length < 2) return `<span class="muted">Two numeric samples are needed before a trend line can be drawn.</span>`;
@@ -2381,9 +2389,13 @@ APP_SCRIPT = r"""
       const samples = await api(trendSamplesUrl(point.id, range));
       if (!chart.isConnected) return;
       renderResponsivePointTrend(chart, samples, point.units || "");
+      const summary = card.querySelector(".trend-card-summary");
+      if (summary) summary.textContent = trendSummary(samples, point.units || "");
     } catch (error) {
       if (!chart.isConnected) return;
       chart.innerHTML = `<span class="muted">Trend samples are unavailable.</span>`;
+      const summary = card.querySelector(".trend-card-summary");
+      if (summary) summary.textContent = "Trend samples unavailable";
     }
     renderTrendCardControls(card, point);
   }
@@ -2460,7 +2472,7 @@ APP_SCRIPT = r"""
     const chartRange = trendChartRange();
     panel.dataset.chartSize = chartSize;
     panel.dataset.chartTheme = chartTheme;
-    panel.innerHTML = `<div class="trend-panel-header"><h2>Trends (${points.length})</h2><div class="trend-panel-controls"><label>Chart size <select class="trend-chart-size"><option value="compact"${chartSize === "compact" ? " selected" : ""}>Compact</option><option value="standard"${chartSize === "standard" ? " selected" : ""}>Standard</option><option value="tall"${chartSize === "tall" ? " selected" : ""}>Tall</option></select></label><label>Time range <select class="trend-chart-range"><option value="1h"${chartRange === "1h" ? " selected" : ""}>1 hour</option><option value="4h"${chartRange === "4h" ? " selected" : ""}>4 hours</option><option value="12h"${chartRange === "12h" ? " selected" : ""}>12 hours</option><option value="24h"${chartRange === "24h" ? " selected" : ""}>24 hours</option><option value="7d"${chartRange === "7d" ? " selected" : ""}>7 days</option><option value="all"${chartRange === "all" ? " selected" : ""}>All history</option></select></label><label>Theme <select class="trend-chart-theme"><option value="light"${chartTheme === "light" ? " selected" : ""}>Light</option><option value="dark"${chartTheme === "dark" ? " selected" : ""}>Dark</option></select></label></div></div><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3><div class="trend-card-controls">${trendCardControls(point)}</div><div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
+    panel.innerHTML = `<div class="trend-panel-header"><h2>Trends (${points.length})</h2><div class="trend-panel-controls"><label>Chart size <select class="trend-chart-size"><option value="compact"${chartSize === "compact" ? " selected" : ""}>Compact</option><option value="standard"${chartSize === "standard" ? " selected" : ""}>Standard</option><option value="tall"${chartSize === "tall" ? " selected" : ""}>Tall</option></select></label><label>Time range <select class="trend-chart-range"><option value="1h"${chartRange === "1h" ? " selected" : ""}>1 hour</option><option value="4h"${chartRange === "4h" ? " selected" : ""}>4 hours</option><option value="12h"${chartRange === "12h" ? " selected" : ""}>12 hours</option><option value="24h"${chartRange === "24h" ? " selected" : ""}>24 hours</option><option value="7d"${chartRange === "7d" ? " selected" : ""}>7 days</option><option value="all"${chartRange === "all" ? " selected" : ""}>All history</option></select></label><label>Theme <select class="trend-chart-theme"><option value="light"${chartTheme === "light" ? " selected" : ""}>Light</option><option value="dark"${chartTheme === "dark" ? " selected" : ""}>Dark</option></select></label></div></div><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><div class="trend-card-header"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3><div class="trend-card-details"><div class="trend-card-controls">${trendCardControls(point)}</div><span class="trend-card-summary">Loading samples...</span></div></div><div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
     panel.querySelector(".trend-chart-size")?.addEventListener("change", (event) => {
       const size = event.target.value;
       panel.dataset.chartSize = size;
@@ -4098,6 +4110,27 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       margin: 0;
       font-size: 15px;
     }}
+    .trend-card-header {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+    }}
+    .trend-card-details {{
+      display: flex;
+      flex: 1 1 420px;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+      min-width: 0;
+    }}
+    .trend-card-summary {{
+      color: var(--muted);
+      font: 700 12px/1.3 "JetBrains Mono", Consolas, monospace;
+      white-space: nowrap;
+    }}
     .trend-status {{
       color: var(--accent-strong);
       font: 700 12px/1.3 "JetBrains Mono", Consolas, monospace;
@@ -4193,8 +4226,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       white-space: nowrap;
     }}
     .point-trend-chart-wrap > small {{
-      font-size: 12px;
-      line-height: 1.35;
+      display: none;
     }}
     .site-summary-grid dt {{
       color: var(--muted);
