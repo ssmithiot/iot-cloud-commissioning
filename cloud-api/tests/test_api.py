@@ -2846,6 +2846,55 @@ def test_create_claim_and_complete_job() -> None:
     assert completed["completed_at"] is not None
 
 
+def test_edge_discovery_and_point_load_results_reconcile_inventory_lifecycle() -> None:
+    from app.models import EdgeJob, SavedBacnetDevice, SavedBacnetPoint
+
+    raw_token = create_gateway_token("GW001")
+    discovery = client.post(
+        "/api/edge/jobs",
+        headers=admin_headers(),
+        json={"gateway_id": "GW001", "job_type": "bacnet_discover", "request": {}},
+    ).json()
+    response = client.post(
+        f"/api/edge/jobs/{discovery['job_id']}/result",
+        headers=auth_headers(raw_token),
+        json={"status": "completed", "result": {"devices": [{"device_id": 1001, "network": 1, "mac": "0A"}]}, "error_message": None},
+    )
+    assert response.status_code == 200
+    with SessionLocal() as db:
+        device = db.scalar(select(SavedBacnetDevice).where(SavedBacnetDevice.gateway_id == "GW001"))
+        assert device is not None
+        assert device.device_instance == 1001
+        assert device.lifecycle_state == "active"
+        assert device.first_seen_at is not None
+        assert device.last_seen_at is not None
+        device_id = str(device.id)
+
+    with SessionLocal() as db:
+        point_load = EdgeJob(
+            job_id=f"job-{uuid4().hex}",
+            gateway_id="GW001",
+            job_type="bacnet_load_points",
+            status="claimed",
+            request_json={"saved_device_id": device_id},
+        )
+        db.add(point_load)
+        db.commit()
+        point_load_job_id = point_load.job_id
+    response = client.post(
+        f"/api/edge/jobs/{point_load_job_id}/result",
+        headers=auth_headers(raw_token),
+        json={"status": "completed", "result": {"points": [{"object_type": "analog-value", "object_instance": 39, "object_name": "Occupied Heat Setpoint"}]}, "error_message": None},
+    )
+    assert response.status_code == 200
+    with SessionLocal() as db:
+        point = db.scalar(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device_id))
+        assert point is not None
+        assert point.lifecycle_state == "active"
+        assert point.first_seen_at is not None
+        assert point.last_seen_at is not None
+
+
 def test_job_creation_rejects_payload_field() -> None:
     response = client.post(
         "/api/edge/jobs",
@@ -3120,3 +3169,48 @@ def test_admin_provision_gateway_updates_existing_identity_and_issues_new_token(
     assert edge_node is not None
     assert edge_node.site_id == "test-bench"
     assert len(credentials) == 2
+
+
+def test_workspace_routes_enforce_site_scope_and_admin_access_overview_lists_memberships() -> None:
+    from app.auth import AdminAuthContext, require_job_operator_auth, require_operator_auth
+    from app.models import SiteMembership
+
+    create_gateway_token("GW001")
+    user_id = create_operator_user("scoped@example.com", role="operator", status="active")
+    with SessionLocal() as db:
+        visible_site = db.scalar(select(Site).where(Site.site_id == "demo-site"))
+        assert visible_site is not None
+        hidden_site = Site(site_id="hidden-site", name="Hidden site")
+        db.add(hidden_site)
+        db.flush()
+        db.add(
+            EdgeNode(
+                gateway_id="GW002",
+                site_id=hidden_site.site_id,
+                hostname="GW002",
+                bacnet_port=47814,
+                agent_version="0.1.0",
+                ui_version="0.1.0",
+                sqlite_db_ok=True,
+                queued_upload_count=0,
+                latest_status="online",
+            )
+        )
+        operator = db.scalar(select(OperatorUser).where(OperatorUser.email == "scoped@example.com"))
+        assert operator is not None
+        db.add(SiteMembership(site_uuid=visible_site.id, operator_user_id=operator.id, role="operator"))
+        db.commit()
+
+    scoped_auth = AdminAuthContext(auth_type="supabase_user", role="operator", operator_user_id=str(operator.id))
+    app.dependency_overrides[require_operator_auth] = lambda: scoped_auth
+    app.dependency_overrides[require_job_operator_auth] = lambda: scoped_auth
+    try:
+        assert client.get("/api/ui/gateways/GW001/tree").status_code == 200
+        assert client.get("/api/ui/gateways/GW002/tree").status_code == 404
+        assert client.post("/api/ui/gateways/GW002/groups", json={"name": "Hidden"}).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+    overview = client.get("/api/admin/access-overview", headers=admin_headers())
+    assert overview.status_code == 200
+    assert overview.json()["memberships"] == [{"email": "scoped@example.com", "role": "operator", "scope_kind": "site", "scope_id": "demo-site", "scope_name": "demo-site"}]
