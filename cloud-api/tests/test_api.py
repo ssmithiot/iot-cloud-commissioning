@@ -425,6 +425,17 @@ def test_gateway_workspace_trend_chart_tracks_resized_detail_pane() -> None:
     assert 'font: 13px/1 "JetBrains Mono", Consolas, monospace;' in response.text
 
 
+def test_gateway_workspace_stacks_trends_for_selected_points() -> None:
+    response = client.get("/gateways/GW777")
+
+    assert response.status_code == 200
+    assert "renderSelectedPointTrends(selected);" in response.text
+    assert 'class="point-trend-list"' in response.text
+    assert 'class="point-trend-card"' in response.text
+    assert "loadSelectedPointTrend(card, points[index]);" in response.text
+    assert "pointTrendResizeObservers" in response.text
+
+
 def test_public_auth_config_reports_missing_browser_config() -> None:
     response = client.get("/api/auth/public-config")
 
