@@ -334,6 +334,7 @@ def test_protected_ui_contains_unauthenticated_redirect() -> None:
     assert response.status_code == 200
     assert 'window.location.assign(statePaths.login)' in response.text
     assert "/api/auth/me" in response.text
+    assert "Copyright 2026, The Internet of Team, LLC. All rights reserved." in response.text
 
 
 def test_dashboard_highlights_online_gateway_status() -> None:

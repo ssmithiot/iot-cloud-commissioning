@@ -5513,6 +5513,12 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       font: 800 11px/1 "JetBrains Mono", Consolas, monospace;
       white-space: nowrap;
     }}
+    .site-copyright {{
+      padding: 18px clamp(16px, 3vw, 42px) 26px;
+      color: var(--muted);
+      font: 600 11px/1.4 "JetBrains Mono", Consolas, monospace;
+      text-align: center;
+    }}
     .edge-app-update-notice {{
       display: block;
       margin-top: 4px;
@@ -5671,6 +5677,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
 <body data-page="{page}" {body_attrs}>
   <a class="button secondary home-link" href="/app">Home</a>
   {body}
+  <footer class="site-copyright">Copyright 2026, The Internet of Team, LLC. All rights reserved.</footer>
   {APP_SCRIPT}
 </body>
 </html>"""
