@@ -438,6 +438,9 @@ def test_gateway_workspace_stacks_trends_for_selected_points() -> None:
     assert 'class="trend-chart-size"' in response.text
     assert 'class="trend-chart-theme"' in response.text
     assert "trendChartThemeStorageKey" in response.text
+    assert "trend-edit-button" in response.text
+    assert "disable-point-trend" in response.text
+    assert "updatePointTrend(point, false" in response.text
 
 
 def test_gateway_workspace_defaults_devices_and_object_folders_to_collapsed() -> None:
@@ -2445,6 +2448,12 @@ def test_point_trend_config_and_edge_sample_upload() -> None:
     assert history.json()[0]["value"] == "72.5"
     assert tree.json()["points"][0]["trend_enabled"] is True
     assert tree.json()["points"][0]["trend_interval_sec"] == 60
+
+    disabled = client.put(f"/api/ui/points/{point['id']}/trend", headers=headers, json={"enabled": False, "interval_sec": 60})
+    disabled_tree = client.get("/api/ui/gateways/GW001/tree", headers=headers)
+
+    assert disabled.status_code == 200
+    assert disabled_tree.json()["points"][0]["trend_enabled"] is False
 
 
 def test_ui_operator_can_bulk_remove_points_from_tree() -> None:

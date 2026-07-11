@@ -2363,25 +2363,66 @@ APP_SCRIPT = r"""
       if (!chart.isConnected) return;
       chart.innerHTML = `<span class="muted">Trend samples are unavailable.</span>`;
     }
-    card.querySelector(".enable-point-trend")?.addEventListener("click", async () => {
-      try {
-        const interval = Number(card.querySelector(".point-trend-interval").value);
-        await api(`/api/ui/points/${encodeURIComponent(point.id)}/trend`, { method: "PUT", body: JSON.stringify({ enabled: true, interval_sec: interval }) });
-        point.trend_enabled = true;
-        point.trend_interval_sec = interval;
-        renderSelectedPointTrends(selectedSavedPoints());
-        setText("status", `Trend enabled for ${savedPointLabel(point)} every ${interval} seconds.`);
-      } catch (error) {
-        setText("status", errorMessage(error), true);
-      }
-    });
+    renderTrendCardControls(card, point);
+  }
+
+  function trendIntervalOptions(interval) {
+    const selected = Number(interval) || 300;
+    const intervals = [60, 300, 900];
+    if (!intervals.includes(selected)) intervals.unshift(selected);
+    return intervals.map((value) => `<option value="${value}"${value === selected ? " selected" : ""}>${trendIntervalLabel(value)}</option>`).join("");
   }
 
   function trendCardControls(point) {
     if (point.trend_enabled) {
-      return `<span class="trend-status">Trend enabled · every ${trendIntervalLabel(point.trend_interval_sec)}</span>`;
+      return `<div class="trend-status-row"><span class="trend-status">Trend enabled &middot; every ${trendIntervalLabel(point.trend_interval_sec)}</span><button class="trend-edit-button secondary" type="button"${canEditTree() ? "" : " disabled"} aria-label="Edit trend for ${escapeHtml(savedPointLabel(point))}" title="Edit trend">&#9998;</button></div>`;
     }
-    return `<div class="toolbar"><label>Interval <select class="point-trend-interval"><option value="60">1 minute</option><option value="300" selected>5 minutes</option><option value="900">15 minutes</option></select></label><button class="enable-point-trend" type="button"${canEditTree() ? "" : " disabled"}>Enable trend</button></div>`;
+    return `<div class="toolbar"><label>Interval <select class="point-trend-interval">${trendIntervalOptions(point.trend_interval_sec)}</select></label><button class="enable-point-trend" type="button"${canEditTree() ? "" : " disabled"}>Enable trend</button></div>`;
+  }
+
+  function trendEditorControls(point) {
+    return `<div class="trend-editor"><label>Interval <select class="point-trend-interval">${trendIntervalOptions(point.trend_interval_sec)}</select></label><button class="save-point-trend" type="button">Save</button><button class="disable-point-trend secondary" type="button">Disable trend</button><button class="cancel-point-trend secondary" type="button">Cancel</button></div>`;
+  }
+
+  async function updatePointTrend(point, enabled, interval) {
+    await api(`/api/ui/points/${encodeURIComponent(point.id)}/trend`, { method: "PUT", body: JSON.stringify({ enabled, interval_sec: interval }) });
+    point.trend_enabled = enabled;
+    point.trend_interval_sec = interval;
+    renderSelectedPointTrends(selectedSavedPoints());
+    setText("status", enabled
+      ? `Trend enabled for ${savedPointLabel(point)} every ${trendIntervalLabel(interval)}.`
+      : `Trend disabled for ${savedPointLabel(point)}. Existing samples remain available.`);
+  }
+
+  function renderTrendCardControls(card, point) {
+    const controls = card.querySelector(".trend-card-controls");
+    if (!controls) return;
+    controls.innerHTML = trendCardControls(point);
+    controls.querySelector(".enable-point-trend")?.addEventListener("click", async () => {
+      try {
+        await updatePointTrend(point, true, Number(controls.querySelector(".point-trend-interval").value));
+      } catch (error) {
+        setText("status", errorMessage(error), true);
+      }
+    });
+    controls.querySelector(".trend-edit-button")?.addEventListener("click", () => {
+      controls.innerHTML = trendEditorControls(point);
+      controls.querySelector(".save-point-trend")?.addEventListener("click", async () => {
+        try {
+          await updatePointTrend(point, true, Number(controls.querySelector(".point-trend-interval").value));
+        } catch (error) {
+          setText("status", errorMessage(error), true);
+        }
+      });
+      controls.querySelector(".disable-point-trend")?.addEventListener("click", async () => {
+        try {
+          await updatePointTrend(point, false, Number(controls.querySelector(".point-trend-interval").value));
+        } catch (error) {
+          setText("status", errorMessage(error), true);
+        }
+      });
+      controls.querySelector(".cancel-point-trend")?.addEventListener("click", () => renderTrendCardControls(card, point));
+    });
   }
 
   function renderSelectedPointTrends(points) {
@@ -2396,7 +2437,7 @@ APP_SCRIPT = r"""
     const chartTheme = trendChartTheme();
     panel.dataset.chartSize = chartSize;
     panel.dataset.chartTheme = chartTheme;
-    panel.innerHTML = `<div class="trend-panel-header"><h2>Trends (${points.length})</h2><div class="trend-panel-controls"><label>Chart size <select class="trend-chart-size"><option value="compact"${chartSize === "compact" ? " selected" : ""}>Compact</option><option value="standard"${chartSize === "standard" ? " selected" : ""}>Standard</option><option value="tall"${chartSize === "tall" ? " selected" : ""}>Tall</option></select></label><label>Theme <select class="trend-chart-theme"><option value="light"${chartTheme === "light" ? " selected" : ""}>Light</option><option value="dark"${chartTheme === "dark" ? " selected" : ""}>Dark</option></select></label></div></div><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3>${trendCardControls(point)}<div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
+    panel.innerHTML = `<div class="trend-panel-header"><h2>Trends (${points.length})</h2><div class="trend-panel-controls"><label>Chart size <select class="trend-chart-size"><option value="compact"${chartSize === "compact" ? " selected" : ""}>Compact</option><option value="standard"${chartSize === "standard" ? " selected" : ""}>Standard</option><option value="tall"${chartSize === "tall" ? " selected" : ""}>Tall</option></select></label><label>Theme <select class="trend-chart-theme"><option value="light"${chartTheme === "light" ? " selected" : ""}>Light</option><option value="dark"${chartTheme === "dark" ? " selected" : ""}>Dark</option></select></label></div></div><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3><div class="trend-card-controls">${trendCardControls(point)}</div><div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
     panel.querySelector(".trend-chart-size")?.addEventListener("change", (event) => {
       const size = event.target.value;
       panel.dataset.chartSize = size;
@@ -4028,6 +4069,28 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .trend-status {{
       color: var(--accent-strong);
       font: 700 12px/1.3 "JetBrains Mono", Consolas, monospace;
+    }}
+    .trend-status-row {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }}
+    .trend-edit-button {{
+      width: 28px;
+      min-width: 28px;
+      min-height: 28px;
+      padding: 0;
+      font-size: 16px;
+      line-height: 1;
+    }}
+    .trend-editor {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: end;
+      gap: 8px;
+    }}
+    .trend-editor label {{
+      margin: 0;
     }}
     .point-trend-chart-wrap {{
       display: grid;
