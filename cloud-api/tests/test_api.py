@@ -337,6 +337,9 @@ def test_dashboard_highlights_online_gateway_status() -> None:
     assert 'return \'<span class="status-online">ONLINE</span>\';' in response.text
     assert "return escapeHtml(statusLabel(gateway));" in response.text
     assert '<td><span class="status-text">${dashboardStatusCell(gateway)}</span></td>' in response.text
+    assert 'id="gateway-heartbeat-trend"' in response.text
+    assert "loadGatewayHeartbeatTrend(gateway);" in response.text
+    assert "heartbeat-trend-bars" in response.text
 
 
 def test_dashboard_gateway_table_supports_search_and_sort() -> None:
@@ -464,6 +467,33 @@ def test_heartbeat_creates_gateway_and_history() -> None:
     assert gateways.json()[0]["gateway_id"] == "GW001"
     assert gateways.json()[0]["site_id"] == "demo-site"
     assert gateways.json()[0]["agent_version"] == "0.1.1"
+
+
+def test_ui_gateway_heartbeat_trend_returns_ordered_history() -> None:
+    raw_token = create_gateway_token("GW001")
+    first = heartbeat_payload("GW001")
+    first["timestamp_utc"] = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+    first["queued_upload_count"] = 3
+    second = heartbeat_payload("GW001")
+    second["timestamp_utc"] = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    second["sqlite_db_ok"] = False
+
+    assert client.post("/api/edge/heartbeat", headers=auth_headers(raw_token), json=first).status_code == 200
+    assert client.post("/api/edge/heartbeat", headers=auth_headers(raw_token), json=second).status_code == 200
+    response = client.get("/api/ui/gateways/GW001/heartbeat-trend?limit=1", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "timestamp_utc": second["timestamp_utc"].replace("+00:00", ""),
+            "received_at": response.json()[0]["received_at"],
+            "status": "degraded",
+            "sqlite_db_ok": False,
+            "queued_upload_count": 0,
+            "agent_version": "0.1.1",
+            "ui_version": "0.1.0",
+        }
+    ]
 
 
 def test_gateway_update_request_queue_claim_and_completion() -> None:

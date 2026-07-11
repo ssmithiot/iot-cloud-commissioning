@@ -19,6 +19,7 @@ APP_SCRIPT = r"""
   let dashboardGatewayUpdates = new Map();
   let selectedGatewayUpdateIds = new Set();
   let dashboardWeather = new Map();
+  let dashboardHeartbeatTrends = new Map();
   let selectedDashboardGatewayId = null;
   let dashboardSort = { key: "gateway_id", direction: "desc" };
   let dashboardSearch = "";
@@ -1098,6 +1099,11 @@ APP_SCRIPT = r"""
     return `${Math.round(gateway.heartbeat_age_seconds / 60)}m ago`;
   }
 
+  function formatTrendTime(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "unknown time" : date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+
   function weatherLabel(weather) {
     if (!weather?.available) {
       return weather?.reason || "Weather unavailable";
@@ -1603,6 +1609,34 @@ APP_SCRIPT = r"""
     return dashboardGateways.find((gateway) => gateway.gateway_id === selectedDashboardGatewayId) || dashboardGateways[0] || null;
   }
 
+  function heartbeatTrendLabel(heartbeats) {
+    if (!heartbeats.length) return "No heartbeat history yet";
+    const healthy = heartbeats.filter((heartbeat) => heartbeat.sqlite_db_ok).length;
+    const latest = heartbeats.at(-1);
+    return `${healthy}/${heartbeats.length} healthy · latest ${formatTrendTime(latest.timestamp_utc)}`;
+  }
+
+  function heartbeatTrendBars(heartbeats) {
+    if (!heartbeats.length) return `<span class="muted">No trend data recorded yet.</span>`;
+    return `<div class="heartbeat-trend-bars" role="img" aria-label="${escapeHtml(heartbeatTrendLabel(heartbeats))}">${heartbeats.map((heartbeat) => `<span class="${heartbeat.sqlite_db_ok ? "healthy" : "degraded"}" title="${escapeHtml(formatTrendTime(heartbeat.timestamp_utc))}: ${heartbeat.sqlite_db_ok ? "healthy" : "degraded"}; ${Number(heartbeat.queued_upload_count || 0)} queued uploads"></span>`).join("")}</div>`;
+  }
+
+  async function loadGatewayHeartbeatTrend(gateway) {
+    const target = byId("gateway-heartbeat-trend");
+    if (!target) return;
+    try {
+      let trend = dashboardHeartbeatTrends.get(gateway.gateway_id);
+      if (!trend) {
+        trend = await api(`/api/ui/gateways/${encodeURIComponent(gateway.gateway_id)}/heartbeat-trend?limit=96`);
+        dashboardHeartbeatTrends.set(gateway.gateway_id, trend);
+      }
+      if (selectedDashboardGateway()?.gateway_id !== gateway.gateway_id) return;
+      target.innerHTML = `${heartbeatTrendBars(trend)}<small>${escapeHtml(heartbeatTrendLabel(trend))}</small>`;
+    } catch (error) {
+      target.innerHTML = `<span class="muted">Trend history unavailable.</span>`;
+    }
+  }
+
   function renderGatewayInspector() {
     const panel = byId("gateway-inspector");
     if (!panel) {
@@ -1628,6 +1662,7 @@ APP_SCRIPT = r"""
         <dt>Host</dt><dd>${escapeHtml(gateway.hostname || "")}</dd>
         <dt>LAN IP</dt><dd>${escapeHtml(gateway.lan_ip || "unknown")}</dd>
         <dt>Heartbeat</dt><dd>${escapeHtml(heartbeatLabel(gateway))}</dd>
+        <dt>Trend</dt><dd id="gateway-heartbeat-trend" class="heartbeat-trend">Loading recent heartbeat trend...</dd>
         <dt>Weather</dt><dd id="gateway-weather">Loading weather...</dd>
         <dt>Agent/UI</dt><dd>${escapeHtml(gateway.agent_version || "?")} / ${escapeHtml(gateway.ui_version || "?")}</dd>
         <dt>Notes</dt><dd>${escapeHtml(gateway.network_status_notes || "No network notes")}</dd>
@@ -1641,6 +1676,7 @@ APP_SCRIPT = r"""
     `;
     attachDirectConnectHandlers(panel);
     loadGatewayWeather(gateway);
+    loadGatewayHeartbeatTrend(gateway);
   }
 
   function attachDirectConnectHandlers(root = document) {
@@ -4823,6 +4859,33 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     body[data-page="app"][data-theme="light"] .inspector-grid dd {{
       color: #16242a;
+    }}
+    .heartbeat-trend {{
+      display: grid;
+      gap: 6px;
+    }}
+    .heartbeat-trend small {{
+      color: var(--muted);
+      font: 600 10px/1.35 "JetBrains Mono", Consolas, monospace;
+    }}
+    .heartbeat-trend-bars {{
+      display: flex;
+      align-items: end;
+      gap: 2px;
+      min-height: 22px;
+      overflow: hidden;
+    }}
+    .heartbeat-trend-bars span {{
+      display: block;
+      width: 4px;
+      min-width: 2px;
+      height: 18px;
+      border-radius: 2px;
+      background: var(--accent-strong);
+    }}
+    .heartbeat-trend-bars span.degraded {{
+      height: 8px;
+      background: var(--warning);
     }}
     .inspector-actions {{
       display: flex;

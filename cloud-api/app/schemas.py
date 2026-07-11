@@ -264,6 +264,18 @@ class GatewayOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class GatewayHeartbeatTrendOut(BaseModel):
+    """A single recorded edge heartbeat for the gateway activity trend."""
+
+    timestamp_utc: datetime
+    received_at: datetime
+    status: Literal["online", "degraded"]
+    sqlite_db_ok: bool
+    queued_upload_count: int
+    agent_version: str
+    ui_version: str
+
+
 class GatewayUpdateRequestIn(BaseModel):
     gateway_ids: list[str] = Field(min_length=1, max_length=100)
 

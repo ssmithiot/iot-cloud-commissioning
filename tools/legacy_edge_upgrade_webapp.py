@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,6 +40,13 @@ NESTED_UPLOAD_CHUNK_SIZE = 3000
 UPDATE_AGENT_PHASES = (0, 7, 9, 10, 11)
 JOBS: dict[str, "UpgradeJob"] = {}
 JOBS_LOCK = threading.Lock()
+WORKER_STATUS: dict[str, object] = {
+    "state": "starting",
+    "last_poll_at": None,
+    "last_success_at": None,
+    "last_error": None,
+}
+WORKER_STATUS_LOCK = threading.Lock()
 PHASES = [
     "Inspect gateway",
     "Back up local BACnet UI",
@@ -261,18 +269,29 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
 def gateway_update_worker() -> None:
     poll_seconds = max(5, int(os.environ.get("IOT_EDGE_UPDATE_POLL_SECONDS", "10")))
     while True:
+        with WORKER_STATUS_LOCK:
+            WORKER_STATUS["last_poll_at"] = datetime.now(timezone.utc).isoformat()
         try:
             defaults = load_env_defaults()
             token = defaults["IOT_ADMIN_API_TOKEN"]
-            if token:
-                cloud_url = os.environ.get("IOT_CLOUD_API_URL", DEFAULT_CLOUD_URL).rstrip("/")
-                updates = cloud_json_request(cloud_url, token, "/api/admin/gateway-updates?status_filter=queued&limit=10")
-                if isinstance(updates, list):
-                    for update in updates:
-                        if isinstance(update, dict):
-                            run_queued_gateway_update(update, defaults)
-        except Exception:
-            pass
+            if not token:
+                raise RuntimeError("IOT_ADMIN_API_TOKEN is not configured")
+            cloud_url = os.environ.get("IOT_CLOUD_API_URL", DEFAULT_CLOUD_URL).rstrip("/")
+            updates = cloud_json_request(cloud_url, token, "/api/admin/gateway-updates?status_filter=queued&limit=10")
+            if isinstance(updates, list):
+                for update in updates:
+                    if isinstance(update, dict):
+                        run_queued_gateway_update(update, defaults)
+            with WORKER_STATUS_LOCK:
+                WORKER_STATUS["state"] = "polling"
+                WORKER_STATUS["last_success_at"] = datetime.now(timezone.utc).isoformat()
+                WORKER_STATUS["last_error"] = None
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            with WORKER_STATUS_LOCK:
+                WORKER_STATUS["state"] = "error"
+                WORKER_STATUS["last_error"] = message
+            print(f"Cloud update worker error: {message}", flush=True)
         time.sleep(poll_seconds)
 
 
@@ -1426,6 +1445,10 @@ class LegacyEdgeUpgradeHandler(BaseHTTPRequestHandler):
                     }
                 )
             return
+        if parsed.path == "/api/worker-status":
+            with WORKER_STATUS_LOCK:
+                self.respond_json(dict(WORKER_STATUS))
+            return
         self.send_error(404)
 
     def do_POST(self) -> None:
@@ -1476,8 +1499,10 @@ class LegacyEdgeUpgradeHandler(BaseHTTPRequestHandler):
 
 
 def run_server(port: int) -> BaseServer:
-    threading.Thread(target=gateway_update_worker, daemon=True, name="gateway-update-worker").start()
     server = ThreadingHTTPServer(("127.0.0.1", port), LegacyEdgeUpgradeHandler)
+    # Bind first: a duplicate launch now fails without leaving a background
+    # worker behind to silently claim cloud update jobs.
+    threading.Thread(target=gateway_update_worker, daemon=True, name="gateway-update-worker").start()
     print(f"Legacy Edge Upgrade webapp: http://127.0.0.1:{port}")
     print("Press Ctrl+C to stop.")
     return server
