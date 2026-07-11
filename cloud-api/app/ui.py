@@ -10,6 +10,8 @@ APP_SCRIPT = r"""
   let currentUser = null;
   let currentPointCandidateDevice = null;
   let selectedSavedPointIds = new Set();
+  let pointTrendResizeObserver = null;
+  let pointTrendResizeFrame = null;
   let customTablePointIds = new Set();
   let visiblePointTableColumns = ["object_identifier", "present_value", "units"];
   let savedPointTables = {};
@@ -39,6 +41,7 @@ APP_SCRIPT = r"""
     viewBoxHeight: 560
   };
   const themeStorageKey = "iot-cloud-command-theme";
+  const trendChartFrame = Object.freeze({ minWidth: 360, height: 230, left: 72, right: 20, top: 14, bottom: 48 });
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
   const pointTableColumns = [
@@ -2236,10 +2239,11 @@ APP_SCRIPT = r"""
     return new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
 
-  function trendChart(samples, units = "") {
+  function trendChart(samples, units = "", chartWidth = 600) {
     const points = numericTrendSamples(samples);
     if (points.length < 2) return `<span class="muted">Two numeric samples are needed before a trend line can be drawn.</span>`;
-    const width = 600, height = 270, left = 64, right = 16, top = 18, bottom = 48;
+    const width = Math.max(trendChartFrame.minWidth, Math.round(Number(chartWidth) || trendChartFrame.minWidth));
+    const { height, left, right, top, bottom } = trendChartFrame;
     const plotWidth = width - left - right, plotHeight = height - top - bottom;
     const minimum = Math.min(...points.map((point) => point.valueNumber));
     const maximum = Math.max(...points.map((point) => point.valueNumber));
@@ -2260,7 +2264,8 @@ APP_SCRIPT = r"""
     const svg = chart.querySelector("svg");
     const tooltip = chart.querySelector(".trend-tooltip");
     if (!svg || !tooltip || points.length < 2) return;
-    const width = 600, height = 270, left = 64, right = 16, top = 18, bottom = 48;
+    const width = svg.viewBox.baseVal.width;
+    const { height, left, right, top, bottom } = trendChartFrame;
     const plotWidth = width - left - right, plotHeight = height - top - bottom;
     const yMin = Math.min(...points.map((point) => point.valueNumber)) - Math.max((Math.max(...points.map((point) => point.valueNumber)) - Math.min(...points.map((point) => point.valueNumber))) * 0.08, Math.abs(Math.max(...points.map((point) => point.valueNumber)) || 1) * 0.02, 0.1);
     const yMax = Math.max(...points.map((point) => point.valueNumber)) + Math.max((Math.max(...points.map((point) => point.valueNumber)) - Math.min(...points.map((point) => point.valueNumber))) * 0.08, Math.abs(Math.max(...points.map((point) => point.valueNumber)) || 1) * 0.02, 0.1);
@@ -2271,9 +2276,44 @@ APP_SCRIPT = r"""
     svg.addEventListener("mousemove", show); svg.addEventListener("mouseleave", () => { tooltip.hidden = true; [vertical, horizontal, dot].forEach((element) => element.classList.remove("visible")); });
   }
 
+  function stopPointTrendResize() {
+    pointTrendResizeObserver?.disconnect();
+    pointTrendResizeObserver = null;
+    if (pointTrendResizeFrame !== null) {
+      window.cancelAnimationFrame(pointTrendResizeFrame);
+      pointTrendResizeFrame = null;
+    }
+  }
+
+  function renderResponsivePointTrend(chart, samples, units = "") {
+    stopPointTrendResize();
+    let lastWidth = 0;
+    const draw = (measuredWidth) => {
+      const width = Math.max(trendChartFrame.minWidth, Math.round(Number(measuredWidth) || chart.clientWidth || trendChartFrame.minWidth));
+      if (width === lastWidth) return;
+      lastWidth = width;
+      chart.innerHTML = trendChart(samples, units, width);
+      attachTrendHover(chart, samples, units);
+    };
+    draw(chart.getBoundingClientRect().width);
+    if (!("ResizeObserver" in window)) return;
+    pointTrendResizeObserver = new ResizeObserver((entries) => {
+      const nextWidth = entries[0]?.contentRect.width || chart.getBoundingClientRect().width;
+      const normalizedWidth = Math.max(trendChartFrame.minWidth, Math.round(nextWidth));
+      if (normalizedWidth === lastWidth) return;
+      if (pointTrendResizeFrame !== null) window.cancelAnimationFrame(pointTrendResizeFrame);
+      pointTrendResizeFrame = window.requestAnimationFrame(() => {
+        pointTrendResizeFrame = null;
+        if (chart.isConnected) draw(chart.getBoundingClientRect().width);
+      });
+    });
+    pointTrendResizeObserver.observe(chart);
+  }
+
   async function renderSelectedPointTrend(point) {
     const panel = byId("point-trend-panel");
     if (!panel) return;
+    stopPointTrendResize();
     if (!point) {
       panel.innerHTML = `<h2>Trend</h2><span class="muted">Select one saved point to configure its trend.</span>`;
       return;
@@ -2282,9 +2322,10 @@ APP_SCRIPT = r"""
     const chart = byId("point-trend-chart");
     try {
       const samples = await api(`/api/ui/points/${encodeURIComponent(point.id)}/trend?limit=288`);
-      chart.innerHTML = trendChart(samples, point.units || "");
-      attachTrendHover(chart, samples, point.units || "");
+      if (!chart.isConnected || byId("point-trend-chart") !== chart) return;
+      renderResponsivePointTrend(chart, samples, point.units || "");
     } catch (error) {
+      if (!chart.isConnected || byId("point-trend-chart") !== chart) return;
       chart.innerHTML = `<span class="muted">Trend samples are unavailable.</span>`;
     }
     byId("enable-point-trend")?.addEventListener("click", async () => {
@@ -3838,10 +3879,16 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .point-trend-chart-wrap {{
       display: grid;
       gap: 6px;
+      min-width: 0;
       min-height: 48px;
+      overflow-x: auto;
       position: relative;
     }}
+    .trend-plot-shell {{
+      min-width: 360px;
+    }}
     .point-trend-chart {{
+      display: block;
       width: 100%;
       height: 230px;
       overflow: visible;
@@ -3860,11 +3907,11 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .trend-axis-text {{
       fill: #526067;
-      font: 11px/1 "JetBrains Mono", Consolas, monospace;
+      font: 13px/1 "JetBrains Mono", Consolas, monospace;
     }}
     .trend-axis-label {{
       fill: #1d2a30;
-      font: 700 11px/1 "JetBrains Mono", Consolas, monospace;
+      font: 700 13px/1 "JetBrains Mono", Consolas, monospace;
     }}
     .trend-line {{
       fill: none;
@@ -3893,9 +3940,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       border-radius: 4px;
       background: #17242a;
       color: #fff;
-      font: 700 11px/1.25 "JetBrains Mono", Consolas, monospace;
+      font: 700 12px/1.25 "JetBrains Mono", Consolas, monospace;
       pointer-events: none;
       white-space: nowrap;
+    }}
+    .point-trend-chart-wrap > small {{
+      font-size: 12px;
+      line-height: 1.35;
     }}
     .site-summary-grid dt {{
       color: var(--muted);
