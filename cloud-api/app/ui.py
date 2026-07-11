@@ -16,6 +16,8 @@ APP_SCRIPT = r"""
   let activePointTableName = "New Table View";
   let dashboardGateways = [];
   let dashboardJobs = [];
+  let dashboardGatewayUpdates = new Map();
+  let selectedGatewayUpdateIds = new Set();
   let dashboardWeather = new Map();
   let selectedDashboardGatewayId = null;
   let dashboardSort = { key: "gateway_id", direction: "desc" };
@@ -1175,6 +1177,7 @@ APP_SCRIPT = r"""
     try {
       const summary = await api("/api/ui/gateways/summary");
       dashboardGateways = await api("/api/ui/gateways");
+      await refreshGatewayUpdates();
       dashboardJobs = await api("/api/edge/jobs?limit=10");
       selectedDashboardGatewayId = dashboardGateways[0]?.gateway_id || null;
       const queuedUploads = dashboardGateways.reduce((total, gateway) => total + Number(gateway.queued_upload_count || 0), 0);
@@ -1185,6 +1188,7 @@ APP_SCRIPT = r"""
       metricCard("metric-jobs", "Recent Jobs", dashboardJobs.length, `${queuedUploads} queued uploads`);
       setupGatewaySearch();
       setupGatewaySortHeaders();
+      setupGatewayUpdateControls();
       await initRoadMap();
       renderGatewayMap(sortedDashboardGateways());
       renderGatewayInspector();
@@ -1213,8 +1217,111 @@ APP_SCRIPT = r"""
     return version && version.toLowerCase() !== "current" ? version : "Update required";
   }
 
+  function gatewayUpdateState(gatewayId) {
+    return dashboardGatewayUpdates.get(gatewayId) || null;
+  }
+
   function gatewayVersionCell(gateway) {
-    return `<strong>${escapeHtml(edgeAppVersion(gateway))}</strong>`;
+    const version = edgeAppVersion(gateway);
+    if (version !== "Update required") {
+      return `<strong>${escapeHtml(version)}</strong>`;
+    }
+    const update = gatewayUpdateState(gateway.gateway_id);
+    if (update?.status === "queued" || update?.status === "running") {
+      return `<strong>Update ${escapeHtml(update.status)}</strong>`;
+    }
+    const actionLabel = update?.status === "failed" ? "Retry" : "Update";
+    return `<strong>Update required</strong> <button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+  }
+
+  async function refreshGatewayUpdates() {
+    const updates = await api("/api/ui/gateway-updates?limit=500");
+    dashboardGatewayUpdates = new Map();
+    for (const update of updates || []) {
+      if (!dashboardGatewayUpdates.has(update.gateway_id)) {
+        dashboardGatewayUpdates.set(update.gateway_id, update);
+      }
+    }
+  }
+
+  function syncGatewayUpdateControls() {
+    const updateButton = byId("update-selected-gateways");
+    const count = byId("gateway-update-count");
+    const selectAll = byId("select-all-gateway-updates");
+    const selectedCount = selectedGatewayUpdateIds.size;
+    if (updateButton) {
+      updateButton.disabled = selectedCount === 0;
+      updateButton.textContent = selectedCount ? `Update selected (${selectedCount})` : "Update selected";
+    }
+    if (count) {
+      count.textContent = selectedCount ? `${selectedCount} selected` : "Select gateways needing an update";
+    }
+    if (selectAll) {
+      const candidates = sortedDashboardGateways().filter((gateway) => edgeAppVersion(gateway) === "Update required");
+      selectAll.checked = candidates.length > 0 && candidates.every((gateway) => selectedGatewayUpdateIds.has(gateway.gateway_id));
+      selectAll.indeterminate = selectedCount > 0 && !selectAll.checked;
+    }
+  }
+
+  async function queueGatewayUpdates(gatewayIds) {
+    const ids = [...new Set(gatewayIds)].filter(Boolean);
+    if (!ids.length) {
+      return;
+    }
+    try {
+      await api("/api/ui/gateway-updates", {
+        method: "POST",
+        body: JSON.stringify({ gateway_ids: ids })
+      });
+      selectedGatewayUpdateIds.clear();
+      await refreshGatewayUpdates();
+      setText("status", `Queued ${ids.length} application update${ids.length === 1 ? "" : "s"}. The local legacy updater will process them.`);
+      renderGatewayList();
+    } catch (error) {
+      setText("status", errorMessage(error), true);
+    }
+  }
+
+  function setupGatewayUpdateControls() {
+    const updateButton = byId("update-selected-gateways");
+    const selectAll = byId("select-all-gateway-updates");
+    if (updateButton && updateButton.dataset.ready !== "true") {
+      updateButton.dataset.ready = "true";
+      updateButton.addEventListener("click", () => queueGatewayUpdates([...selectedGatewayUpdateIds]));
+    }
+    if (selectAll && selectAll.dataset.ready !== "true") {
+      selectAll.dataset.ready = "true";
+      selectAll.addEventListener("change", () => {
+        const candidates = sortedDashboardGateways().filter((gateway) => edgeAppVersion(gateway) === "Update required");
+        if (selectAll.checked) {
+          candidates.forEach((gateway) => selectedGatewayUpdateIds.add(gateway.gateway_id));
+        } else {
+          candidates.forEach((gateway) => selectedGatewayUpdateIds.delete(gateway.gateway_id));
+        }
+        renderGatewayList();
+      });
+    }
+    syncGatewayUpdateControls();
+  }
+
+  function attachGatewayUpdateHandlers(table) {
+    table.querySelectorAll("[data-select-update]").forEach((checkbox) => {
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) {
+          selectedGatewayUpdateIds.add(checkbox.dataset.selectUpdate);
+        } else {
+          selectedGatewayUpdateIds.delete(checkbox.dataset.selectUpdate);
+        }
+        syncGatewayUpdateControls();
+      });
+    });
+    table.querySelectorAll("[data-request-update]").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        queueGatewayUpdates([button.dataset.requestUpdate]);
+      });
+    });
   }
 
   function statusLabel(gateway) {
@@ -1566,14 +1673,16 @@ APP_SCRIPT = r"""
     table.textContent = "";
     if (!gateways.length) {
       const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="9">No gateways found.</td>`;
+      row.innerHTML = `<td colspan="10">No gateways found.</td>`;
       table.appendChild(row);
+      syncGatewayUpdateControls();
       return;
     }
     for (const gateway of gateways) {
       const row = document.createElement("tr");
       row.className = gateway.gateway_id === selectedDashboardGatewayId ? "selected-row" : "";
       row.innerHTML = `
+        <td><input type="checkbox" aria-label="Select ${escapeHtml(gateway.gateway_id)} for application update" data-select-update="${escapeHtml(gateway.gateway_id)}"${selectedGatewayUpdateIds.has(gateway.gateway_id) ? " checked" : ""}${edgeAppVersion(gateway) !== "Update required" ? " disabled" : ""}></td>
         <td><a class="gateway-link" href="/gateways/${encodeURIComponent(gateway.gateway_id)}" data-select-gateway="${escapeHtml(gateway.gateway_id)}">${escapeHtml(gateway.gateway_id)}</a></td>
         <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
         <td>${escapeHtml(gatewayAddress(gateway) || "")}</td>
@@ -1591,6 +1700,8 @@ APP_SCRIPT = r"""
       link.addEventListener("focus", () => selectDashboardGateway(link.dataset.selectGateway));
     });
     attachDirectConnectHandlers(table);
+    attachGatewayUpdateHandlers(table);
+    syncGatewayUpdateControls();
   }
 
   function renderEventTicker(jobs) {
@@ -5158,12 +5269,15 @@ def app_html() -> str:
         </div>
         <div class="gateway-toolbar">
           <input id="gateway-search" type="search" placeholder="Search gateway, site, status, address, host, app version, notes">
+          <button id="update-selected-gateways" class="secondary" type="button" disabled>Update selected</button>
+          <span id="gateway-update-count" class="muted">Select gateways needing an update</span>
           <div id="status" class="notice"></div>
         </div>
         <div class="table-wrap">
           <table class="gateway-table">
           <thead>
             <tr>
+              <th><input id="select-all-gateway-updates" type="checkbox" aria-label="Select all gateways needing an update"></th>
               <th><button class="sort-header" type="button" data-sort="gateway_id">Gateway</button></th>
               <th><button class="sort-header" type="button" data-sort="site">Site</button></th>
               <th><button class="sort-header" type="button" data-sort="address">Address</button></th>

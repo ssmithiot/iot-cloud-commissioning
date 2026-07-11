@@ -54,6 +54,7 @@ The schema below separates current core entities from recommended target entitie
 ```mermaid
 erDiagram
     EDGE_NODES ||--o{ EDGE_JOBS : receives
+    EDGE_NODES ||--o{ GATEWAY_UPDATE_REQUESTS : receives
     EDGE_NODES ||--o{ GATEWAY_CREDENTIALS : authenticates_with
     EDGE_NODES ||--o{ GATEWAY_GROUPS : organizes
     EDGE_NODES ||--o{ SAVED_BACNET_DEVICES : has
@@ -97,6 +98,17 @@ erDiagram
         timestamptz created_at
         timestamptz claimed_at
         timestamptz completed_at
+    }
+
+    GATEWAY_UPDATE_REQUESTS {
+        uuid id PK
+        text gateway_id FK
+        text requested_by
+        text status
+        timestamptz requested_at
+        timestamptz started_at
+        timestamptz completed_at
+        text error_message
     }
 
     OPERATOR_USERS {
@@ -353,6 +365,7 @@ erDiagram
     SITES ||--o{ EDGE_NODES : contains
     EDGE_NODES ||--o{ GATEWAY_CREDENTIALS : authenticates_with
     EDGE_NODES ||--o{ EDGE_JOBS : receives
+    EDGE_NODES ||--o{ GATEWAY_UPDATE_REQUESTS : receives
     EDGE_JOBS ||--o{ EDGE_JOB_EVENTS : has
     EDGE_JOBS ||--o{ COMMISSIONING_EVIDENCE : produces
     SITES ||--o{ COMMISSIONING_PROJECTS : has
@@ -412,6 +425,17 @@ erDiagram
         timestamptz created_at
         timestamptz claimed_at
         timestamptz completed_at
+    }
+
+    GATEWAY_UPDATE_REQUESTS {
+        uuid id PK
+        text gateway_id FK
+        uuid requested_by FK
+        text status
+        timestamptz requested_at
+        timestamptz started_at
+        timestamptz completed_at
+        text error_message
     }
 
     EDGE_JOB_EVENTS {

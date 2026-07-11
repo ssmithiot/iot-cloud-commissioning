@@ -36,6 +36,7 @@ REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
 NESTED_UPLOAD_CHUNK_SIZE = 3000
+UPDATE_AGENT_PHASES = (0, 7, 9, 10, 11)
 JOBS: dict[str, "UpgradeJob"] = {}
 JOBS_LOCK = threading.Lock()
 PHASES = [
@@ -164,6 +165,115 @@ def load_env_defaults() -> dict[str, str]:
         if key in defaults:
             defaults[key] = raw_value.strip().strip('"').strip("'")
     return defaults
+
+
+def cloud_json_request(
+    cloud_url: str,
+    admin_api_token: str,
+    path: str,
+    *,
+    method: str = "GET",
+    body: dict[str, object] | None = None,
+) -> object:
+    payload = None if body is None else json.dumps(body).encode("utf-8")
+    request = urllib_request.Request(
+        f"{cloud_url.rstrip('/')}{path}",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {admin_api_token}",
+            "Content-Type": "application/json",
+        },
+        method=method,
+    )
+    with urllib_request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str]) -> None:
+    cloud_url = os.environ.get("IOT_CLOUD_API_URL", DEFAULT_CLOUD_URL).rstrip("/")
+    admin_api_token = defaults["IOT_ADMIN_API_TOKEN"]
+    request_id = str(update["request_id"])
+    try:
+        claimed = cloud_json_request(
+            cloud_url,
+            admin_api_token,
+            f"/api/admin/gateway-updates/{request_id}/claim",
+            method="POST",
+        )
+    except (urllib_error.HTTPError, urllib_error.URLError, ValueError):
+        return
+
+    if not isinstance(claimed, dict):
+        return
+    request = UpgradeRequest(
+        gateway_id=str(claimed["gateway_id"]),
+        site_id=str(claimed["site_id"]),
+        cloud_url=cloud_url,
+        admin_api_token=admin_api_token,
+        cradlepoint_host=str(claimed.get("cradlepoint_host") or ""),
+        cradlepoint_user=os.environ.get("CRADLEPOINT_USER", "BMS_admin"),
+        cradlepoint_password=defaults["CRADLEPOINT_PASSWORD"],
+        gateway_host=str(claimed.get("gateway_host") or "192.168.1.200"),
+        gateway_user=os.environ.get("GATEWAY_USER", "swadmin"),
+        gateway_password=defaults["GATEWAY_PASSWORD"],
+        git_ref=os.environ.get("IOT_EDGE_UPDATE_REF", "main"),
+        remote_repo=DEFAULT_REPO_PATH,
+        ui_source_folder=DEFAULT_UI_SOURCE,
+        ui_username=os.environ.get("EDGE_UI_USERNAME", "admin"),
+        ui_password=defaults["EDGE_UI_PASSWORD"],
+        cloud_portal_verified=True,
+        selected_phases=UPDATE_AGENT_PHASES,
+    )
+    if not request.cradlepoint_host:
+        cloud_json_request(
+            cloud_url,
+            admin_api_token,
+            f"/api/admin/gateway-updates/{request_id}/complete",
+            method="POST",
+            body={"status": "failed", "error_message": "No Cradlepoint host is configured for this gateway."},
+        )
+        return
+
+    job_id = start_job(request)
+    while True:
+        with JOBS_LOCK:
+            job = JOBS[job_id]
+            status = job.status
+            error = job.error
+        if status in {"complete", "failed"}:
+            result = {"status": "completed" if status == "complete" else "failed"}
+            if error:
+                result["error_message"] = error[:1000]
+            try:
+                cloud_json_request(
+                    cloud_url,
+                    admin_api_token,
+                    f"/api/admin/gateway-updates/{request_id}/complete",
+                    method="POST",
+                    body=result,
+                )
+            except (urllib_error.HTTPError, urllib_error.URLError, ValueError):
+                pass
+            return
+        time.sleep(2)
+
+
+def gateway_update_worker() -> None:
+    poll_seconds = max(5, int(os.environ.get("IOT_EDGE_UPDATE_POLL_SECONDS", "10")))
+    while True:
+        try:
+            defaults = load_env_defaults()
+            token = defaults["IOT_ADMIN_API_TOKEN"]
+            if token:
+                cloud_url = os.environ.get("IOT_CLOUD_API_URL", DEFAULT_CLOUD_URL).rstrip("/")
+                updates = cloud_json_request(cloud_url, token, "/api/admin/gateway-updates?status_filter=queued&limit=10")
+                if isinstance(updates, list):
+                    for update in updates:
+                        if isinstance(update, dict):
+                            run_queued_gateway_update(update, defaults)
+        except Exception:
+            pass
+        time.sleep(poll_seconds)
 
 
 def page(title: str, body: str) -> bytes:
@@ -1366,6 +1476,7 @@ class LegacyEdgeUpgradeHandler(BaseHTTPRequestHandler):
 
 
 def run_server(port: int) -> BaseServer:
+    threading.Thread(target=gateway_update_worker, daemon=True, name="gateway-update-worker").start()
     server = ThreadingHTTPServer(("127.0.0.1", port), LegacyEdgeUpgradeHandler)
     print(f"Legacy Edge Upgrade webapp: http://127.0.0.1:{port}")
     print("Press Ctrl+C to stop.")
