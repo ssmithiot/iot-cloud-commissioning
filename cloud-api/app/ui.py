@@ -45,6 +45,7 @@ APP_SCRIPT = r"""
   const trendChartSizeStorageKey = "iot-cloud-trend-chart-size";
   const trendChartThemeStorageKey = "iot-cloud-trend-chart-theme";
   const trendChartRangeStorageKey = "iot-cloud-trend-chart-range";
+  const edgeResourceHealthMinimumVersion = "0.1.3";
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
   const pointTableColumns = [
@@ -1229,12 +1230,29 @@ APP_SCRIPT = r"""
     return version && version.toLowerCase() !== "current" ? version : "Update required";
   }
 
+  function versionAtLeast(actual, required) {
+    const actualParts = String(actual || "").split(".").map((part) => Number(part));
+    const requiredParts = required.split(".").map((part) => Number(part));
+    if (actualParts.length !== 3 || actualParts.some((part) => !Number.isInteger(part))) return false;
+    for (let index = 0; index < requiredParts.length; index += 1) {
+      if (actualParts[index] !== requiredParts[index]) return actualParts[index] > requiredParts[index];
+    }
+    return true;
+  }
+
+  function gatewayNeedsResourceHealthUpdate(gateway) {
+    return !hasResourceMetric(gateway.cpu_load_pct) && !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);
+  }
+
   function gatewayUpdateState(gatewayId) {
     return dashboardGatewayUpdates.get(gatewayId) || null;
   }
 
   function gatewayVersionCell(gateway) {
     const version = edgeAppVersion(gateway);
+    if (gatewayNeedsResourceHealthUpdate(gateway)) {
+      return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Health update required (${edgeResourceHealthMinimumVersion}+)</small>`;
+    }
     if (version !== "Update required") {
       return `<strong>${escapeHtml(version)}</strong>`;
     }
@@ -2970,15 +2988,23 @@ APP_SCRIPT = r"""
   }
 
   function renderGatewayResourceHealth(gateway) {
-    setText("edge-health-cpu", hasResourceMetric(gateway.cpu_load_pct)
+    const metricsAvailable = hasResourceMetric(gateway.cpu_load_pct);
+    const currentVersion = String(gateway.agent_version || "unknown");
+    const updateMessage = versionAtLeast(currentVersion, edgeResourceHealthMinimumVersion)
+      ? "Waiting for the next heartbeat from the updated Edge App"
+      : `Update Edge App to ${edgeResourceHealthMinimumVersion}+ (current ${currentVersion})`;
+    setText("edge-health-note", metricsAvailable
+      ? "Reported with each heartbeat; measures the gateway as a whole."
+      : updateMessage);
+    setText("edge-health-cpu", metricsAvailable
       ? `${resourcePercent(gateway.cpu_load_pct)} of ${gateway.cpu_count || "?"} cores · load ${Number(gateway.cpu_load_1m).toFixed(2)}`
-      : "Awaiting agent update");
-    setText("edge-health-memory", hasResourceMetric(gateway.memory_used_pct)
+      : updateMessage);
+    setText("edge-health-memory", metricsAvailable && hasResourceMetric(gateway.memory_used_pct)
       ? `${resourcePercent(gateway.memory_used_pct)} used · ${Number(gateway.memory_available_mb || 0).toLocaleString()} MB free`
-      : "Awaiting agent update");
-    setText("edge-health-disk", hasResourceMetric(gateway.disk_used_pct)
+      : updateMessage);
+    setText("edge-health-disk", metricsAvailable && hasResourceMetric(gateway.disk_used_pct)
       ? `${resourcePercent(gateway.disk_used_pct)} used · ${Number(gateway.disk_free_mb || 0).toLocaleString()} MB free`
-      : "Awaiting agent update");
+      : updateMessage);
     setText("edge-health-queue", `${Number(gateway.queued_upload_count || 0).toLocaleString()} pending uploads`);
     setText("edge-health-sqlite", gateway.sqlite_db_ok ? "Healthy" : "Unavailable");
     setText("edge-health-heartbeat", heartbeatLabel(gateway));
@@ -5483,6 +5509,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       font: 800 11px/1 "JetBrains Mono", Consolas, monospace;
       white-space: nowrap;
     }}
+    .edge-app-update-notice {{
+      display: block;
+      margin-top: 4px;
+      color: var(--warning);
+      font: 700 10px/1.25 "JetBrains Mono", Consolas, monospace;
+      white-space: nowrap;
+    }}
     .status-text {{
       color: inherit;
       font: 700 12px/1.35 "JetBrains Mono", Consolas, monospace;
@@ -5989,7 +6022,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
             <div>
               <span class="eyebrow">Edge Health</span>
               <h2>Resource headroom</h2>
-              <p>Reported with each heartbeat; measures the gateway as a whole.</p>
+              <p id="edge-health-note">Reported with each heartbeat; measures the gateway as a whole.</p>
             </div>
             <span class="panel-counter">30 sec</span>
           </div>
