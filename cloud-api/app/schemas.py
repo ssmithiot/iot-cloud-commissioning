@@ -211,6 +211,16 @@ class AccessMembershipOut(BaseModel):
     role: str
 
 
+class AccessMembershipRecordOut(AccessMembershipOut):
+    scope_kind: Literal["organization", "site"]
+    scope_id: str
+    scope_name: str
+
+
+class AccessOverviewOut(BaseModel):
+    memberships: list[AccessMembershipRecordOut]
+
+
 class SiteWeatherOut(BaseModel):
     available: bool
     site_id: str
@@ -487,6 +497,10 @@ class SavedDeviceOut(BaseModel):
     network_number: int | None
     mac_address: str | None
     latest_discovered_at: datetime | None
+    first_seen_at: datetime | None
+    last_seen_at: datetime | None
+    lifecycle_state: str
+    retired_at: datetime | None
     enabled: bool
     created_at: datetime
     updated_at: datetime
@@ -619,6 +633,10 @@ class SavedPointOut(BaseModel):
     units: str | None
     writable: bool | None
     latest_read_at: datetime | None
+    first_seen_at: datetime | None
+    last_seen_at: datetime | None
+    lifecycle_state: str
+    retired_at: datetime | None
     enabled: bool
     trend_enabled: bool = False
     trend_interval_sec: int | None = None
