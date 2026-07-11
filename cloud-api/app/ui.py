@@ -10,8 +10,8 @@ APP_SCRIPT = r"""
   let currentUser = null;
   let currentPointCandidateDevice = null;
   let selectedSavedPointIds = new Set();
-  let pointTrendResizeObserver = null;
-  let pointTrendResizeFrame = null;
+  const pointTrendResizeObservers = new Set();
+  const pointTrendResizeFrames = new Set();
   let customTablePointIds = new Set();
   let visiblePointTableColumns = ["object_identifier", "present_value", "units"];
   let savedPointTables = {};
@@ -2228,7 +2228,7 @@ APP_SCRIPT = r"""
     if (addButton) {
       addButton.disabled = !selected.length;
     }
-    renderSelectedPointTrend(selected[0] || null);
+    renderSelectedPointTrends(selected);
   }
 
   function numericTrendSamples(samples) {
@@ -2276,18 +2276,16 @@ APP_SCRIPT = r"""
     svg.addEventListener("mousemove", show); svg.addEventListener("mouseleave", () => { tooltip.hidden = true; [vertical, horizontal, dot].forEach((element) => element.classList.remove("visible")); });
   }
 
-  function stopPointTrendResize() {
-    pointTrendResizeObserver?.disconnect();
-    pointTrendResizeObserver = null;
-    if (pointTrendResizeFrame !== null) {
-      window.cancelAnimationFrame(pointTrendResizeFrame);
-      pointTrendResizeFrame = null;
-    }
+  function stopPointTrendResizes() {
+    pointTrendResizeObservers.forEach((observer) => observer.disconnect());
+    pointTrendResizeObservers.clear();
+    pointTrendResizeFrames.forEach((frame) => window.cancelAnimationFrame(frame));
+    pointTrendResizeFrames.clear();
   }
 
   function renderResponsivePointTrend(chart, samples, units = "") {
-    stopPointTrendResize();
     let lastWidth = 0;
+    let resizeFrame = null;
     const draw = (measuredWidth) => {
       const width = Math.max(trendChartFrame.minWidth, Math.round(Number(measuredWidth) || chart.clientWidth || trendChartFrame.minWidth));
       if (width === lastWidth) return;
@@ -2297,45 +2295,58 @@ APP_SCRIPT = r"""
     };
     draw(chart.getBoundingClientRect().width);
     if (!("ResizeObserver" in window)) return;
-    pointTrendResizeObserver = new ResizeObserver((entries) => {
+    const observer = new ResizeObserver((entries) => {
       const nextWidth = entries[0]?.contentRect.width || chart.getBoundingClientRect().width;
       const normalizedWidth = Math.max(trendChartFrame.minWidth, Math.round(nextWidth));
       if (normalizedWidth === lastWidth) return;
-      if (pointTrendResizeFrame !== null) window.cancelAnimationFrame(pointTrendResizeFrame);
-      pointTrendResizeFrame = window.requestAnimationFrame(() => {
-        pointTrendResizeFrame = null;
+      if (resizeFrame !== null) {
+        window.cancelAnimationFrame(resizeFrame);
+        pointTrendResizeFrames.delete(resizeFrame);
+      }
+      resizeFrame = window.requestAnimationFrame(() => {
+        pointTrendResizeFrames.delete(resizeFrame);
+        resizeFrame = null;
         if (chart.isConnected) draw(chart.getBoundingClientRect().width);
       });
+      pointTrendResizeFrames.add(resizeFrame);
     });
-    pointTrendResizeObserver.observe(chart);
+    pointTrendResizeObservers.add(observer);
+    observer.observe(chart);
   }
 
-  async function renderSelectedPointTrend(point) {
-    const panel = byId("point-trend-panel");
-    if (!panel) return;
-    stopPointTrendResize();
-    if (!point) {
-      panel.innerHTML = `<h2>Trend</h2><span class="muted">Select one saved point to configure its trend.</span>`;
-      return;
-    }
-    panel.innerHTML = `<h2>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h2><div class="toolbar"><label>Interval <select id="point-trend-interval"><option value="60">1 minute</option><option value="300" selected>5 minutes</option><option value="900">15 minutes</option></select></label><button id="enable-point-trend" type="button"${canEditTree() ? "" : " disabled"}>Enable trend</button></div><div id="point-trend-chart" class="point-trend-chart-wrap">Loading samples...</div>`;
-    const chart = byId("point-trend-chart");
+  async function loadSelectedPointTrend(card, point) {
+    const chart = card.querySelector(".point-trend-chart-wrap");
+    if (!chart) return;
     try {
       const samples = await api(`/api/ui/points/${encodeURIComponent(point.id)}/trend?limit=288`);
-      if (!chart.isConnected || byId("point-trend-chart") !== chart) return;
+      if (!chart.isConnected) return;
       renderResponsivePointTrend(chart, samples, point.units || "");
     } catch (error) {
-      if (!chart.isConnected || byId("point-trend-chart") !== chart) return;
+      if (!chart.isConnected) return;
       chart.innerHTML = `<span class="muted">Trend samples are unavailable.</span>`;
     }
-    byId("enable-point-trend")?.addEventListener("click", async () => {
+    card.querySelector(".enable-point-trend")?.addEventListener("click", async () => {
       try {
-        const interval = Number(byId("point-trend-interval").value);
+        const interval = Number(card.querySelector(".point-trend-interval").value);
         await api(`/api/ui/points/${encodeURIComponent(point.id)}/trend`, { method: "PUT", body: JSON.stringify({ enabled: true, interval_sec: interval }) });
         setText("status", `Trend enabled for ${savedPointLabel(point)} every ${interval} seconds.`);
       } catch (error) {
         setText("status", errorMessage(error), true);
       }
+    });
+  }
+
+  function renderSelectedPointTrends(points) {
+    const panel = byId("point-trend-panel");
+    if (!panel) return;
+    stopPointTrendResizes();
+    if (!points.length) {
+      panel.innerHTML = `<h2>Trends</h2><span class="muted">Select one or more saved points to configure their trends.</span>`;
+      return;
+    }
+    panel.innerHTML = `<h2>Trends (${points.length})</h2><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3><div class="toolbar"><label>Interval <select class="point-trend-interval"><option value="60">1 minute</option><option value="300" selected>5 minutes</option><option value="900">15 minutes</option></select></label><button class="enable-point-trend" type="button"${canEditTree() ? "" : " disabled"}>Enable trend</button></div><div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
+    panel.querySelectorAll(".point-trend-card").forEach((card, index) => {
+      loadSelectedPointTrend(card, points[index]);
     });
   }
 
@@ -3875,6 +3886,23 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .point-trend-panel {{
       display: grid;
       gap: 10px;
+    }}
+    .point-trend-list {{
+      display: grid;
+      gap: 16px;
+    }}
+    .point-trend-card {{
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }}
+    .point-trend-card + .point-trend-card {{
+      border-top: 1px solid var(--border);
+      padding-top: 16px;
+    }}
+    .point-trend-card h3 {{
+      margin: 0;
+      font-size: 15px;
     }}
     .point-trend-chart-wrap {{
       display: grid;
@@ -5846,8 +5874,8 @@ def gateway_workspace_html(gateway_id: str) -> str:
             </div>
           </div>
           <div id="point-trend-panel" class="detail-panel point-trend-panel">
-            <h2>Trend</h2>
-            <span class="muted">Select one saved point to configure its trend.</span>
+            <h2>Trends</h2>
+            <span class="muted">Select one or more saved points to configure their trends.</span>
           </div>
         </aside>
       </div>
