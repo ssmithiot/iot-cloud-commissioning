@@ -456,6 +456,7 @@ def test_gateway_workspace_defaults_devices_and_object_folders_to_collapsed() ->
     assert "childWrap.hidden = !expanded;" in response.text
     assert 'treeRow("device", deviceLabel, device.network_number ? `network ${device.network_number}` : "", depth, false)' in response.text
     assert 'treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1, false)' in response.text
+    assert 'body[data-page="gateway-workspace"] .tree-row .twisty' in response.text
 
 
 def test_public_auth_config_reports_missing_browser_config() -> None:
