@@ -584,6 +584,37 @@ class SavedPointOut(BaseModel):
     updated_at: datetime
 
 
+class PointTrendConfigIn(BaseModel):
+    enabled: bool = True
+    interval_sec: int = Field(default=300, ge=30, le=86400)
+
+
+class PointTrendConfigOut(BaseModel):
+    point_id: str
+    gateway_id: str
+    enabled: bool
+    interval_sec: int
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EdgeTrendConfigOut(PointTrendConfigOut):
+    device_instance: int
+    object_type: str
+    object_instance: int
+
+
+class PointTrendSampleIn(BaseModel):
+    point_id: str
+    sampled_at: datetime
+    value: str | None = Field(default=None, max_length=255)
+
+
+class PointTrendSampleOut(PointTrendSampleIn):
+    gateway_id: str
+    model_config = ConfigDict(from_attributes=True)
+
+
 class GatewayTreeOut(BaseModel):
     gateway: GatewayOut
     groups: list[GatewayGroupOut]

@@ -41,6 +41,8 @@ from app.models import (
     GatewayCredential,
     GatewayGroup,
     GatewayUpdateRequest,
+    PointTrendConfig,
+    PointTrendSample,
     OperatorUser,
     SavedBacnetDevice,
     SavedBacnetPoint,
@@ -54,6 +56,7 @@ from app.schemas import (
     CurrentOperatorOut,
     DirectConnectOut,
     EdgeJobClaimOut,
+    EdgeTrendConfigOut,
     GatewayGroupIn,
     GatewayGroupOut,
     GatewayHeartbeatTrendOut,
@@ -73,6 +76,10 @@ from app.schemas import (
     OperatorUserOut,
     OperatorUserUpsertIn,
     PublicAuthConfigOut,
+    PointTrendConfigIn,
+    PointTrendConfigOut,
+    PointTrendSampleIn,
+    PointTrendSampleOut,
     SavedDeviceIn,
     SavedDeviceOut,
     SavedDevicePatchIn,
@@ -1840,6 +1847,44 @@ def ui_patch_point(
     return _point_out(point)
 
 
+@app.put("/api/ui/points/{point_id}/trend", response_model=PointTrendConfigOut)
+def ui_upsert_point_trend(
+    point_id: str,
+    payload: PointTrendConfigIn,
+    _: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> PointTrendConfig:
+    point = db.get(SavedBacnetPoint, _tree_id(point_id))
+    if point is None:
+        raise HTTPException(status_code=404, detail="Point not found")
+    config = db.get(PointTrendConfig, point.id)
+    if config is None:
+        config = PointTrendConfig(point_id=point.id, gateway_id=point.gateway_id)
+        db.add(config)
+    config.enabled = payload.enabled
+    config.interval_sec = payload.interval_sec
+    config.updated_at = utc_now()
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+@app.get("/api/ui/points/{point_id}/trend", response_model=list[PointTrendSampleOut])
+def ui_point_trend_samples(
+    point_id: str,
+    limit: int = Query(default=288, ge=1, le=5000),
+    _: AdminAuthContext = Depends(require_operator_auth),
+    db: Session = Depends(get_db),
+) -> list[PointTrendSample]:
+    point = db.get(SavedBacnetPoint, _tree_id(point_id))
+    if point is None:
+        raise HTTPException(status_code=404, detail="Point not found")
+    samples = db.scalars(
+        select(PointTrendSample).where(PointTrendSample.point_id == point.id).order_by(PointTrendSample.sampled_at.desc()).limit(limit)
+    ).all()
+    return list(reversed(samples))
+
+
 @app.post("/api/ui/gateways/{gateway_id}/commissioning-template/import", response_model=CommissioningTemplateImportOut)
 def ui_import_commissioning_template(
     gateway_id: str,
@@ -1988,6 +2033,43 @@ def ui_discover_devices(
     db.commit()
     db.refresh(job)
     return job
+
+
+@app.get("/api/edge/{gateway_id}/trend-configs", response_model=list[EdgeTrendConfigOut])
+def edge_list_trend_configs(
+    gateway_id: str,
+    auth: GatewayAuthContext = Depends(require_gateway_auth),
+    db: Session = Depends(get_db),
+) -> list[dict[str, object]]:
+    if auth.gateway_id != gateway_id:
+        raise HTTPException(status_code=403, detail="Gateway credential does not match requested gateway_id")
+    configs = db.scalars(select(PointTrendConfig).where(PointTrendConfig.gateway_id == gateway_id, PointTrendConfig.enabled.is_(True))).all()
+    return [{"point_id": config.point_id, "gateway_id": config.gateway_id, "enabled": config.enabled, "interval_sec": config.interval_sec, "updated_at": config.updated_at, "device_instance": config.point.device_instance, "object_type": config.point.object_type, "object_instance": config.point.object_instance} for config in configs]
+
+
+@app.post("/api/edge/{gateway_id}/trend-samples", response_model=list[PointTrendSampleOut])
+def edge_upload_trend_samples(
+    gateway_id: str,
+    payload: list[PointTrendSampleIn],
+    auth: GatewayAuthContext = Depends(require_gateway_auth),
+    db: Session = Depends(get_db),
+) -> list[PointTrendSample]:
+    if auth.gateway_id != gateway_id:
+        raise HTTPException(status_code=403, detail="Gateway credential does not match trend sample gateway_id")
+    point_ids = {_tree_id(sample.point_id) for sample in payload}
+    points = {point.id: point for point in db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.id.in_(point_ids), SavedBacnetPoint.gateway_id == gateway_id)).all()}
+    stored: list[PointTrendSample] = []
+    for sample in payload:
+        point_id = _tree_id(sample.point_id)
+        if point_id not in points:
+            raise HTTPException(status_code=403, detail="Trend sample point does not belong to gateway")
+        existing = db.scalar(select(PointTrendSample).where(PointTrendSample.point_id == point_id, PointTrendSample.sampled_at == sample.sampled_at))
+        if existing is None:
+            existing = PointTrendSample(point_id=point_id, gateway_id=gateway_id, sampled_at=sample.sampled_at, value=sample.value)
+            db.add(existing)
+        stored.append(existing)
+    db.commit()
+    return stored
 
 
 @app.post("/api/edge/heartbeat", response_model=HeartbeatAccepted)

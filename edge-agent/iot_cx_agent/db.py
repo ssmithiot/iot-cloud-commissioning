@@ -141,6 +141,44 @@ def record_heartbeat_attempt(
         conn.commit()
 
 
+def trend_last_sample_at(path: Path, point_id: str) -> str | None:
+    with connect(path) as conn:
+        row = conn.execute("SELECT value FROM agent_state WHERE key = ?", (f"trend-last:{point_id}",)).fetchone()
+        return None if row is None else str(row["value"])
+
+
+def queue_trend_sample(path: Path, sample: dict[str, object], sampled_at: str) -> None:
+    payload = json.dumps(sample, sort_keys=True)
+    with connect(path) as conn:
+        conn.execute(
+            "INSERT INTO sync_queue (item_type, payload_json, status, created_at, updated_at) VALUES ('trend_sample', ?, 'pending', ?, ?)",
+            (payload, sampled_at, sampled_at),
+        )
+        conn.execute(
+            "INSERT INTO agent_state (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            (f"trend-last:{sample['point_id']}", sampled_at, sampled_at),
+        )
+        conn.commit()
+
+
+def pending_trend_samples(path: Path, limit: int = 100) -> list[tuple[int, dict[str, object]]]:
+    with connect(path) as conn:
+        rows = conn.execute(
+            "SELECT id, payload_json FROM sync_queue WHERE status = 'pending' AND item_type = 'trend_sample' ORDER BY id LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [(int(row["id"]), json.loads(str(row["payload_json"]))) for row in rows]
+
+
+def mark_trend_samples_uploaded(path: Path, ids: list[int], updated_at: str) -> None:
+    if not ids:
+        return
+    marks = ",".join("?" for _ in ids)
+    with connect(path) as conn:
+        conn.execute(f"UPDATE sync_queue SET status = 'uploaded', updated_at = ? WHERE id IN ({marks})", [updated_at, *ids])
+        conn.commit()
+
+
 def record_claimed_job(path: Path, job: dict[str, object], claimed_at: str) -> None:
     request_json = json.dumps(job.get("request", {}), sort_keys=True)
     with connect(path) as conn:
