@@ -161,6 +161,7 @@ class SiteOut(BaseModel):
     store_hours_saturday: str | None = None
     store_hours_sunday: str | None = None
     network_status_notes: str | None = None
+    organization_id: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -186,6 +187,28 @@ class SiteUpdate(BaseModel):
     store_hours_saturday: str | None = Field(default=None, max_length=120)
     store_hours_sunday: str | None = Field(default=None, max_length=120)
     network_status_notes: str | None = Field(default=None, max_length=500)
+
+
+class OrganizationCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class OrganizationOut(BaseModel):
+    id: str
+    name: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AccessMembershipUpsertIn(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    role: Literal["viewer", "operator", "admin"] = "viewer"
+
+
+class AccessMembershipOut(BaseModel):
+    email: str
+    role: str
 
 
 class SiteWeatherOut(BaseModel):
