@@ -4378,10 +4378,17 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .tree-row[data-kind="point"] .node-label {{
       color: #e7f6f7;
     }}
+    body[data-page="gateway-workspace"] .tree-row .twisty {{
+      color: #b8dadd;
+      font-weight: 700;
+    }}
     body[data-theme="light"] .tree-row[data-kind="folder"] .node-label,
     body[data-theme="light"] .tree-row[data-kind="device"] .node-label,
     body[data-theme="light"] .tree-row[data-kind="point"] .node-label {{
       color: #122329;
+    }}
+    body[data-page="gateway-workspace"][data-theme="light"] .tree-row .twisty {{
+      color: #40565b;
     }}
     .tree-row[data-kind="point"] {{
       font-weight: 500;
