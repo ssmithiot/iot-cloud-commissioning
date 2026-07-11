@@ -40,6 +40,7 @@ from app.models import (
     EdgeNode,
     GatewayCredential,
     GatewayGroup,
+    GatewayUpdateRequest,
     OperatorUser,
     SavedBacnetDevice,
     SavedBacnetPoint,
@@ -60,6 +61,9 @@ from app.schemas import (
     GatewayProvisionOut,
     GatewaySummaryOut,
     GatewayTreeOut,
+    GatewayUpdateCompleteIn,
+    GatewayUpdateRequestIn,
+    GatewayUpdateRequestOut,
     HeartbeatAccepted,
     HeartbeatIn,
     JobCreateIn,
@@ -255,6 +259,25 @@ def _get_gateway_with_site_or_404(db: Session, gateway_id: str) -> EdgeNode:
     if edge_node is None:
         raise HTTPException(status_code=404, detail="Gateway not found")
     return edge_node
+
+
+def _gateway_update_out(update: GatewayUpdateRequest, edge_node: EdgeNode) -> dict[str, object]:
+    site = edge_node.site
+    return {
+        "request_id": str(update.id),
+        "gateway_id": update.gateway_id,
+        "site_id": edge_node.site_id,
+        "hostname": edge_node.hostname,
+        "gateway_host": edge_node.lan_ip,
+        "cradlepoint_host": (site.direct_connect_host or site.cradlepoint_ip or site.external_ip) if site else None,
+        "agent_version": edge_node.agent_version,
+        "status": update.status,
+        "requested_by": update.requested_by,
+        "requested_at": update.requested_at,
+        "started_at": update.started_at,
+        "completed_at": update.completed_at,
+        "error_message": update.error_message,
+    }
 
 
 def _clean_optional_text(value: str | None) -> str | None:
@@ -1023,6 +1046,65 @@ def ui_list_gateways(
     if status_filter != "all":
         gateways = [gateway for gateway in gateways if gateway["effective_status"] == status_filter]
     return gateways
+
+
+@app.post("/api/ui/gateway-updates", response_model=list[GatewayUpdateRequestOut])
+def ui_request_gateway_updates(
+    payload: GatewayUpdateRequestIn,
+    auth: AdminAuthContext = Depends(require_operator_auth),
+    db: Session = Depends(get_db),
+) -> list[dict[str, object]]:
+    gateway_ids = list(dict.fromkeys(gateway_id.strip() for gateway_id in payload.gateway_ids if gateway_id.strip()))
+    if not gateway_ids:
+        raise HTTPException(status_code=400, detail="Select at least one gateway to update")
+
+    now = utc_now()
+    updates: list[GatewayUpdateRequest] = []
+    for gateway_id in gateway_ids:
+        _get_gateway_with_site_or_404(db, gateway_id)
+        existing = db.scalar(
+            select(GatewayUpdateRequest)
+            .where(
+                GatewayUpdateRequest.gateway_id == gateway_id,
+                GatewayUpdateRequest.status.in_(["queued", "running"]),
+            )
+            .order_by(GatewayUpdateRequest.requested_at.desc())
+        )
+        if existing is None:
+            existing = GatewayUpdateRequest(
+                gateway_id=gateway_id,
+                requested_by=auth.email or "admin-token",
+                status="queued",
+                requested_at=now,
+            )
+            db.add(existing)
+            db.flush()
+        updates.append(existing)
+
+    db.commit()
+    return [
+        _gateway_update_out(update, _get_gateway_with_site_or_404(db, update.gateway_id))
+        for update in updates
+    ]
+
+
+@app.get("/api/ui/gateway-updates", response_model=list[GatewayUpdateRequestOut])
+def ui_list_gateway_updates(
+    _: AdminAuthContext = Depends(require_operator_auth),
+    db: Session = Depends(get_db),
+    limit: int = 100,
+) -> list[dict[str, object]]:
+    limit = max(1, min(limit, 500))
+    updates = db.scalars(
+        select(GatewayUpdateRequest)
+        .where(GatewayUpdateRequest.status.in_(["queued", "running", "failed"]))
+        .order_by(GatewayUpdateRequest.requested_at.desc())
+        .limit(limit)
+    ).all()
+    return [
+        _gateway_update_out(update, _get_gateway_with_site_or_404(db, update.gateway_id))
+        for update in updates
+    ]
 
 
 @app.get("/api/ui/gateways/summary", response_model=GatewaySummaryOut)
@@ -1960,6 +2042,63 @@ def create_job(
     db.commit()
     db.refresh(job)
     return job
+
+
+@app.get("/api/admin/gateway-updates", response_model=list[GatewayUpdateRequestOut])
+def admin_list_gateway_updates(
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+    status_filter: str = "queued",
+    limit: int = 100,
+) -> list[dict[str, object]]:
+    allowed_statuses = {"queued", "running", "completed", "failed", "all"}
+    if status_filter not in allowed_statuses:
+        raise HTTPException(status_code=400, detail="Invalid gateway update status filter")
+    limit = max(1, min(limit, 500))
+    query = select(GatewayUpdateRequest).order_by(GatewayUpdateRequest.requested_at, GatewayUpdateRequest.id).limit(limit)
+    if status_filter != "all":
+        query = query.where(GatewayUpdateRequest.status == status_filter)
+    updates = db.scalars(query).all()
+    return [
+        _gateway_update_out(update, _get_gateway_with_site_or_404(db, update.gateway_id))
+        for update in updates
+    ]
+
+
+@app.post("/api/admin/gateway-updates/{request_id}/claim", response_model=GatewayUpdateRequestOut)
+def admin_claim_gateway_update(
+    request_id: UUID,
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    update = db.get(GatewayUpdateRequest, request_id)
+    if update is None:
+        raise HTTPException(status_code=404, detail="Gateway update request not found")
+    if update.status != "queued":
+        raise HTTPException(status_code=409, detail=f"Gateway update request is already {update.status}")
+    update.status = "running"
+    update.started_at = utc_now()
+    db.commit()
+    return _gateway_update_out(update, _get_gateway_with_site_or_404(db, update.gateway_id))
+
+
+@app.post("/api/admin/gateway-updates/{request_id}/complete", response_model=GatewayUpdateRequestOut)
+def admin_complete_gateway_update(
+    request_id: UUID,
+    payload: GatewayUpdateCompleteIn,
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    update = db.get(GatewayUpdateRequest, request_id)
+    if update is None:
+        raise HTTPException(status_code=404, detail="Gateway update request not found")
+    if update.status not in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail=f"Gateway update request is already {update.status}")
+    update.status = payload.status
+    update.error_message = payload.error_message
+    update.completed_at = utc_now()
+    db.commit()
+    return _gateway_update_out(update, _get_gateway_with_site_or_404(db, update.gateway_id))
 
 
 @app.post("/api/admin/gateways/provision", response_model=GatewayProvisionOut)

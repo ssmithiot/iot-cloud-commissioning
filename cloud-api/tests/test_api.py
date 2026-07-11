@@ -351,10 +351,14 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'data-sort="version"' in response.text
     assert 'data-sort="status"' in response.text
     assert "edgeAppVersion(gateway)" in response.text
+    assert 'id="select-all-gateway-updates"' in response.text
+    assert 'id="update-selected-gateways"' in response.text
+    assert 'data-select-update="${escapeHtml(gateway.gateway_id)}"' in response.text
+    assert "queueGatewayUpdates" in response.text
     assert 'version.toLowerCase() !== "current"' in response.text
     assert 'data-sort="version">Edge App</button>' in response.text
     assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
-    assert 'colspan="9"' in response.text
+    assert 'colspan="10"' in response.text
     assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
 
 
@@ -460,6 +464,37 @@ def test_heartbeat_creates_gateway_and_history() -> None:
     assert gateways.json()[0]["gateway_id"] == "GW001"
     assert gateways.json()[0]["site_id"] == "demo-site"
     assert gateways.json()[0]["agent_version"] == "0.1.1"
+
+
+def test_gateway_update_request_queue_claim_and_completion() -> None:
+    create_gateway_token("GW001")
+
+    queued = client.post(
+        "/api/ui/gateway-updates",
+        headers=admin_headers(),
+        json={"gateway_ids": ["GW001"]},
+    )
+
+    assert queued.status_code == 200
+    request = queued.json()[0]
+    assert request["gateway_id"] == "GW001"
+    assert request["status"] == "queued"
+
+    listed = client.get("/api/admin/gateway-updates", headers=admin_headers())
+    assert listed.status_code == 200
+    assert listed.json()[0]["request_id"] == request["request_id"]
+
+    claimed = client.post(f"/api/admin/gateway-updates/{request['request_id']}/claim", headers=admin_headers())
+    assert claimed.status_code == 200
+    assert claimed.json()["status"] == "running"
+
+    completed = client.post(
+        f"/api/admin/gateway-updates/{request['request_id']}/complete",
+        headers=admin_headers(),
+        json={"status": "completed"},
+    )
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "completed"
 
 
 def test_configure_gateway_redirects_to_cloud_tunnel() -> None:

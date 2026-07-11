@@ -183,6 +183,24 @@ class EdgeHeartbeat(Base):
     edge_node: Mapped[EdgeNode] = relationship(back_populates="heartbeats")
 
 
+class GatewayUpdateRequest(Base):
+    __tablename__ = "gateway_update_requests"
+
+    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    gateway_id: Mapped[str] = mapped_column(
+        String(120),
+        ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    requested_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="queued", index=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+
 class EdgeJob(Base):
     __tablename__ = "edge_jobs"
     __table_args__ = (UniqueConstraint("job_id", name="uq_edge_jobs_job_id"),)

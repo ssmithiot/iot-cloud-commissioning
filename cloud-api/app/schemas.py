@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -261,6 +262,31 @@ class GatewayOut(BaseModel):
     direct_connect_port: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class GatewayUpdateRequestIn(BaseModel):
+    gateway_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class GatewayUpdateCompleteIn(BaseModel):
+    status: Literal["completed", "failed"]
+    error_message: str | None = Field(default=None, max_length=1000)
+
+
+class GatewayUpdateRequestOut(BaseModel):
+    request_id: str
+    gateway_id: str
+    site_id: str
+    hostname: str
+    gateway_host: str | None
+    cradlepoint_host: str | None
+    agent_version: str
+    status: str
+    requested_by: str | None
+    requested_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    error_message: str | None
 
 
 class GatewayProvisionIn(BaseModel):

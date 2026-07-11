@@ -343,6 +343,20 @@ Failure behavior: missing or invalid admin credentials return HTTP 401. Database
 
 Future compatibility notes: when Supabase Auth and RLS are active, this can be served through a portal API using user-scoped access. Gateway-facing endpoints should remain gateway-authenticated.
 
+## POST /api/ui/gateway-updates
+
+Purpose: queue one or more selected gateways for an edge application update. This request runs the local legacy updater's agent/application phases only; it does not update the local BACnet UI or the operating system.
+
+Request:
+
+```json
+{
+  "gateway_ids": ["GW044", "GW047"]
+}
+```
+
+The local legacy updater claims queued requests through the admin worker endpoints, performs the SSH update, and marks each request `completed` or `failed` with an error message.
+
 ## GET /api/ui/sites
 
 Purpose: list customer site metadata for operator UI workflows.
