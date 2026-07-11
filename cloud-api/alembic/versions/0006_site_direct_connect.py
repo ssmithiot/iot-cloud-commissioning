@@ -16,14 +16,19 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("sites", sa.Column("cradlepoint_ip", sa.String(length=255), nullable=True))
-    op.add_column("sites", sa.Column("direct_connect_host", sa.String(length=255), nullable=True))
-    op.add_column("sites", sa.Column("direct_connect_port", sa.Integer(), nullable=True))
-    op.add_column("sites", sa.Column("gateway_ui_port", sa.Integer(), nullable=True))
-    op.add_column("sites", sa.Column("store_hours_monday_friday", sa.String(length=120), nullable=True))
-    op.add_column("sites", sa.Column("store_hours_saturday", sa.String(length=120), nullable=True))
-    op.add_column("sites", sa.Column("store_hours_sunday", sa.String(length=120), nullable=True))
-    op.add_column("sites", sa.Column("network_status_notes", sa.String(length=500), nullable=True))
+    existing = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("sites")}
+    for column in (
+        sa.Column("cradlepoint_ip", sa.String(length=255), nullable=True),
+        sa.Column("direct_connect_host", sa.String(length=255), nullable=True),
+        sa.Column("direct_connect_port", sa.Integer(), nullable=True),
+        sa.Column("gateway_ui_port", sa.Integer(), nullable=True),
+        sa.Column("store_hours_monday_friday", sa.String(length=120), nullable=True),
+        sa.Column("store_hours_saturday", sa.String(length=120), nullable=True),
+        sa.Column("store_hours_sunday", sa.String(length=120), nullable=True),
+        sa.Column("network_status_notes", sa.String(length=500), nullable=True),
+    ):
+        if column.name not in existing:
+            op.add_column("sites", column)
 
 
 def downgrade() -> None:

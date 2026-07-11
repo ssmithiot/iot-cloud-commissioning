@@ -16,11 +16,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("sites", sa.Column("external_ip", sa.String(length=64), nullable=True))
-    op.add_column("sites", sa.Column("address", sa.String(length=500), nullable=True))
-    op.add_column("sites", sa.Column("store_hours_mf", sa.String(length=120), nullable=True))
-    op.add_column("sites", sa.Column("store_hours_sat", sa.String(length=120), nullable=True))
-    op.add_column("sites", sa.Column("store_hours_sun", sa.String(length=120), nullable=True))
+    existing = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("sites")}
+    for column in (
+        sa.Column("external_ip", sa.String(length=64), nullable=True),
+        sa.Column("address", sa.String(length=500), nullable=True),
+        sa.Column("store_hours_mf", sa.String(length=120), nullable=True),
+        sa.Column("store_hours_sat", sa.String(length=120), nullable=True),
+        sa.Column("store_hours_sun", sa.String(length=120), nullable=True),
+    ):
+        if column.name not in existing:
+            op.add_column("sites", column)
 
 
 def downgrade() -> None:
