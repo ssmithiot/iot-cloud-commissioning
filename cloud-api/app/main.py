@@ -120,6 +120,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _ensure_site_coordinate_columns()
     _ensure_site_weather_table()
     _ensure_gateway_update_request_table()
+    _ensure_point_trend_tables()
     yield
 
 
@@ -158,6 +159,11 @@ def _ensure_site_weather_table() -> None:
 
 def _ensure_gateway_update_request_table() -> None:
     GatewayUpdateRequest.__table__.create(bind=engine, checkfirst=True)
+
+
+def _ensure_point_trend_tables() -> None:
+    PointTrendConfig.__table__.create(bind=engine, checkfirst=True)
+    PointTrendSample.__table__.create(bind=engine, checkfirst=True)
 
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
