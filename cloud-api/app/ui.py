@@ -2869,7 +2869,7 @@ APP_SCRIPT = r"""
     await loadGatewayWorkspace();
   }
 
-  function setTreeDetails(title, details, action = null) {
+  function setTreeDetails(title, details, action = null, titleAction = null) {
     const panel = byId("tree-details");
     if (!panel) {
       return;
@@ -2877,7 +2877,7 @@ APP_SCRIPT = r"""
     const actions = Array.isArray(action) ? action : (action ? [action] : []);
     panel.hidden = false;
     panel.innerHTML = `
-      <h2>${escapeHtml(title)}</h2>
+      <div class="tree-detail-title"><h2>${escapeHtml(title)}</h2>${titleAction && canEditTree() ? `<button class="tree-title-edit secondary" type="button" title="${escapeHtml(titleAction.label)}" aria-label="${escapeHtml(titleAction.label)}">&#9998;</button>` : ""}</div>
       <dl>
         ${Object.entries(details).map(([key, value]) => `
           <dt>${escapeHtml(key)}</dt>
@@ -2893,6 +2893,59 @@ APP_SCRIPT = r"""
         button.addEventListener("click", () => actions[Number(button.dataset.treeAction)].handler());
       });
     }
+    if (titleAction && canEditTree()) {
+      panel.querySelector(".tree-title-edit")?.addEventListener("click", titleAction.handler);
+    }
+  }
+
+  function showDeviceNameEditor(device, pointCount) {
+    const panel = byId("tree-details");
+    const heading = panel?.querySelector(".tree-detail-title");
+    if (!heading) return;
+    heading.innerHTML = `<label class="tree-device-name-editor"><span>Device name</span><input type="text" maxlength="255" value="${escapeHtml(device.device_name || "")}" aria-label="Device name"></label><button class="save-device-name" type="button">Save</button><button class="cancel-device-name secondary" type="button">Cancel</button>`;
+    const input = heading.querySelector("input");
+    const save = async () => {
+      const deviceName = input.value.trim();
+      if (!deviceName) {
+        setText("status", "Device name cannot be blank.", true);
+        input.focus();
+        return;
+      }
+      const saveButton = heading.querySelector(".save-device-name");
+      saveButton.disabled = true;
+      try {
+        const updated = await api(`/api/ui/devices/${encodeURIComponent(device.id)}`, { method: "PATCH", body: JSON.stringify({ device_name: deviceName }) });
+        await loadGatewayWorkspace();
+        renderDeviceDetails({ ...device, ...updated }, pointCount);
+        setText("status", `Renamed device ${device.device_instance} to ${deviceName}.`);
+      } catch (error) {
+        setText("status", errorMessage(error), true);
+        saveButton.disabled = false;
+      }
+    };
+    heading.querySelector(".save-device-name").addEventListener("click", save);
+    heading.querySelector(".cancel-device-name").addEventListener("click", () => renderDeviceDetails(device, pointCount));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); save(); }
+      if (event.key === "Escape") { event.preventDefault(); renderDeviceDetails(device, pointCount); }
+    });
+    input.focus();
+    input.select();
+  }
+
+  function renderDeviceDetails(device, pointCount) {
+    const deviceLabel = `[${device.device_instance}] ${device.device_name || "Device " + device.device_instance}`;
+    setTreeDetails(deviceLabel, {
+      gateway_id: device.gateway_id,
+      device_instance: device.device_instance,
+      network_number: device.network_number,
+      mac_address: device.mac_address,
+      vendor_name: device.vendor_name,
+      latest_discovered_at: device.latest_discovered_at,
+      points: pointCount
+    }, [
+      { label: "Remove device", handler: () => removeTreeItem("device", device.id, deviceLabel) }
+    ], { label: "Edit device name", handler: () => showDeviceNameEditor(device, pointCount) });
   }
 
   function pointSelectionRow(point, label, meta = "", depth = 0) {
@@ -3104,20 +3157,7 @@ APP_SCRIPT = r"""
       const row = treeRow("device", deviceLabel, device.network_number ? `network ${device.network_number}` : "", depth, false);
       row.dataset.treeKey = `device:${device.id}`;
       attachSavedBranchSelector(row, points.map((point) => point.id), deviceLabel);
-      const showDeviceDetails = () => setTreeDetails(deviceLabel, {
-        gateway_id: device.gateway_id,
-        device_instance: device.device_instance,
-        network_number: device.network_number,
-        mac_address: device.mac_address,
-        vendor_name: device.vendor_name,
-        latest_discovered_at: device.latest_discovered_at,
-        points: points.length
-      }, [
-        {
-          label: "Remove device",
-          handler: () => removeTreeItem("device", device.id, deviceLabel)
-        }
-      ]);
+      const showDeviceDetails = () => renderDeviceDetails(device, points.length);
       const container = document.createElement("div");
       addCollapsible(container, row, [], showDeviceDetails, false);
       for (const [folderLabel, folderPoints] of pointGroups.entries()) {
@@ -4292,6 +4332,30 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       font-size: 12px;
     }}
     .detail-panel[hidden] {{ display: none; }}
+    .tree-detail-title {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }}
+    .tree-detail-title h2 {{ margin: 0; }}
+    .tree-title-edit {{
+      width: 28px;
+      min-width: 28px;
+      min-height: 28px;
+      padding: 0;
+      font-size: 16px;
+      line-height: 1;
+    }}
+    .tree-device-name-editor {{
+      display: flex;
+      flex: 1 1 180px;
+      align-items: center;
+      gap: 6px;
+      margin: 0;
+    }}
+    .tree-device-name-editor span {{ white-space: nowrap; }}
+    .tree-device-name-editor input {{ min-width: 0; }}
     .detail-panel dl {{
       display: grid;
       grid-template-columns: max-content 1fr;

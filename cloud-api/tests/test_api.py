@@ -416,6 +416,9 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert "Loaded Point Candidates" in response.text
     assert 'data-role="save-device"' in response.text
     assert "Remove device" in response.text
+    assert "function showDeviceNameEditor(device, pointCount)" in response.text
+    assert 'title="${escapeHtml(titleAction.label)}"' in response.text
+    assert 'method: "PATCH", body: JSON.stringify({ device_name: deviceName })' in response.text
     assert "Input Objects" in response.text
     assert "pollDiscoveryJob" in response.text
     assert "/api/edge/jobs?limit=50" in response.text
