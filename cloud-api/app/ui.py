@@ -19,6 +19,7 @@ APP_SCRIPT = r"""
   let savedPointTables = {};
   let activePointTableName = "New Table View";
   let selectedPointTableName = "";
+  const treeBranchExpansion = new Map();
   let dashboardGateways = [];
   let dashboardJobs = [];
   let dashboardGatewayUpdates = new Map();
@@ -3007,13 +3008,17 @@ APP_SCRIPT = r"""
   }
 
   function addCollapsible(parent, row, children, onSelect = null, expanded = true) {
+    const treeKey = row.dataset.treeKey;
+    const isExpanded = treeKey && treeBranchExpansion.has(treeKey)
+      ? treeBranchExpansion.get(treeKey)
+      : expanded;
     parent.appendChild(row);
     const childWrap = document.createElement("div");
     childWrap.className = "tree-children";
     childWrap.setAttribute("role", "group");
-    childWrap.hidden = !expanded;
-    row.setAttribute("aria-expanded", String(expanded));
-    row.querySelector(".twisty").textContent = expanded ? "[-]" : "[+]";
+    childWrap.hidden = !isExpanded;
+    row.setAttribute("aria-expanded", String(isExpanded));
+    row.querySelector(".twisty").textContent = isExpanded ? "[-]" : "[+]";
     for (const child of children) {
       childWrap.appendChild(child);
     }
@@ -3023,6 +3028,9 @@ APP_SCRIPT = r"""
       childWrap.hidden = !hidden;
       row.setAttribute("aria-expanded", String(hidden));
       row.querySelector(".twisty").textContent = hidden ? "[-]" : "[+]";
+      if (treeKey) {
+        treeBranchExpansion.set(treeKey, hidden);
+      }
       if (onSelect) {
         onSelect();
       }
@@ -3045,6 +3053,10 @@ APP_SCRIPT = r"""
     currentGatewayTree = tree;
     selectedSavedPointIds = new Set([...selectedSavedPointIds].filter((id) => tree.points.some((point) => point.id === id)));
     const target = byId("tree");
+    const previousScrollTop = target.scrollTop;
+    target.querySelectorAll("[data-tree-key][aria-expanded]").forEach((row) => {
+      treeBranchExpansion.set(row.dataset.treeKey, row.getAttribute("aria-expanded") === "true");
+    });
     target.textContent = "";
     if (!tree.groups.length && !tree.devices.length) {
       target.textContent = "No saved devices or points yet.";
@@ -3066,6 +3078,7 @@ APP_SCRIPT = r"""
       }
       const deviceLabel = `[${device.device_instance}] ${device.device_name || "Device " + device.device_instance}`;
       const row = treeRow("device", deviceLabel, device.network_number ? `network ${device.network_number}` : "", depth, false);
+      row.dataset.treeKey = `device:${device.id}`;
       attachSavedBranchSelector(row, points.map((point) => point.id), deviceLabel);
       const showDeviceDetails = () => setTreeDetails(deviceLabel, {
         gateway_id: device.gateway_id,
@@ -3089,6 +3102,7 @@ APP_SCRIPT = r"""
           return pointSelectionRow(point, pointLabel, formatPresentValue(point.present_value), depth + 2);
         });
         const folderRow = treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1, false);
+        folderRow.dataset.treeKey = `folder:${device.id}:${folderPoints[0].object_type}`;
         attachSavedBranchSelector(folderRow, folderPoints.map((point) => point.id), `${deviceLabel} ${folderLabel}`);
         addCollapsible(container.querySelector(".tree-children"), folderRow, pointRows, null, false);
       }
@@ -3107,6 +3121,7 @@ APP_SCRIPT = r"""
       const groupedDeviceIds = new Set(groupedDevices.map((device) => device.id));
       const groupedPointIds = tree.points.filter((point) => groupedDeviceIds.has(point.saved_device_id)).map((point) => point.id);
       row.dataset.kind = "group";
+      row.dataset.treeKey = `group:${group.id}`;
       attachSavedBranchSelector(row, groupedPointIds, group.name);
       const showGroupDetails = () => setTreeDetails(group.name, {
         gateway_id: group.gateway_id,
@@ -3117,12 +3132,14 @@ APP_SCRIPT = r"""
     const ungroupedDevices = tree.devices.filter((item) => !item.group_id || !groupNames.has(item.group_id));
     if (ungroupedDevices.length) {
       const row = treeRow("group", "Ungrouped", `${ungroupedDevices.length}`, 0);
+      row.dataset.treeKey = "group:ungrouped";
       const ungroupedDeviceIds = new Set(ungroupedDevices.map((device) => device.id));
       const ungroupedPointIds = tree.points.filter((point) => ungroupedDeviceIds.has(point.saved_device_id)).map((point) => point.id);
       attachSavedBranchSelector(row, ungroupedPointIds, "Ungrouped");
       addCollapsible(root, row, ungroupedDevices.map((device) => deviceNode(device, 1)));
     }
     target.appendChild(root);
+    target.scrollTop = previousScrollTop;
     syncSavedTreeSelection();
     renderSelectedSavedPoints();
     renderCustomPointTable();
@@ -4849,7 +4866,9 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       font-size: 12px;
     }}
     .tree-row {{
-      grid-template-columns: 18px 18px minmax(0, 1fr) auto auto;
+      width: fit-content !important;
+      max-width: 100%;
+      grid-template-columns: 18px 18px minmax(0, max-content) max-content max-content;
       min-height: 24px;
       border: 0 !important;
       border-radius: 0;
@@ -4974,6 +4993,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .node-meta {{
       color: var(--muted);
       font: 600 11px/1.2 "JetBrains Mono", Consolas, monospace;
+      justify-self: start;
     }}
     .custom-table-panel {{
       padding: 16px;
