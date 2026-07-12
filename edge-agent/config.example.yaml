@@ -6,8 +6,13 @@ local_ui_url: http://127.0.0.1:5000
 # Maximum time for a cloud-relayed request to complete at the local gateway UI.
 # The WebSocket connection/reconnect timeout remains 30 seconds.
 tunnel_request_timeout_sec: 900
+# Maximum time for an edge-agent write job to wait on the loopback-only local UI adapter.
+local_ui_write_timeout_sec: 120
 # Prefer setting GATEWAY_API_TOKEN in the environment instead of this file.
 # gateway_api_token: iotcc_gw_<token_prefix>_<secret>
+# EDGE_AGENT_WRITE_TOKEN is a gateway-local shared secret. Set it in the service
+# environment for both the edge agent and the local UI; do not send it to the cloud.
+# edge_agent_write_token: replace-with-a-long-random-local-token
 # Router profiles:
 # - contemporary or basrtb: Contemporary Controls / BASRT-B commissioning on UDP 47814.
 # - bac-rtr: BAC-RTR commissioning on UDP 47809.

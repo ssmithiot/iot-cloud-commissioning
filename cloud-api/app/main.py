@@ -36,6 +36,8 @@ from app.access import require_site_access, visible_site_ids
 from app.config import settings
 from app.database import Base, engine, get_db
 from app.models import (
+    BacnetWriteBatch,
+    BacnetWriteCommand,
     EdgeHeartbeat,
     EdgeJob,
     EdgeNode,
@@ -60,6 +62,8 @@ from app.schemas import (
     AccessMembershipOut,
     AccessMembershipUpsertIn,
     AccessOverviewOut,
+    BACNET_WRITE_OBJECT_TYPES,
+    BacnetWriteBatchOut,
     CommissioningTemplateImportOut,
     CommissioningTemplateIn,
     CurrentOperatorOut,
@@ -99,6 +103,7 @@ from app.schemas import (
     SavedPointPatchIn,
     SavedPointsReadIn,
     SavedPointsReadOut,
+    SavedPointsWriteIn,
     SavedPointsBulkRemoveIn,
     SavedPointsBulkRemoveOut,
     SiteOut,
@@ -954,6 +959,10 @@ def _point_out(point: SavedBacnetPoint, trend_config: PointTrendConfig | None = 
         "present_value": point.present_value,
         "units": point.units,
         "writable": point.writable,
+        "active_priority": point.active_priority,
+        "priority_array": point.priority_array,
+        "relinquish_default": point.relinquish_default,
+        "state_text": point.state_text,
         "latest_read_at": point.latest_read_at,
         "first_seen_at": point.first_seen_at,
         "last_seen_at": point.last_seen_at,
@@ -965,6 +974,168 @@ def _point_out(point: SavedBacnetPoint, trend_config: PointTrendConfig | None = 
         "created_at": point.created_at,
         "updated_at": point.updated_at,
     }
+
+
+def _write_audit_actor(auth: AdminAuthContext) -> str:
+    if auth.email:
+        return auth.email.strip().lower()
+    return "admin_api_token"
+
+
+def _write_command_out(command: BacnetWriteCommand) -> dict[str, object]:
+    return {
+        "id": str(command.id),
+        "edge_job_id": command.edge_job_id,
+        "saved_point_id": command.saved_point_id,
+        "device_instance": command.device_instance,
+        "object_type": command.object_type,
+        "object_instance": command.object_instance,
+        "property": command.property_name,
+        "action": command.action,
+        "requested_value": command.requested_value,
+        "priority": command.priority,
+        "status": command.status,
+        "result": command.result_json,
+        "error_message": command.error_message,
+        "created_at": command.created_at,
+        "completed_at": command.completed_at,
+    }
+
+
+def _write_batch_out(batch: BacnetWriteBatch) -> dict[str, object]:
+    commands = list(batch.commands)
+    return {
+        "batch_id": str(batch.id),
+        "gateway_id": batch.gateway_id,
+        "requested_by": batch.requested_by,
+        "approved_by": batch.approved_by,
+        "status": batch.status,
+        "write_count": batch.write_count,
+        "queued_count": sum(command.status in {"queued", "claimed"} for command in commands),
+        "job_ids": list(dict.fromkeys(command.edge_job_id for command in commands)),
+        "requested_at": batch.requested_at,
+        "approved_at": batch.approved_at,
+        "completed_at": batch.completed_at,
+        "commands": [_write_command_out(command) for command in commands],
+    }
+
+
+def _refresh_write_batch_status(db: Session, batch_id: UUID, now: datetime) -> None:
+    batch = db.get(BacnetWriteBatch, batch_id)
+    if batch is None:
+        return
+    statuses = set(db.scalars(select(BacnetWriteCommand.status).where(BacnetWriteCommand.batch_id == batch_id)).all())
+    if not statuses:
+        return
+    if statuses & {"queued", "claimed"}:
+        batch.status = "claimed" if "claimed" in statuses else "queued"
+        batch.completed_at = None
+    elif statuses == {"succeeded"}:
+        batch.status = "completed"
+        batch.completed_at = now
+    elif statuses == {"failed"}:
+        batch.status = "failed"
+        batch.completed_at = now
+    elif statuses == {"deferred"}:
+        batch.status = "deferred"
+        batch.completed_at = now
+    else:
+        batch.status = "partial"
+        batch.completed_at = now
+
+
+def _readback_value(result: dict[str, object], field: str) -> tuple[bool, object | None]:
+    if field in result:
+        return True, result[field]
+    snapshot = result.get("snapshot")
+    if isinstance(snapshot, dict) and field in snapshot:
+        return True, snapshot[field]
+    return False, None
+
+
+def _apply_write_readback(point: SavedBacnetPoint, result: dict[str, object], now: datetime) -> None:
+    readback_seen = False
+    present_value_found, present_value = _readback_value(result, "present_value")
+    if present_value_found:
+        point.present_value = None if present_value is None else str(present_value)
+        readback_seen = True
+
+    active_priority_found, active_priority = _readback_value(result, "active_priority")
+    if active_priority_found and (
+        active_priority is None
+        or (not isinstance(active_priority, bool) and isinstance(active_priority, int) and 1 <= active_priority <= 16)
+    ):
+        point.active_priority = active_priority
+        readback_seen = True
+
+    for field in ("priority_array", "relinquish_default", "state_text"):
+        found, value = _readback_value(result, field)
+        if found and (value is None or isinstance(value, str)):
+            setattr(point, field, value)
+            readback_seen = True
+
+    if readback_seen:
+        point.latest_read_at = now
+        point.updated_at = now
+
+
+def _reconcile_bacnet_write_result(
+    db: Session,
+    job: EdgeJob,
+    payload: JobResultIn,
+) -> None:
+    commands = list(
+        db.scalars(
+            select(BacnetWriteCommand)
+            .where(BacnetWriteCommand.edge_job_id == job.job_id)
+            .order_by(BacnetWriteCommand.created_at, BacnetWriteCommand.id)
+        ).all()
+    )
+    if not commands:
+        return
+
+    now = utc_now()
+    results_by_point_id: dict[str, dict[str, object]] = {}
+    if payload.status == "completed" and isinstance(payload.result, dict):
+        raw_results = payload.result.get("results")
+        if isinstance(raw_results, list):
+            for raw_result in raw_results:
+                if not isinstance(raw_result, dict):
+                    continue
+                point_id = raw_result.get("saved_point_id")
+                if isinstance(point_id, str) and point_id not in results_by_point_id:
+                    results_by_point_id[point_id] = raw_result
+
+    affected_batch_ids: set[UUID] = set()
+    for command in commands:
+        affected_batch_ids.add(command.batch_id)
+        result = results_by_point_id.get(command.saved_point_id)
+        command.completed_at = now
+        if result is None:
+            command.status = "deferred" if payload.status == "deferred" else "failed"
+            command.error_message = payload.error_message or "Edge response omitted the command result"
+            continue
+
+        command.result_json = result
+        command.status = "succeeded" if result.get("ok") is True else "failed"
+        message = result.get("message")
+        command.error_message = None if command.status == "succeeded" else (
+            str(message)[:1000] if message is not None else "BACnet write failed"
+        )
+
+        point = db.get(SavedBacnetPoint, command.saved_point_id)
+        if (
+            point is not None
+            and point.gateway_id == job.gateway_id
+            and point.device_instance == command.device_instance
+            and point.object_type == command.object_type
+            and point.object_instance == command.object_instance
+        ):
+            _apply_write_readback(point, result, now)
+
+    db.flush()
+    for batch_id in affected_batch_ids:
+        _refresh_write_batch_status(db, batch_id, now)
 
 
 @app.get("/", include_in_schema=False)
@@ -2074,6 +2245,139 @@ def ui_read_saved_points(
     )
 
 
+@app.post("/api/ui/gateways/{gateway_id}/points/write", response_model=BacnetWriteBatchOut)
+def ui_write_saved_points(
+    gateway_id: str,
+    payload: SavedPointsWriteIn,
+    auth: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    edge_node = _require_gateway_site_access(db, auth, gateway_id)
+    _require_online_gateway(edge_node)
+
+    normalized_writes: list[tuple[str, object]] = [(_tree_id(item.point_id), item) for item in payload.writes]
+    normalized_point_ids = [point_id for point_id, _ in normalized_writes]
+    if len(set(normalized_point_ids)) != len(normalized_point_ids):
+        raise HTTPException(status_code=422, detail="writes must not contain duplicate point_id values")
+
+    points = list(
+        db.scalars(
+            select(SavedBacnetPoint).where(
+                SavedBacnetPoint.id.in_(normalized_point_ids),
+                SavedBacnetPoint.gateway_id == gateway_id,
+                SavedBacnetPoint.enabled.is_(True),
+            )
+        ).all()
+    )
+    points_by_id = {str(point.id): point for point in points}
+    missing_ids = [item.point_id for point_id, item in normalized_writes if point_id not in points_by_id]
+    if missing_ids:
+        raise HTTPException(
+            status_code=404,
+            detail={"message": "Saved point was not found or is disabled", "point_ids": missing_ids},
+        )
+
+    rejected_points: list[dict[str, object]] = []
+    for point_id, item in normalized_writes:
+        point = points_by_id[point_id]
+        reason: str | None = None
+        if point.object_type not in BACNET_WRITE_OBJECT_TYPES:
+            reason = f"object type {point.object_type} is not writable"
+        elif point.property_name != "present-value":
+            reason = f"property {point.property_name} is not supported"
+        elif point.writable is False:
+            reason = "point is marked read-only"
+        if reason:
+            rejected_points.append({"point_id": item.point_id, "reason": reason})
+    if rejected_points:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "One or more points cannot be written", "points": rejected_points},
+        )
+
+    now = utc_now()
+    actor = _write_audit_actor(auth)
+    batch = BacnetWriteBatch(
+        gateway_id=gateway_id,
+        requested_by=actor,
+        approved_by=actor,
+        status="queued",
+        write_count=len(normalized_writes),
+        requested_at=now,
+        approved_at=now,
+    )
+    db.add(batch)
+    db.flush()
+
+    writes_by_device: dict[int, list[tuple[SavedBacnetPoint, object]]] = {}
+    for point_id, item in normalized_writes:
+        point = points_by_id[point_id]
+        writes_by_device.setdefault(point.device_instance, []).append((point, item))
+
+    for device_instance, device_writes in writes_by_device.items():
+        job_id = f"job-{uuid4().hex}"
+        request_writes: list[dict[str, object]] = []
+        for point, item in device_writes:
+            request_item: dict[str, object] = {
+                "saved_point_id": str(point.id),
+                "object_type": point.object_type,
+                "object_instance": point.object_instance,
+                "action": item.action,
+                "priority": item.priority,
+            }
+            if item.action != "relinquish":
+                request_item["value"] = item.value
+            request_writes.append(request_item)
+            batch.commands.append(
+                BacnetWriteCommand(
+                    edge_job_id=job_id,
+                    gateway_id=gateway_id,
+                    saved_point_id=str(point.id),
+                    device_instance=point.device_instance,
+                    object_type=point.object_type,
+                    object_instance=point.object_instance,
+                    property_name=point.property_name,
+                    action=item.action,
+                    requested_value=item.value,
+                    priority=item.priority,
+                    status="queued",
+                    created_at=now,
+                )
+            )
+        db.add(
+            EdgeJob(
+                job_id=job_id,
+                gateway_id=gateway_id,
+                job_type="bacnet_write_batch",
+                status="queued",
+                request_json={"device_instance": device_instance, "writes": request_writes},
+            )
+        )
+
+    db.commit()
+    db.refresh(batch)
+    return _write_batch_out(batch)
+
+
+@app.get("/api/ui/gateways/{gateway_id}/points/write-audit", response_model=list[BacnetWriteBatchOut])
+def ui_list_point_write_audit(
+    gateway_id: str,
+    auth: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[dict[str, object]]:
+    _require_gateway_site_access(db, auth, gateway_id)
+    batches = list(
+        db.scalars(
+            select(BacnetWriteBatch)
+            .where(BacnetWriteBatch.gateway_id == gateway_id)
+            .order_by(BacnetWriteBatch.requested_at.desc(), BacnetWriteBatch.id.desc())
+            .limit(limit)
+        ).all()
+    )
+    return [_write_batch_out(batch) for batch in batches]
+
+
 @app.patch("/api/ui/points/{point_id}", response_model=SavedPointOut)
 def ui_patch_point(
     point_id: str,
@@ -2570,8 +2874,21 @@ def claim_next_job(
     if job is None:
         return None
 
+    now = utc_now()
     job.status = "claimed"
-    job.claimed_at = utc_now()
+    job.claimed_at = now
+    if job.job_type == "bacnet_write_batch":
+        commands = list(
+            db.scalars(select(BacnetWriteCommand).where(BacnetWriteCommand.edge_job_id == job.job_id)).all()
+        )
+        affected_batch_ids: set[UUID] = set()
+        for command in commands:
+            if command.status == "queued":
+                command.status = "claimed"
+            affected_batch_ids.add(command.batch_id)
+        db.flush()
+        for batch_id in affected_batch_ids:
+            _refresh_write_batch_status(db, batch_id, now)
     db.commit()
     db.refresh(job)
     return EdgeJobClaimOut(
@@ -2702,6 +3019,8 @@ def receive_job_result(
                     point.present_value = str(value)
                     point.latest_read_at = now
                     point.updated_at = now
+    if job.job_type == "bacnet_write_batch":
+        _reconcile_bacnet_write_result(db, job, payload)
     db.commit()
     db.refresh(job)
     return job

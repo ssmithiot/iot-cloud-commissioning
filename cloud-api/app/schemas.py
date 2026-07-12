@@ -1,4 +1,5 @@
 from datetime import datetime
+import math
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -35,6 +36,14 @@ BACNET_LOAD_POINT_OBJECT_TYPES = {
     "program",
     "schedule",
     "trend-log",
+}
+BACNET_WRITE_OBJECT_TYPES = {
+    "analog-output",
+    "analog-value",
+    "binary-output",
+    "binary-value",
+    "multi-state-output",
+    "multi-state-value",
 }
 
 
@@ -382,6 +391,8 @@ class JobCreateIn(BaseModel):
 
     @model_validator(mode="after")
     def validate_known_job_payloads(self) -> "JobCreateIn":
+        if self.job_type == "bacnet_write_batch":
+            raise ValueError("bacnet_write_batch jobs must be queued through the admin point-write endpoint")
         if self.job_type == "bacnet_read":
             self.request = normalize_bacnet_read_request(self.request)
         if self.job_type == "bacnet_load_points":
@@ -547,6 +558,69 @@ class SavedPointsReadOut(BaseModel):
     missing_ids: list[str]
 
 
+class SavedPointWriteItemIn(BaseModel):
+    point_id: str = Field(min_length=1, max_length=80)
+    action: Literal["write", "relinquish", "relinquish-default"] = "write"
+    value: str | int | float | bool | None = None
+    priority: int = Field(default=16, ge=1, le=16)
+
+    @model_validator(mode="after")
+    def validate_action_value(self) -> "SavedPointWriteItemIn":
+        if self.action != "relinquish" and (
+            self.value is None or (isinstance(self.value, str) and not self.value.strip())
+        ):
+            raise ValueError(f"value is required for {self.action}")
+        if isinstance(self.value, str) and len(self.value) > 255:
+            raise ValueError("value must contain at most 255 characters")
+        if isinstance(self.value, float) and not math.isfinite(self.value):
+            raise ValueError("value must be finite")
+        return self
+
+
+class SavedPointsWriteIn(BaseModel):
+    writes: list[SavedPointWriteItemIn] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def reject_duplicate_points(self) -> "SavedPointsWriteIn":
+        point_ids = [item.point_id for item in self.writes]
+        if len(set(point_ids)) != len(point_ids):
+            raise ValueError("writes must not contain duplicate point_id values")
+        return self
+
+
+class BacnetWriteCommandOut(BaseModel):
+    id: str
+    edge_job_id: str
+    saved_point_id: str
+    device_instance: int
+    object_type: str
+    object_instance: int
+    property: str
+    action: str
+    requested_value: str | int | float | bool | None
+    priority: int
+    status: str
+    result: dict[str, object] | None
+    error_message: str | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class BacnetWriteBatchOut(BaseModel):
+    batch_id: str
+    gateway_id: str
+    requested_by: str
+    approved_by: str
+    status: str
+    write_count: int
+    queued_count: int
+    job_ids: list[str]
+    requested_at: datetime
+    approved_at: datetime
+    completed_at: datetime | None
+    commands: list[BacnetWriteCommandOut]
+
+
 class CommissioningTemplateGroupIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
@@ -632,6 +706,10 @@ class SavedPointOut(BaseModel):
     present_value: str | None
     units: str | None
     writable: bool | None
+    active_priority: int | None = None
+    priority_array: str | None = None
+    relinquish_default: str | None = None
+    state_text: str | None = None
     latest_read_at: datetime | None
     first_seen_at: datetime | None
     last_seen_at: datetime | None

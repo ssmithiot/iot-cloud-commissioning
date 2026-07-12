@@ -234,6 +234,60 @@ class EdgeJob(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class BacnetWriteBatch(Base):
+    __tablename__ = "bacnet_write_batches"
+
+    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    gateway_id: Mapped[str] = mapped_column(
+        String(120),
+        ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    requested_by: Mapped[str] = mapped_column(String(320), nullable=False)
+    approved_by: Mapped[str] = mapped_column(String(320), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="queued", index=True)
+    write_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    commands: Mapped[list["BacnetWriteCommand"]] = relationship(
+        back_populates="batch",
+        cascade="all, delete-orphan",
+        order_by="BacnetWriteCommand.created_at, BacnetWriteCommand.id",
+    )
+
+
+class BacnetWriteCommand(Base):
+    __tablename__ = "bacnet_write_commands"
+
+    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    batch_id: Mapped[UUID] = mapped_column(
+        CloudUUID(),
+        ForeignKey("bacnet_write_batches.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    edge_job_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    gateway_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    saved_point_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    device_instance: Mapped[int] = mapped_column(Integer, nullable=False)
+    object_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    object_instance: Mapped[int] = mapped_column(Integer, nullable=False)
+    property_name: Mapped[str] = mapped_column(String(80), nullable=False, default="present-value")
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    requested_value: Mapped[object | None] = mapped_column(JSON, nullable=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="queued", index=True)
+    result_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    batch: Mapped[BacnetWriteBatch] = relationship(back_populates="commands")
+
+
 class GatewayCredential(Base):
     __tablename__ = "gateway_credentials"
     __table_args__ = (
@@ -350,6 +404,10 @@ class SavedBacnetPoint(Base):
     present_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
     units: Mapped[str | None] = mapped_column(String(80), nullable=True)
     writable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    active_priority: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    priority_array: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    relinquish_default: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    state_text: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     latest_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
