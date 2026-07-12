@@ -485,6 +485,12 @@ def test_gateway_workspace_defaults_devices_and_object_folders_to_collapsed() ->
     assert 'treeRow("device", deviceLabel, device.network_number ? `network ${device.network_number}` : "", depth, false)' in response.text
     assert 'treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1, false)' in response.text
     assert 'body[data-page="gateway-workspace"] .tree-row .twisty' in response.text
+    assert "const treeBranchExpansion = new Map();" in response.text
+    assert "target.querySelectorAll(\"[data-tree-key][aria-expanded]\")" in response.text
+    assert "treeBranchExpansion.set(treeKey, hidden);" in response.text
+    assert "row.dataset.treeKey = `device:${device.id}`;" in response.text
+    assert "target.scrollTop = previousScrollTop;" in response.text
+    assert "grid-template-columns: 18px 18px minmax(0, max-content) max-content max-content;" in response.text
 
 
 def test_gateway_workspace_formats_present_value_and_shows_active_priority() -> None:
@@ -511,7 +517,7 @@ def test_gateway_workspace_supports_hierarchical_point_selection() -> None:
     assert "attachSavedBranchSelector(row, points.map((point) => point.id), deviceLabel);" in response.text
     assert "attachSavedBranchSelector(folderRow, folderPoints.map((point) => point.id)" in response.text
     assert "attachSavedBranchSelector(row, groupedPointIds, group.name);" in response.text
-    assert 'row.setAttribute("aria-expanded", String(expanded));' in response.text
+    assert 'row.setAttribute("aria-expanded", String(isExpanded));' in response.text
     assert '!["Enter", " "].includes(event.key)' in response.text
     assert 'window.confirm(`Remove ${selected.length} selected saved point${selected.length === 1 ? "" : "s"} from the tree?`)' in response.text
     assert 'id="select-all-saved-points"' not in response.text
