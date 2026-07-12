@@ -2228,16 +2228,10 @@ APP_SCRIPT = r"""
 
   function pointTableCellHtml(point, key) {
     const value = `<span class="point-cell-value">${escapeHtml(pointTableValue(point, key))}</span>`;
-    if (key !== "present_value" || !commandablePoint(point)) {
+    if (key !== "present_value" || !Number.isInteger(point.active_priority) || point.active_priority < 1 || point.active_priority > 16) {
       return value;
     }
-    if (point.active_priority != null) {
-      return `${value}<span class="point-active-priority" title="Active BACnet write priority">@${escapeHtml(point.active_priority)}</span>`;
-    }
-    if (point.priority_array) {
-      return `${value}<span class="point-active-priority" title="Commandable point; all write priorities are relinquished">@—</span>`;
-    }
-    return `${value}<span class="point-active-priority" title="Commandable point; refresh values to read Property 87">@?</span>`;
+    return `${value}<span class="point-active-priority" title="Active BACnet write priority">@${escapeHtml(point.active_priority)}</span>`;
   }
 
   function commandablePoint(point) {
@@ -5240,16 +5234,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       text-shadow: none;
     }}
     .point-active-priority {{
-      display: inline-flex;
+      display: inline;
       margin-left: 8px;
-      padding: 2px 6px;
-      border: 1px solid currentColor;
-      border-radius: 999px;
-      color: var(--warning);
-      font-size: 10px;
-      font-weight: 800;
-      line-height: 1.2;
-      vertical-align: middle;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      color: inherit;
+      font: inherit;
     }}
     .empty-table-cell {{
       height: 220px;
