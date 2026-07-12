@@ -468,6 +468,10 @@ def test_gateway_workspace_stacks_trends_for_selected_points() -> None:
     assert "trend-edit-button" in response.text
     assert "disable-point-trend" in response.text
     assert "updatePointTrend(point, false" in response.text
+    assert "function configureCollapsiblePanel(panel, defaultCollapsed)" in response.text
+    assert 'data-collapsed="true"' in response.text
+    assert "Global initial trend setup" in response.text
+    assert "configureCollapsiblePanel(panel.querySelector(\".global-trend-setup\"), true);" in response.text
     assert "Global initial trend setup" in response.text
     assert 'class="global-trend-enabled"' in response.text
     assert 'class="global-trend-interval"' in response.text

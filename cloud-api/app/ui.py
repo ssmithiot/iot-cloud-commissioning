@@ -2441,6 +2441,33 @@ APP_SCRIPT = r"""
     renderCustomPointTable();
   }
 
+  function panelCollapsed(panel, defaultCollapsed) {
+    if (!panel.dataset.collapsed) panel.dataset.collapsed = String(defaultCollapsed);
+    return panel.dataset.collapsed === "true";
+  }
+
+  function collapsiblePanelHeader(panel, title, defaultCollapsed, trailing = "") {
+    const collapsed = panelCollapsed(panel, defaultCollapsed);
+    return `<div class="panel-collapse-heading"><button class="panel-collapse-toggle" type="button" aria-expanded="${String(!collapsed)}"><span class="panel-collapse-arrow" aria-hidden="true">${collapsed ? "▸" : "▾"}</span><span>${escapeHtml(title)}</span></button>${trailing}</div>`;
+  }
+
+  function configureCollapsiblePanel(panel, defaultCollapsed) {
+    const toggle = panel.querySelector(".panel-collapse-toggle");
+    const content = panel.querySelector(".collapsible-panel-content");
+    if (!toggle || !content) return;
+    const update = () => {
+      const collapsed = panelCollapsed(panel, defaultCollapsed);
+      content.hidden = collapsed;
+      toggle.setAttribute("aria-expanded", String(!collapsed));
+      toggle.querySelector(".panel-collapse-arrow").textContent = collapsed ? "▸" : "▾";
+    };
+    update();
+    toggle.addEventListener("click", () => {
+      panel.dataset.collapsed = String(!panelCollapsed(panel, defaultCollapsed));
+      update();
+    });
+  }
+
   function numericTrendSamples(samples) {
     return samples.map((sample) => ({ ...sample, valueNumber: Number(sample.value), time: new Date(sample.sampled_at).getTime() })).filter((sample) => Number.isFinite(sample.valueNumber) && Number.isFinite(sample.time));
   }
@@ -2721,7 +2748,8 @@ APP_SCRIPT = r"""
     if (!panel) return;
     stopPointTrendResizes();
     if (!points.length) {
-      panel.innerHTML = `<h2>Trends</h2><span class="muted">Select one or more saved points to configure their trends.</span>`;
+      panel.innerHTML = `${collapsiblePanelHeader(panel, "Trends", false)}<div class="collapsible-panel-content"><span class="muted">Select one or more saved points to configure their trends.</span></div>`;
+      configureCollapsiblePanel(panel, false);
       return;
     }
     const chartSize = trendChartSize();
@@ -2729,7 +2757,9 @@ APP_SCRIPT = r"""
     const chartRange = trendChartRange();
     panel.dataset.chartSize = chartSize;
     panel.dataset.chartTheme = chartTheme;
-    panel.innerHTML = `<div class="trend-panel-header"><h2>Trends (${points.length})</h2><div class="trend-panel-controls"><label>Chart size <select class="trend-chart-size"><option value="compact"${chartSize === "compact" ? " selected" : ""}>Compact</option><option value="standard"${chartSize === "standard" ? " selected" : ""}>Standard</option><option value="tall"${chartSize === "tall" ? " selected" : ""}>Tall</option></select></label><label>Time range <select class="trend-chart-range"><option value="1h"${chartRange === "1h" ? " selected" : ""}>1 hour</option><option value="4h"${chartRange === "4h" ? " selected" : ""}>4 hours</option><option value="12h"${chartRange === "12h" ? " selected" : ""}>12 hours</option><option value="24h"${chartRange === "24h" ? " selected" : ""}>24 hours</option><option value="7d"${chartRange === "7d" ? " selected" : ""}>7 days</option><option value="all"${chartRange === "all" ? " selected" : ""}>All history</option></select></label><label>Theme <select class="trend-chart-theme"><option value="light"${chartTheme === "light" ? " selected" : ""}>Light</option><option value="dark"${chartTheme === "dark" ? " selected" : ""}>Dark</option></select></label></div></div><div class="global-trend-setup"><strong>Global initial trend setup</strong><label><input class="global-trend-enabled" type="checkbox" checked${canEditTree() ? "" : " disabled"}> Enable trends</label><label>Interval <select class="global-trend-interval"${canEditTree() ? "" : " disabled"}>${trendIntervalOptions(300)}</select></label><button class="apply-global-trend-setup" type="button"${canEditTree() ? "" : " disabled"}>Apply to all selected</button></div><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><div class="trend-card-header"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3><div class="trend-card-details"><div class="trend-card-controls">${trendCardControls(point)}</div><span class="trend-card-summary">Loading samples...</span></div></div><div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
+    panel.innerHTML = `${collapsiblePanelHeader(panel, `Trends (${points.length})`, false)}<div class="collapsible-panel-content"><div class="trend-panel-controls"><label>Chart size <select class="trend-chart-size"><option value="compact"${chartSize === "compact" ? " selected" : ""}>Compact</option><option value="standard"${chartSize === "standard" ? " selected" : ""}>Standard</option><option value="tall"${chartSize === "tall" ? " selected" : ""}>Tall</option></select></label><label>Time range <select class="trend-chart-range"><option value="1h"${chartRange === "1h" ? " selected" : ""}>1 hour</option><option value="4h"${chartRange === "4h" ? " selected" : ""}>4 hours</option><option value="12h"${chartRange === "12h" ? " selected" : ""}>12 hours</option><option value="24h"${chartRange === "24h" ? " selected" : ""}>24 hours</option><option value="7d"${chartRange === "7d" ? " selected" : ""}>7 days</option><option value="all"${chartRange === "all" ? " selected" : ""}>All history</option></select></label><label>Theme <select class="trend-chart-theme"><option value="light"${chartTheme === "light" ? " selected" : ""}>Light</option><option value="dark"${chartTheme === "dark" ? " selected" : ""}>Dark</option></select></label></div><div class="global-trend-setup"><div>${collapsiblePanelHeader(panel.querySelector?.(".global-trend-setup") || document.createElement("div"), "Global initial trend setup", true)}</div><div class="collapsible-panel-content"><label><input class="global-trend-enabled" type="checkbox" checked${canEditTree() ? "" : " disabled"}> Enable trends</label><label>Interval <select class="global-trend-interval"${canEditTree() ? "" : " disabled"}>${trendIntervalOptions(300)}</select></label><button class="apply-global-trend-setup" type="button"${canEditTree() ? "" : " disabled"}>Apply to all selected</button></div></div><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><div class="trend-card-header"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3><div class="trend-card-details"><div class="trend-card-controls">${trendCardControls(point)}</div><span class="trend-card-summary">Loading samples...</span></div></div><div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div></div>`;
+    configureCollapsiblePanel(panel, false);
+    configureCollapsiblePanel(panel.querySelector(".global-trend-setup"), true);
     panel.querySelector(".apply-global-trend-setup")?.addEventListener("click", async () => {
       const button = panel.querySelector(".apply-global-trend-setup");
       button.disabled = true;
@@ -2877,7 +2907,9 @@ APP_SCRIPT = r"""
     const actions = Array.isArray(action) ? action : (action ? [action] : []);
     panel.hidden = false;
     panel.innerHTML = `
-      <div class="tree-detail-title"><h2>${escapeHtml(title)}</h2>${titleAction && canEditTree() ? `<button class="tree-title-edit secondary" type="button" title="${escapeHtml(titleAction.label)}" aria-label="${escapeHtml(titleAction.label)}">&#9998;</button>` : ""}</div>
+      ${collapsiblePanelHeader(panel, title, false, titleAction && canEditTree() ? `<button class="tree-title-edit secondary" type="button" title="${escapeHtml(titleAction.label)}" aria-label="${escapeHtml(titleAction.label)}">&#9998;</button>` : "")}
+      <div class="collapsible-panel-content">
+      <div class="tree-detail-title"></div>
       <dl>
         ${Object.entries(details).map(([key, value]) => `
           <dt>${escapeHtml(key)}</dt>
@@ -2886,8 +2918,9 @@ APP_SCRIPT = r"""
       </dl>
       ${actions.length && canEditTree() ? `<div class="button-row">${actions.map((item, index) => (
         `<button class="secondary" type="button" data-tree-action="${index}">${escapeHtml(item.label)}</button>`
-      )).join("")}</div>` : ""}
+      )).join("")}</div>` : ""}</div>
     `;
+    configureCollapsiblePanel(panel, false);
     if (actions.length && canEditTree()) {
       panel.querySelectorAll("[data-tree-action]").forEach((button) => {
         button.addEventListener("click", () => actions[Number(button.dataset.treeAction)].handler());
@@ -3588,6 +3621,7 @@ APP_SCRIPT = r"""
       }
     });
     loadCustomPointTableState();
+    configureCollapsiblePanel(byId("selected-points-panel"), true);
     renderPropertyPicker();
     initPointWorkbenchSplitters();
     siteInfoForm.querySelectorAll("input, textarea").forEach((field) => {
@@ -4666,21 +4700,58 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       gap: 10px;
     }}
     .global-trend-setup {{
-      display: flex;
-      align-items: end;
-      flex-wrap: wrap;
-      gap: 8px 12px;
+      display: grid;
+      gap: 8px;
       padding: 10px;
       border: 1px solid var(--border);
       border-radius: 6px;
       background: var(--panel);
     }}
-    .global-trend-setup strong {{
-      margin-right: 4px;
+    .global-trend-setup .collapsible-panel-content {{
+      display: flex;
+      align-items: end;
+      flex-wrap: wrap;
+      gap: 8px 12px;
     }}
     .global-trend-setup label {{
       margin: 0;
       font-size: 12px;
+    }}
+    .tree-detail-title:empty {{ display: none; }}
+    .panel-collapse-toggle {{
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      width: 100%;
+      min-height: 28px;
+      padding: 2px 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      box-shadow: none;
+      font: inherit;
+      font-weight: 700;
+      text-align: left;
+    }}
+    .panel-collapse-heading {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }}
+    .panel-collapse-heading .panel-collapse-toggle {{ flex: 1 1 auto; }}
+    .panel-collapse-toggle:hover {{
+      background: transparent;
+      color: var(--accent-strong);
+    }}
+    .panel-collapse-arrow {{
+      width: 14px;
+      color: var(--accent-strong);
+      font-size: 15px;
+      text-align: center;
+    }}
+    .collapsible-panel-content {{
+      display: grid;
+      gap: 10px;
     }}
     .point-trend-list {{
       display: grid;
@@ -6783,13 +6854,15 @@ def gateway_workspace_html(gateway_id: str) -> str:
         <div id="point-right-splitter" class="pane-splitter" role="separator" aria-orientation="vertical" aria-label="Resize table and details panes"></div>
         <aside class="point-side-panel">
           <div id="tree-details" class="detail-panel" hidden></div>
-          <div id="selected-points-panel" class="detail-panel" hidden>
-            <h2>Selected Imported Points</h2>
+          <div id="selected-points-panel" class="detail-panel" data-collapsed="true" hidden>
+            <button class="panel-collapse-toggle" type="button" aria-expanded="false"><span class="panel-collapse-arrow" aria-hidden="true">▸</span><span>Selected Imported Points</span></button>
+            <div class="collapsible-panel-content" hidden>
             <div id="selected-points-count" class="notice">No saved points selected.</div>
             <ul id="selected-points-list" class="selected-point-list"></ul>
             <div class="toolbar">
               <button id="add-selected-to-custom-table" type="button" disabled>Add to table</button>
               <button id="remove-selected-points" class="secondary" type="button" disabled>Remove selected</button>
+            </div>
             </div>
           </div>
           <div id="point-trend-panel" class="detail-panel point-trend-panel">
