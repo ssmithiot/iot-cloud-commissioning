@@ -34,7 +34,7 @@ from app.auth import (
 )
 from app.access import require_site_access, visible_site_ids
 from app.config import settings
-from app.database import Base, connection_pool_status, engine, get_db
+from app.database import Base, engine, get_db
 from app.models import (
     BacnetWriteBatch,
     BacnetWriteCommand,
@@ -1045,33 +1045,6 @@ def _refresh_write_batch_status(db: Session, batch_id: UUID, now: datetime) -> N
         batch.completed_at = now
 
 
-def _queue_write_batch_jobs(db: Session, batch: BacnetWriteBatch) -> None:
-    """Queue one edge job per audited BACnet command."""
-    for command in batch.commands:
-        job_id = f"job-{uuid4().hex}"
-        request_item: dict[str, object] = {
-            "saved_point_id": command.saved_point_id,
-            "object_type": command.object_type,
-            "object_instance": command.object_instance,
-            "action": command.action,
-            "priority": command.priority,
-        }
-        if command.action != "relinquish":
-            request_item["value"] = command.requested_value
-        command.edge_job_id = job_id
-        command.status = "queued"
-        db.add(
-            EdgeJob(
-                job_id=job_id,
-                gateway_id=batch.gateway_id,
-                job_type="bacnet_write_batch",
-                status="queued",
-                request_json={"device_instance": command.device_instance, "writes": [request_item]},
-            )
-        )
-    batch.status = "queued"
-
-
 def _readback_value(result: dict[str, object], field: str) -> tuple[bool, object | None]:
     if field in result:
         return True, result[field]
@@ -1177,9 +1150,9 @@ def health() -> dict[str, str]:
 
 
 @app.get("/health/db")
-def database_health(db: Session = Depends(get_db)) -> dict[str, object]:
+def database_health(db: Session = Depends(get_db)) -> dict[str, str]:
     db.execute(text("select 1"))
-    return {"status": "ok", "connection_pool": connection_pool_status(engine)}
+    return {"status": "ok"}
 
 
 @app.get("/health/schema")
@@ -2257,7 +2230,6 @@ def ui_read_saved_points(
                         "object_instance": point.object_instance,
                         "object_name": point.object_name,
                         "read_priority": point.object_type in BACNET_WRITE_OBJECT_TYPES,
-                        "read_relinquish_default": point.object_type in BACNET_WRITE_OBJECT_TYPES,
                     }
                     for point in device_points
                 ],
@@ -2331,7 +2303,7 @@ def ui_write_saved_points(
         gateway_id=gateway_id,
         requested_by=actor,
         approved_by=None,
-        status="queued",
+        status="pending_approval",
         write_count=len(normalized_writes),
         requested_at=now,
         approved_at=None,
@@ -2353,12 +2325,11 @@ def ui_write_saved_points(
                 action=item.action,
                 requested_value=item.value,
                 priority=item.priority,
-                status="queued",
+                status="pending_approval",
                 created_at=now,
             )
         )
 
-    _queue_write_batch_jobs(db, batch)
     db.commit()
     db.refresh(batch)
     return _write_batch_out(batch)
@@ -2381,7 +2352,35 @@ def ui_approve_saved_point_write(
     now = utc_now()
     batch.approved_by = _write_audit_actor(auth)
     batch.approved_at = now
-    _queue_write_batch_jobs(db, batch)
+    batch.status = "queued"
+    commands_by_device: dict[int, list[BacnetWriteCommand]] = {}
+    for command in batch.commands:
+        commands_by_device.setdefault(command.device_instance, []).append(command)
+    for device_instance, commands in commands_by_device.items():
+        job_id = f"job-{uuid4().hex}"
+        writes: list[dict[str, object]] = []
+        for command in commands:
+            request_item: dict[str, object] = {
+                "saved_point_id": command.saved_point_id,
+                "object_type": command.object_type,
+                "object_instance": command.object_instance,
+                "action": command.action,
+                "priority": command.priority,
+            }
+            if command.action != "relinquish":
+                request_item["value"] = command.requested_value
+            writes.append(request_item)
+            command.edge_job_id = job_id
+            command.status = "queued"
+        db.add(
+            EdgeJob(
+                job_id=job_id,
+                gateway_id=gateway_id,
+                job_type="bacnet_write_batch",
+                status="queued",
+                request_json={"device_instance": device_instance, "writes": writes},
+            )
+        )
     db.commit()
     db.refresh(batch)
     return _write_batch_out(batch)
@@ -3098,11 +3097,6 @@ def receive_job_result(
                         priority_array = value_payload["priority_array"]
                         if priority_array is None or isinstance(priority_array, str):
                             point.priority_array = priority_array
-                            changed = True
-                    if "relinquish_default" in value_payload:
-                        relinquish_default = value_payload["relinquish_default"]
-                        if relinquish_default is None or isinstance(relinquish_default, str):
-                            point.relinquish_default = relinquish_default
                             changed = True
                     if changed:
                         point.latest_read_at = now

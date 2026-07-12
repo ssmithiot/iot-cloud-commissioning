@@ -24,7 +24,6 @@ APP_SCRIPT = r"""
   let dashboardJobs = [];
   let dashboardGatewayUpdates = new Map();
   let selectedGatewayUpdateIds = new Set();
-  let pendingPointWrite = null;
   let dashboardWeather = new Map();
   let dashboardHeartbeatTrends = new Map();
   let selectedDashboardGatewayId = null;
@@ -50,7 +49,7 @@ APP_SCRIPT = r"""
   const trendChartSizeStorageKey = "iot-cloud-trend-chart-size";
   const trendChartThemeStorageKey = "iot-cloud-trend-chart-theme";
   const trendChartRangeStorageKey = "iot-cloud-trend-chart-range";
-  const edgeResourceHealthMinimumVersion = "0.1.6";
+  const edgeResourceHealthMinimumVersion = "0.1.5";
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
   const pointTableColumns = [
@@ -2271,10 +2270,7 @@ APP_SCRIPT = r"""
   }
 
   function pointTableCellHtml(point, key) {
-    const text = `<span class="point-cell-value">${escapeHtml(pointTableValue(point, key))}</span>`;
-    const value = key === "present_value" && commandablePoint(point) && currentUser?.role === "admin"
-      ? `<button class="point-write-trigger" type="button" data-write-point="${escapeHtml(point.id)}" title="Write or relinquish Present Value">${text}</button>`
-      : text;
+    const value = `<span class="point-cell-value">${escapeHtml(pointTableValue(point, key))}</span>`;
     const activePriority = Number.isInteger(point.active_priority) && point.active_priority >= 1 && point.active_priority <= 16
       ? point.active_priority
       : activePriorityFromArray(point.priority_array);
@@ -2347,89 +2343,6 @@ APP_SCRIPT = r"""
         button.disabled = false;
       }
     }
-  }
-
-  function setPointWriteDialogOpen(open) {
-    const dialog = byId("point-write-modal");
-    dialog.hidden = !open;
-    document.body.classList.toggle("modal-open", open);
-    if (open) byId("point-write-action").focus();
-  }
-
-  function syncPointWriteDialog() {
-    const action = byId("point-write-action").value;
-    const priority = byId("point-write-priority");
-    const value = byId("point-write-value");
-    const hint = byId("point-write-hint");
-    const warning = byId("point-write-warning");
-    const isDefault = action === "relinquish-default";
-    const isRelinquish = action === "relinquish";
-    priority.disabled = isDefault;
-    priority.value = isDefault ? "0" : (priority.value === "0" ? "16" : priority.value);
-    value.disabled = isRelinquish;
-    hint.textContent = isRelinquish
-      ? "Relinquish clears this priority slot so the next active priority or Relinquish Default controls the value."
-      : "Analog values accept a decimal number. Binary and multi-state values use their BACnet value/state.";
-    warning.textContent = isDefault
-      ? "Warning: this writes BACnet Relinquish Default / Property 104. Priority write mode writes Present Value / Property 85. Verify the point before applying."
-      : "Warning: this sends a BACnet Present Value / Property 85 command. Verify the point and priority before applying.";
-  }
-
-  function openPointWriteDialog(pointId) {
-    const point = (currentGatewayTree?.points || []).find((item) => item.id === pointId);
-    if (!point || !commandablePoint(point) || currentUser?.role !== "admin") return;
-    pendingPointWrite = point;
-    byId("point-write-summary").textContent = `Device ${point.device_instance} | ${objectIdentifier(point)} | ${point.object_name || "Unnamed point"} | Current PV: ${formatPresentValue(point.present_value)}${activePriorityFromArray(point.priority_array) ? ` @${activePriorityFromArray(point.priority_array)}` : ""}`;
-    byId("point-write-value").value = point.relinquish_default ?? point.present_value ?? "";
-    byId("point-write-action").value = "relinquish-default";
-    byId("point-write-priority").value = "0";
-    byId("point-write-confirm").checked = false;
-    byId("point-write-job-status").textContent = "";
-    syncPointWriteDialog();
-    setPointWriteDialogOpen(true);
-  }
-
-  async function submitPointWrite(event) {
-    event.preventDefault();
-    if (!pendingPointWrite || !byId("point-write-confirm").checked) return;
-    const action = byId("point-write-action").value;
-    const priority = action === "relinquish-default" ? 16 : Number(byId("point-write-priority").value);
-    const write = { point_id: pendingPointWrite.id, action, priority };
-    if (action !== "relinquish") write.value = byId("point-write-value").value;
-    const apply = byId("apply-point-write");
-    apply.disabled = true;
-    try {
-      const result = await api(`/api/ui/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/points/write`, {
-        method: "POST",
-        body: JSON.stringify({ writes: [write] })
-      });
-      const jobId = result.job_ids[0];
-      byId("point-write-job-status").textContent = `Job ${jobId}: queued`;
-      setText("status", `Queued BACnet write job ${jobId} for ${objectIdentifier(pendingPointWrite)}.`);
-      await pollPointWriteJob(jobId);
-    } catch (error) {
-      setText("status", errorMessage(error), true);
-    } finally {
-      apply.disabled = false;
-    }
-  }
-
-  async function pollPointWriteJob(jobId) {
-    const status = byId("point-write-job-status");
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < 120000) {
-      const jobs = await api("/api/edge/jobs?limit=200");
-      const job = jobs.find((item) => item.job_id === jobId);
-      if (job) {
-        status.textContent = `Job ${jobId}: ${job.status}${job.error_message ? ` — ${job.error_message}` : ""}`;
-        if (["completed", "failed", "deferred"].includes(job.status)) {
-          await loadGatewayWorkspace();
-          return;
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-    }
-    status.textContent = `Job ${jobId}: still pending. Check Recent Jobs for the final result.`;
   }
 
   async function pollPointValueReads(jobIds) {
@@ -2516,9 +2429,6 @@ APP_SCRIPT = r"""
       `;
       body.appendChild(row);
     }
-    body.querySelectorAll("[data-write-point]").forEach((button) => {
-      button.addEventListener("click", () => openPointWriteDialog(button.dataset.writePoint));
-    });
   }
 
   function renderPropertyPicker() {
@@ -3900,14 +3810,6 @@ APP_SCRIPT = r"""
     addSelectedToCustomTableButton?.addEventListener("click", addSelectedPointsToCustomTable);
     clearCustomPointTableButton.addEventListener("click", clearCustomPointTable);
     byId("refresh-point-values").addEventListener("click", refreshCustomPointValues);
-    const pointWriteModal = byId("point-write-modal");
-    byId("close-point-write").addEventListener("click", () => setPointWriteDialogOpen(false));
-    byId("cancel-point-write").addEventListener("click", () => setPointWriteDialogOpen(false));
-    byId("point-write-action").addEventListener("change", syncPointWriteDialog);
-    byId("point-write-form").addEventListener("submit", submitPointWrite);
-    pointWriteModal.addEventListener("click", (event) => {
-      if (event.target === pointWriteModal) setPointWriteDialogOpen(false);
-    });
     byId("save-point-table").addEventListener("click", saveActivePointTableName);
     byId("new-point-table").addEventListener("click", newPointTable);
     byId("saved-point-table-select").addEventListener("change", (event) => {
@@ -5083,32 +4985,6 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .site-info-dialog-header p {{
       margin: 6px 0 0;
       color: var(--muted);
-    }}
-    .point-write-trigger,
-    .point-write-trigger:hover,
-    .point-write-trigger:focus-visible {{
-      display: inline-flex;
-      min-width: 88px;
-      min-height: 28px;
-      box-sizing: border-box;
-      justify-content: center;
-      align-items: center;
-      padding: 2px 8px;
-      border: 1px solid rgba(34, 211, 197, 0.4);
-      border-radius: 5px;
-      color: inherit;
-      background: rgba(34, 211, 197, 0.08);
-      box-shadow: none;
-      font: inherit;
-      cursor: pointer;
-    }}
-    .point-write-trigger:hover {{
-      color: var(--accent);
-      background: rgba(34, 211, 197, 0.16);
-    }}
-    .point-write-trigger:focus-visible {{
-      outline: 2px solid var(--accent);
-      outline-offset: 2px;
     }}
     .site-info-form-actions {{
       display: flex;
@@ -7019,52 +6895,9 @@ def gateway_workspace_html(gateway_id: str) -> str:
             <div class="toolbar">
               <button id="apply-point-columns" type="button">Apply</button>
               <button id="cancel-point-columns" class="secondary" type="button">Cancel</button>
+            </div>
           </div>
         </div>
-      </div>
-      <div id="point-write-modal" class="site-info-modal" role="dialog" aria-modal="true" aria-labelledby="point-write-dialog-title" hidden>
-        <div class="site-info-dialog">
-          <div class="site-info-dialog-header">
-            <div>
-              <h2 id="point-write-dialog-title">Write / Relinquish Present Value</h2>
-              <p id="point-write-summary"></p>
-            </div>
-            <button id="close-point-write" class="icon-button secondary" type="button" aria-label="Close write dialog" title="Close">&times;</button>
-          </div>
-          <form id="point-write-form" class="grid">
-            <div class="span-6">
-              <label for="point-write-action">Action</label>
-              <select id="point-write-action">
-                <option value="relinquish-default">Write Relinquish Default</option>
-                <option value="write">Write Present Value</option>
-                <option value="relinquish">Relinquish Present Value</option>
-              </select>
-            </div>
-            <div class="span-6">
-              <label for="point-write-priority">Priority</label>
-              <select id="point-write-priority">
-                <option value="0">Relinquish Default / property 104</option>
-                <option value="1">Priority 1</option><option value="2">Priority 2</option><option value="3">Priority 3</option><option value="4">Priority 4</option>
-                <option value="5">Priority 5</option><option value="6">Priority 6</option><option value="7">Priority 7</option><option value="8">Priority 8</option>
-                <option value="9">Priority 9</option><option value="10">Priority 10</option><option value="11">Priority 11</option><option value="12">Priority 12</option>
-                <option value="13">Priority 13</option><option value="14">Priority 14</option><option value="15">Priority 15</option><option value="16">Priority 16</option>
-              </select>
-            </div>
-            <div class="span-6">
-              <label for="point-write-value">Value</label>
-              <input id="point-write-value" type="text" maxlength="255">
-              <p id="point-write-hint" class="muted"></p>
-            </div>
-            <div class="span-12"><p id="point-write-warning" class="notice error-text"></p></div>
-            <div class="span-12"><label><input id="point-write-confirm" type="checkbox"> I confirm this BACnet write is intentional.</label></div>
-            <div class="site-info-form-actions">
-              <button id="apply-point-write" type="submit">Apply</button>
-              <button id="cancel-point-write" class="secondary" type="button">Cancel</button>
-            </div>
-            <div class="span-12"><span id="point-write-job-status" class="notice" role="status" aria-live="polite"></span></div>
-          </form>
-        </div>
-      </div>
         <div id="point-right-splitter" class="pane-splitter" role="separator" aria-orientation="vertical" aria-label="Resize table and details panes"></div>
         <aside class="point-side-panel">
           <div id="tree-details" class="detail-panel" hidden></div>

@@ -278,8 +278,7 @@ def test_database_health() -> None:
     response = client.get("/health/db")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
-    assert response.json()["connection_pool"]["implementation"]
+    assert response.json() == {"status": "ok"}
 
 
 def test_root_redirects_to_login() -> None:
@@ -367,7 +366,7 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'id="update-selected-gateways"' in response.text
     assert 'data-select-update="${escapeHtml(gateway.gateway_id)}"' in response.text
     assert "queueGatewayUpdates" in response.text
-    assert 'const edgeResourceHealthMinimumVersion = "0.1.6";' in response.text
+    assert 'const edgeResourceHealthMinimumVersion = "0.1.5";' in response.text
     assert "return !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);" in response.text
     assert 'version.toLowerCase() !== "current"' in response.text
     assert 'data-sort="version">Edge App</button>' in response.text
@@ -530,10 +529,6 @@ def test_gateway_workspace_formats_present_value_and_shows_active_priority() -> 
     assert '@${escapeHtml(activePriority)}' in response.text
     assert 'label: "Commandable"' in response.text
     assert "function commandablePoint(point)" in response.text
-    assert "function openPointWriteDialog(pointId)" in response.text
-    assert 'id="point-write-modal"' in response.text
-    assert 'data-write-point="${escapeHtml(point.id)}"' in response.text
-    assert "/points/write" in response.text
     assert "@—" not in response.text
     assert "refresh values to read Property 87" not in response.text
     assert "color: inherit;" in response.text
@@ -2409,7 +2404,6 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
                         "raw_value": "72.4",
                         "active_priority": 8,
                         "priority_array": "(NULL, NULL, NULL, NULL, NULL, NULL, NULL, Real: 72.4)",
-                        "relinquish_default": "relinquish-default: Real: 68",
                         "status": "ok",
                     },
                     {
@@ -2438,11 +2432,10 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
     assert tree_response.json()["points"][0]["present_value"] == "72.4"
     assert tree_response.json()["points"][0]["active_priority"] == 8
     assert tree_response.json()["points"][0]["priority_array"] == "(NULL, NULL, NULL, NULL, NULL, NULL, NULL, Real: 72.4)"
-    assert tree_response.json()["points"][0]["relinquish_default"] == "relinquish-default: Real: 68"
     assert tree_response.json()["points"][1]["present_value"] == "active"
 
 
-def test_admin_queues_bacnet_write_batch_with_audit_record() -> None:
+def test_admin_stages_then_approves_bacnet_write_batch() -> None:
     raw_token = create_gateway_token("GW001")
     set_gateway_heartbeat("GW001", seconds_ago=15)
     headers = admin_headers()
@@ -2463,34 +2456,31 @@ def test_admin_queues_bacnet_write_batch_with_audit_record() -> None:
             "writable": True,
         },
     ).json()
-    second_point = client.post(
-        f"/api/ui/devices/{device['id']}/points",
-        headers=headers,
-        json={
-            "object_type": "analog-value",
-            "object_instance": 6,
-            "object_name": "Second Setpoint",
-            "property": "present-value",
-            "writable": True,
-        },
-    ).json()
 
     staged = client.post(
         "/api/ui/gateways/GW001/points/write",
         headers=headers,
-        json={"writes": [
-            {"point_id": point["id"], "value": "72.5", "priority": 8},
-            {"point_id": second_point["id"], "value": "73.5", "priority": 8},
-        ]},
+        json={"writes": [{"point_id": point["id"], "value": "72.5", "priority": 8}]},
+    )
+    before_approval = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
+    approved = client.post(
+        f"/api/ui/gateways/GW001/points/write/{staged.json()['batch_id']}/approve",
+        headers=headers,
     )
     next_job = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
 
     assert staged.status_code == 200
-    assert staged.json()["status"] == "queued"
+    assert staged.json()["status"] == "pending_approval"
     assert staged.json()["approved_by"] is None
-    assert len(staged.json()["job_ids"]) == 2
+    assert staged.json()["job_ids"] == []
+    assert before_approval.status_code in {200, 204}
+    if before_approval.status_code == 200:
+        assert before_approval.json() is None
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "queued"
+    assert approved.json()["approved_by"] == "admin_api_token"
+    assert len(approved.json()["job_ids"]) == 1
     assert next_job.json()["job_type"] == "bacnet_write_batch"
-    assert len(next_job.json()["request"]["writes"]) == 1
     assert next_job.json()["request"]["writes"][0]["priority"] == 8
 
 
