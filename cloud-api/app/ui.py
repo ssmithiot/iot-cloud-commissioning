@@ -2455,6 +2455,14 @@ APP_SCRIPT = r"""
     return samples.map((sample) => ({ ...sample, valueNumber: Number(sample.value), time: new Date(sample.sampled_at).getTime() })).filter((sample) => Number.isFinite(sample.valueNumber) && Number.isFinite(sample.time));
   }
 
+  function binaryTrendSamples(samples) {
+    const states = new Map([["active", 1], ["on", 1], ["true", 1], ["inactive", 0], ["off", 0], ["false", 0]]);
+    return samples.map((sample) => {
+      const value = String(sample.value ?? "").trim();
+      return { ...sample, stateLabel: value || "Unknown", state: states.get(value.toLowerCase()), time: new Date(sample.sampled_at).getTime() };
+    }).filter((sample) => sample.state !== undefined && Number.isFinite(sample.time));
+  }
+
   function formatPointTrendTime(value) {
     return new Date(value).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
@@ -2512,7 +2520,12 @@ APP_SCRIPT = r"""
 
   function trendSummary(samples, units = "") {
     const points = numericTrendSamples(samples);
-    if (!points.length) return "No numeric samples";
+    if (!points.length) {
+      const binaryPoints = binaryTrendSamples(samples);
+      return binaryPoints.length
+        ? `${binaryPoints.length} state sample${binaryPoints.length === 1 ? "" : "s"} · current ${binaryPoints.at(-1).stateLabel}`
+        : "No numeric or binary samples";
+    }
     if (points.length === 1) return `1 sample · value ${points[0].valueNumber.toFixed(2)}${units ? ` ${units}` : ""}`;
     const minimum = Math.min(...points.map((point) => point.valueNumber));
     const maximum = Math.max(...points.map((point) => point.valueNumber));
@@ -2521,7 +2534,7 @@ APP_SCRIPT = r"""
 
   function trendChart(samples, units = "", chartWidth = 600, chartHeight = trendChartFrame.height) {
     const points = numericTrendSamples(samples);
-    if (!points.length) return `<span class="muted">No numeric samples are available yet.</span>`;
+    if (!points.length) return binaryTrendChart(samples, chartWidth, chartHeight);
     const width = Math.max(trendChartFrame.minWidth, Math.round(Number(chartWidth) || trendChartFrame.minWidth));
     const height = Math.max(150, Math.round(Number(chartHeight) || trendChartFrame.height));
     const { left, right, top, bottom } = trendChartFrame;
@@ -2539,6 +2552,25 @@ APP_SCRIPT = r"""
     const plottedPoints = points.length === 1 ? [{ ...points[0], x: left }, { ...points[0], x: width - right }] : points;
     const path = plottedPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
     return `<div class="trend-plot-shell"><svg class="point-trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${points.length} samples from ${minimum} to ${maximum}${units ? ` ${units}` : ""}"><rect class="trend-plot-bg" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}"/>${ticks.map((tick) => { const y = top + (1 - tick) * plotHeight; const value = yMin + tick * (yMax - yMin); return `<line class="trend-grid" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="trend-axis-text" x="${left - 8}" y="${y + 4}" text-anchor="end">${value.toFixed(1)}</text>`; }).join("")}<line class="trend-axis" x1="${left}" y1="${top + plotHeight}" x2="${width - right}" y2="${top + plotHeight}"/><line class="trend-axis" x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}"/><text class="trend-axis-text" x="${left}" y="${height - 18}" text-anchor="start">${escapeHtml(formatPointTrendTime(points[0].sampled_at))}</text><text class="trend-axis-text" x="${width - right}" y="${height - 18}" text-anchor="end">${escapeHtml(formatPointTrendTime(points.at(-1).sampled_at))}</text><text class="trend-axis-label" transform="translate(15 ${top + plotHeight / 2}) rotate(-90)" text-anchor="middle">Value${units ? ` (${escapeHtml(units)})` : ""}</text><text class="trend-axis-label" x="${left + plotWidth / 2}" y="${height - 2}" text-anchor="middle">Time</text><polyline class="trend-line" points="${path}"/><line class="trend-crosshair trend-crosshair-x"/><line class="trend-crosshair trend-crosshair-y"/><circle class="trend-hover-dot" r="4"/></svg><div class="trend-tooltip" hidden></div></div><small>${points.length} samples · range ${minimum.toFixed(2)}–${maximum.toFixed(2)}${units ? ` ${escapeHtml(units)}` : ""}</small>`;
+  }
+
+  function binaryTrendChart(samples, chartWidth = 600, chartHeight = trendChartFrame.height) {
+    const points = binaryTrendSamples(samples);
+    if (!points.length) return `<span class="muted">No numeric or binary samples are available yet.</span>`;
+    const width = Math.max(trendChartFrame.minWidth, Math.round(Number(chartWidth) || trendChartFrame.minWidth));
+    const height = Math.max(150, Math.round(Number(chartHeight) || trendChartFrame.height));
+    const { left, right, top, bottom } = trendChartFrame;
+    const plotWidth = width - left - right, plotHeight = height - top - bottom;
+    const firstTime = points[0].time, lastTime = points.at(-1).time, timeSpan = lastTime - firstTime || 1;
+    points.forEach((point, index) => {
+      point.x = points.length === 1 ? left : left + ((point.time - firstTime) / timeSpan || index / (points.length - 1)) * plotWidth;
+      point.y = point.state ? top : top + plotHeight;
+    });
+    const statePath = points.length === 1
+      ? `M ${left} ${points[0].y} H ${width - right}`
+      : points.slice(1).reduce((path, point) => `${path} H ${point.x.toFixed(2)} V ${point.y.toFixed(2)}`, `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`);
+    const current = points.at(-1);
+    return `<div class="trend-plot-shell"><svg class="point-trend-chart binary-trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${points.length} binary state samples; current state ${escapeHtml(current.stateLabel)}"><rect class="trend-plot-bg" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}"/><line class="trend-grid" x1="${left}" y1="${top}" x2="${width - right}" y2="${top}"/><line class="trend-grid" x1="${left}" y1="${top + plotHeight}" x2="${width - right}" y2="${top + plotHeight}"/><line class="trend-axis" x1="${left}" y1="${top + plotHeight}" x2="${width - right}" y2="${top + plotHeight}"/><line class="trend-axis" x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}"/><text class="trend-axis-text" x="${left - 8}" y="${top + 4}" text-anchor="end">Active</text><text class="trend-axis-text" x="${left - 8}" y="${top + plotHeight + 4}" text-anchor="end">Inactive</text><text class="trend-axis-text" x="${left}" y="${height - 18}" text-anchor="start">${escapeHtml(formatPointTrendTime(points[0].sampled_at))}</text><text class="trend-axis-text" x="${width - right}" y="${height - 18}" text-anchor="end">${escapeHtml(formatPointTrendTime(current.sampled_at))}</text><text class="trend-axis-label" transform="translate(15 ${top + plotHeight / 2}) rotate(-90)" text-anchor="middle">State</text><text class="trend-axis-label" x="${left + plotWidth / 2}" y="${height - 2}" text-anchor="middle">Time</text><path class="trend-line" d="${statePath}"/></svg></div><small>${points.length} state sample${points.length === 1 ? "" : "s"} · current ${escapeHtml(current.stateLabel)}</small>`;
   }
 
   function attachTrendHover(chart, samples, units = "") {
