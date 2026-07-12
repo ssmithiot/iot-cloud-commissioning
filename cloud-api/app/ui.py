@@ -5084,18 +5084,27 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       margin: 6px 0 0;
       color: var(--muted);
     }}
-    .point-write-trigger {{
+    .point-write-trigger,
+    .point-write-trigger:hover,
+    .point-write-trigger:focus-visible {{
+      display: inline;
       min-height: 0;
       padding: 0;
       border: 0;
+      border-radius: 0;
       color: inherit;
       background: transparent;
+      box-shadow: none;
       font: inherit;
       cursor: pointer;
     }}
     .point-write-trigger:hover {{
       color: var(--accent);
       text-decoration: underline;
+    }}
+    .point-write-trigger:focus-visible {{
+      outline: 1px solid var(--accent);
+      outline-offset: 3px;
     }}
     .site-info-form-actions {{
       display: flex;
