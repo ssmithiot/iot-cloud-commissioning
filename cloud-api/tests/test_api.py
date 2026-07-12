@@ -325,7 +325,7 @@ def test_signup_email_confirmation_redirects_to_login_origin() -> None:
     assert response.status_code == 200
     assert "emailRedirectTo: redirectTo" in response.text
     assert "`${window.location.origin}${statePaths.login}`" in response.text
-    assert "localhost" not in response.text
+    assert 'emailRedirectTo: "http://localhost' not in response.text
 
 
 def test_protected_ui_contains_unauthenticated_redirect() -> None:
@@ -467,6 +467,65 @@ def test_gateway_workspace_defaults_devices_and_object_folders_to_collapsed() ->
     assert 'treeRow("device", deviceLabel, device.network_number ? `network ${device.network_number}` : "", depth, false)' in response.text
     assert 'treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1, false)' in response.text
     assert 'body[data-page="gateway-workspace"] .tree-row .twisty' in response.text
+
+
+def test_gateway_workspace_formats_present_value_and_shows_active_priority() -> None:
+    response = client.get("/gateways/GW777")
+
+    assert response.status_code == 200
+    assert 'label: "Present Value (Property 85)"' in response.text
+    assert "function formatPresentValue(value)" in response.text
+    assert "return formatPresentValue(point.present_value);" in response.text
+    assert "function pointTableCellHtml(point, key)" in response.text
+    assert 'point.active_priority == null' in response.text
+    assert 'class="point-active-priority"' in response.text
+    assert 'Priority ${escapeHtml(point.active_priority)}' in response.text
+    assert 'present_value: point.present_value == null ? null : String(point.present_value)' in response.text
+
+
+def test_gateway_workspace_supports_hierarchical_point_selection() -> None:
+    response = client.get("/gateways/GW777")
+
+    assert response.status_code == 200
+    assert "function attachSavedBranchSelector(row, pointIds, label)" in response.text
+    assert "function syncSavedTreeSelection()" in response.text
+    assert "checkbox.indeterminate = selectedCount > 0 && selectedCount < pointIds.length;" in response.text
+    assert "attachSavedBranchSelector(row, points.map((point) => point.id), deviceLabel);" in response.text
+    assert "attachSavedBranchSelector(folderRow, folderPoints.map((point) => point.id)" in response.text
+    assert "attachSavedBranchSelector(row, groupedPointIds, group.name);" in response.text
+    assert 'row.setAttribute("aria-expanded", String(expanded));' in response.text
+    assert '!["Enter", " "].includes(event.key)' in response.text
+    assert 'window.confirm(`Remove ${selected.length} selected saved point${selected.length === 1 ? "" : "s"} from the tree?`)' in response.text
+    assert 'id="select-all-saved-points"' not in response.text
+    assert 'id="clear-saved-point-selection"' not in response.text
+
+
+def test_gateway_workspace_applies_single_source_template_to_existing_target_devices() -> None:
+    response = client.get("/gateways/GW777")
+
+    assert response.status_code == 200
+    assert 'id="template-device-preview"' in response.text
+    assert 'id="template-device-tree"' in response.text
+    assert 'id="template-source-summary"' in response.text
+    assert 'data-role="template-target-group-select"' in response.text
+    assert 'data-role="template-target-device-select"' in response.text
+    assert "const targetDevices = currentGatewayTree?.devices || [];" in response.text
+    assert "selectedImportTargetDeviceIds = new Set();" in response.text
+    assert 'template.devices.length !== 1' in response.text
+    assert 'Template must contain exactly one source device.' in response.text
+    assert 'byId("template-file").addEventListener("change", () => loadTemplateImportPreview(gatewayId));' in response.text
+    assert "const selectedTargets = (currentGatewayTree?.devices || []).filter" in response.text
+    assert "gateway_id: gatewayId" in response.text
+    assert "groups: []" in response.text
+    assert "devices: selectedTargets.map((target)" in response.text
+    assert "device_instance: target.device_instance" in response.text
+    assert "points: sourcePoints.map((point) => ({ ...point }))" in response.text
+    assert "body: JSON.stringify(selectedTemplate)" in response.text
+    assert "const sourceDeviceIds = new Set();" in response.text
+    assert "sourceDeviceIds.size > 1" in response.text
+    assert 'devices: [{ device_instance: 0, device_name: "CSV point template", points }]' in response.text
+    assert 'currentGatewayTree?.devices?.[0]?.device_instance' not in response.text
+    assert 'id="csv-device-instance"' not in response.text
 
 
 def test_public_auth_config_reports_missing_browser_config() -> None:

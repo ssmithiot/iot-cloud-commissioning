@@ -10,6 +10,8 @@ APP_SCRIPT = r"""
   let currentUser = null;
   let currentPointCandidateDevice = null;
   let selectedSavedPointIds = new Set();
+  let pendingImportTemplate = null;
+  let selectedImportTargetDeviceIds = new Set();
   const pointTrendResizeObservers = new Set();
   const pointTrendResizeFrames = new Set();
   let customTablePointIds = new Set();
@@ -51,7 +53,7 @@ APP_SCRIPT = r"""
   const pointTableColumns = [
     { key: "object_identifier", label: "Object Identifier" },
     { key: "object_type", label: "Object Type" },
-    { key: "present_value", label: "Present Value" },
+    { key: "present_value", label: "Present Value (Property 85)" },
     { key: "units", label: "Units" },
     { key: "writable", label: "Writable" },
     { key: "priority_array", label: "Priority Array" },
@@ -290,24 +292,12 @@ APP_SCRIPT = r"""
     if (objectTypeIndex == null || instanceIndex == null || objectNameIndex == null) {
       throw new Error("CSV needs object_type, instance, and object_name columns.");
     }
-    const groupIndex = indexFor("group", "group_name", "folder");
     const deviceIndex = indexFor("device_instance", "device_id", "controller_instance");
-    const deviceNameIndex = indexFor("device_name", "controller", "controller_name");
     const propertyIndex = indexFor("property", "property_name");
     const unitsIndex = indexFor("units", "unit");
     const writableIndex = indexFor("writable", "writeable");
-    const defaultGroup = byId("csv-group-name")?.value.trim() || "HVAC";
-    const defaultDeviceRaw = byId("csv-device-instance")?.value || currentGatewayTree?.devices?.[0]?.device_instance;
-    if (defaultDeviceRaw == null || String(defaultDeviceRaw).trim() === "") {
-      throw new Error("Enter a CSV controller/device instance before importing this CSV.");
-    }
-    const defaultDeviceInstance = Number(defaultDeviceRaw);
-    const defaultDeviceName = byId("csv-device-name")?.value.trim() || fileName.replace(/\.[^.]+$/, "");
-    if (!Number.isFinite(defaultDeviceInstance)) {
-      throw new Error("Enter a numeric controller/device instance before importing this CSV.");
-    }
-    const groups = new Set();
-    const devices = new Map();
+    const sourceDeviceIds = new Set();
+    const points = [];
     for (const row of rows.slice(1)) {
       const objectType = String(row[objectTypeIndex] || "").trim().toLowerCase();
       const objectInstance = Number(row[instanceIndex]);
@@ -315,23 +305,10 @@ APP_SCRIPT = r"""
       if (!objectType || !Number.isFinite(objectInstance) || !objectName) {
         continue;
       }
-      const groupName = String(groupIndex == null ? defaultGroup : (row[groupIndex] || defaultGroup)).trim() || defaultGroup;
-      const deviceInstance = Number(deviceIndex == null ? defaultDeviceInstance : (row[deviceIndex] || defaultDeviceInstance));
-      const deviceName = String(deviceNameIndex == null ? defaultDeviceName : (row[deviceNameIndex] || defaultDeviceName)).trim() || defaultDeviceName;
-      if (!Number.isFinite(deviceInstance)) {
-        continue;
+      if (deviceIndex != null && String(row[deviceIndex] || "").trim()) {
+        sourceDeviceIds.add(String(row[deviceIndex]).trim());
       }
-      groups.add(groupName);
-      const deviceKey = `${groupName}:${deviceInstance}`;
-      if (!devices.has(deviceKey)) {
-        devices.set(deviceKey, {
-          group_name: groupName,
-          device_instance: deviceInstance,
-          device_name: deviceName,
-          points: []
-        });
-      }
-      devices.get(deviceKey).points.push({
+      points.push({
         object_type: objectType,
         object_instance: objectInstance,
         object_name: objectName,
@@ -340,16 +317,195 @@ APP_SCRIPT = r"""
         writable: writableIndex == null ? null : ["true", "yes", "1", "write", "writable"].includes(String(row[writableIndex] || "").trim().toLowerCase())
       });
     }
-    if (!devices.size) {
+    if (sourceDeviceIds.size > 1) {
+      throw new Error("CSV must describe exactly one source device before it can be applied to existing targets.");
+    }
+    if (!points.length) {
       throw new Error("No valid points found in CSV.");
     }
     return {
       schema_version: "iot-cx-commissioning-template/v1",
       source: `csv:${fileName}`,
       gateway_id: gatewayId,
-      groups: [...groups].map((name) => ({ name })),
-      devices: [...devices.values()]
+      groups: [],
+      devices: [{ device_instance: 0, device_name: "CSV point template", points }]
     };
+  }
+
+  function savedDeviceDisplayLabel(device) {
+    return `[${device.device_instance}] ${device.device_name || `Device ${device.device_instance}`}`;
+  }
+
+  function syncTemplateImportSelection() {
+    const preview = byId("template-device-preview");
+    if (!preview || !pendingImportTemplate) {
+      return;
+    }
+    preview.querySelectorAll('[data-role="template-target-device-select"]').forEach((checkbox) => {
+      checkbox.checked = selectedImportTargetDeviceIds.has(checkbox.dataset.deviceId);
+    });
+    preview.querySelectorAll('[data-role="template-target-group-select"]').forEach((checkbox) => {
+      const deviceIds = JSON.parse(checkbox.dataset.deviceIds || "[]");
+      const selectedCount = deviceIds.filter((deviceId) => selectedImportTargetDeviceIds.has(deviceId)).length;
+      checkbox.checked = deviceIds.length > 0 && selectedCount === deviceIds.length;
+      checkbox.indeterminate = selectedCount > 0 && selectedCount < deviceIds.length;
+      checkbox.setAttribute("aria-checked", checkbox.indeterminate ? "mixed" : String(checkbox.checked));
+    });
+    const selectedCount = selectedImportTargetDeviceIds.size;
+    const total = currentGatewayTree?.devices?.length || 0;
+    byId("template-device-selection-count").textContent = `${selectedCount} of ${total} existing target device${total === 1 ? "" : "s"} selected.`;
+    byId("import-template-submit").disabled = selectedCount === 0;
+  }
+
+  function renderTemplateImportPreview(template) {
+    const preview = byId("template-device-preview");
+    const tree = byId("template-device-tree");
+    if (!preview || !tree) {
+      return;
+    }
+    const targetDevices = currentGatewayTree?.devices || [];
+    const points = currentGatewayTree?.points || [];
+    const groupNames = new Map((currentGatewayTree?.groups || []).map((group) => [group.id, group.name]));
+    pendingImportTemplate = template;
+    selectedImportTargetDeviceIds = new Set();
+    preview.hidden = false;
+    tree.textContent = "";
+    tree.setAttribute("role", "tree");
+    tree.setAttribute("aria-label", "Existing target devices");
+    byId("template-source-summary").textContent = `Source contains ${template.devices[0].points.length} point definition(s).`;
+    const groups = new Map();
+    targetDevices.forEach((device) => {
+      const groupLabel = groupNames.get(device.group_id) || "Ungrouped";
+      groups.set(groupLabel, [...(groups.get(groupLabel) || []), device]);
+    });
+    for (const [groupLabel, devices] of groups.entries()) {
+      const group = document.createElement("div");
+      group.className = "template-device-group";
+      const groupRow = document.createElement("div");
+      groupRow.className = "tree-row template-group-row";
+      groupRow.dataset.kind = "group";
+      groupRow.style.setProperty("--depth", "0");
+      groupRow.setAttribute("role", "treeitem");
+      groupRow.setAttribute("aria-expanded", "true");
+      groupRow.tabIndex = 0;
+      groupRow.innerHTML = `
+        <input type="checkbox" data-role="template-target-group-select" aria-label="Select all existing target devices in ${escapeHtml(groupLabel)}">
+        <span class="twisty">[-]</span>
+        <span class="node-icon" aria-hidden="true"></span>
+        <span class="node-label">${escapeHtml(groupLabel)}</span>
+        <span class="node-meta">${devices.length}</span>
+      `;
+      const childWrap = document.createElement("div");
+      childWrap.className = "tree-children";
+      childWrap.setAttribute("role", "group");
+      const deviceIds = devices.map((device) => device.id);
+      const groupCheckbox = groupRow.querySelector('[data-role="template-target-group-select"]');
+      groupCheckbox.dataset.deviceIds = JSON.stringify(deviceIds);
+      groupCheckbox.addEventListener("click", (event) => event.stopPropagation());
+      groupCheckbox.addEventListener("keydown", (event) => event.stopPropagation());
+      groupCheckbox.addEventListener("change", () => {
+        for (const deviceId of deviceIds) {
+          if (groupCheckbox.checked) {
+            selectedImportTargetDeviceIds.add(deviceId);
+          } else {
+            selectedImportTargetDeviceIds.delete(deviceId);
+          }
+        }
+        syncTemplateImportSelection();
+      });
+      for (const device of devices) {
+        const deviceRow = document.createElement("label");
+        deviceRow.className = "tree-row template-device-row";
+        deviceRow.dataset.kind = "device";
+        deviceRow.style.setProperty("--depth", "1");
+        deviceRow.setAttribute("role", "treeitem");
+        const pointCount = points.filter((point) => point.saved_device_id === device.id).length;
+        deviceRow.innerHTML = `
+          <input type="checkbox" data-role="template-target-device-select" data-device-id="${escapeHtml(device.id)}" aria-label="Apply template to ${escapeHtml(savedDeviceDisplayLabel(device))}">
+          <span class="twisty"></span>
+          <span class="node-icon" aria-hidden="true"></span>
+          <span class="node-label">${escapeHtml(savedDeviceDisplayLabel(device))}</span>
+          <span class="node-meta">${pointCount} saved points</span>
+        `;
+        deviceRow.querySelector('[data-role="template-target-device-select"]').addEventListener("change", (event) => {
+          if (event.target.checked) {
+            selectedImportTargetDeviceIds.add(device.id);
+          } else {
+            selectedImportTargetDeviceIds.delete(device.id);
+          }
+          syncTemplateImportSelection();
+        });
+        childWrap.appendChild(deviceRow);
+      }
+      const toggleGroup = () => {
+        const expanded = childWrap.hidden;
+        childWrap.hidden = !expanded;
+        groupRow.setAttribute("aria-expanded", String(expanded));
+        groupRow.querySelector(".twisty").textContent = expanded ? "[-]" : "[+]";
+      };
+      groupRow.addEventListener("click", (event) => {
+        if (!event.target.closest("input")) {
+          toggleGroup();
+        }
+      });
+      groupRow.addEventListener("keydown", (event) => {
+        if (event.target !== groupRow || !["Enter", " "].includes(event.key)) {
+          return;
+        }
+        event.preventDefault();
+        toggleGroup();
+      });
+      group.append(groupRow, childWrap);
+      tree.appendChild(group);
+    }
+    syncTemplateImportSelection();
+  }
+
+  function clearTemplateImportPreview() {
+    pendingImportTemplate = null;
+    selectedImportTargetDeviceIds = new Set();
+    const preview = byId("template-device-preview");
+    const tree = byId("template-device-tree");
+    if (preview) {
+      preview.hidden = true;
+    }
+    if (tree) {
+      tree.textContent = "";
+    }
+    const submit = byId("import-template-submit");
+    if (submit) {
+      submit.disabled = true;
+    }
+  }
+
+  async function loadTemplateImportPreview(gatewayId) {
+    const file = byId("template-file")?.files?.[0];
+    if (!file) {
+      clearTemplateImportPreview();
+      return null;
+    }
+    try {
+      const fileText = await file.text();
+      const template = file.name.toLowerCase().endsWith(".csv")
+        ? csvToCommissioningTemplate(fileText, file.name, gatewayId)
+        : JSON.parse(fileText);
+      if (!template || !Array.isArray(template.devices) || template.devices.length !== 1) {
+        throw new Error("Template must contain exactly one source device.");
+      }
+      if (!Array.isArray(template.devices[0].points) || !template.devices[0].points.length) {
+        throw new Error("Template source device must contain at least one point.");
+      }
+      if (!currentGatewayTree?.devices?.length) {
+        throw new Error("Save at least one target device before importing a point template.");
+      }
+      renderTemplateImportPreview(template);
+      setText("status", `Previewing ${template.devices[0].points.length} point(s) from ${file.name}. Choose existing target devices.`);
+      return template;
+    } catch (error) {
+      clearTemplateImportPreview();
+      setText("status", errorMessage(error, "Could not preview this template."), true);
+      return null;
+    }
   }
 
   function escapeHtml(value) {
@@ -1821,8 +1977,9 @@ APP_SCRIPT = r"""
   }
 
   function treeRow(kind, label, meta = "", depth = 0, expanded = true) {
-    const row = document.createElement("button");
-    row.type = "button";
+    const row = document.createElement("div");
+    row.setAttribute("role", "treeitem");
+    row.tabIndex = 0;
     row.className = "tree-row";
     row.dataset.kind = kind;
     row.style.setProperty("--depth", String(depth));
@@ -1837,6 +1994,7 @@ APP_SCRIPT = r"""
 
   function leafRow(kind, label, meta = "", depth = 0) {
     const row = treeRow(kind, label, meta, depth, false);
+    row.tabIndex = -1;
     row.querySelector(".twisty").textContent = "";
     return row;
   }
@@ -2021,7 +2179,7 @@ APP_SCRIPT = r"""
       return objectFolderLabel(point.object_type).replace(" Objects", "");
     }
     if (key === "present_value") {
-      return point.present_value ?? "";
+      return formatPresentValue(point.present_value);
     }
     if (key === "units") {
       return point.units ?? "";
@@ -2036,6 +2194,30 @@ APP_SCRIPT = r"""
       return point.latest_read_at ? new Date(point.latest_read_at).toLocaleString() : "";
     }
     return "";
+  }
+
+  function formatPresentValue(value) {
+    const raw = value == null ? "" : String(value).trim();
+    if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(raw)) {
+      return raw;
+    }
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric)) {
+      return raw;
+    }
+    let rounded = Math.round((numeric + Math.sign(numeric) * Number.EPSILON) * 100) / 100;
+    if (Object.is(rounded, -0)) {
+      rounded = 0;
+    }
+    return rounded.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  }
+
+  function pointTableCellHtml(point, key) {
+    const value = `<span class="point-cell-value">${escapeHtml(pointTableValue(point, key))}</span>`;
+    if (key !== "present_value" || point.active_priority == null) {
+      return value;
+    }
+    return `${value}<span class="point-active-priority" title="Last verified BACnet write priority">Priority ${escapeHtml(point.active_priority)}</span>`;
   }
 
   function tablePoints() {
@@ -2187,7 +2369,7 @@ APP_SCRIPT = r"""
         <td>
           <strong>${escapeHtml(point.object_name || "unnamed")}</strong>
         </td>
-        ${columns.map((key) => `<td data-column="${escapeHtml(key)}">${escapeHtml(pointTableValue(point, key))}</td>`).join("")}
+        ${columns.map((key) => `<td data-column="${escapeHtml(key)}">${pointTableCellHtml(point, key)}</td>`).join("")}
         <td><button class="secondary table-command" type="button" data-remove-table-point="${escapeHtml(point.id)}">Remove</button></td>
       `;
       body.appendChild(row);
@@ -2533,16 +2715,48 @@ APP_SCRIPT = r"""
       selectedSavedPointIds.delete(point.id);
     }
     renderSelectedSavedPoints();
+    syncSavedTreeSelection();
   }
 
-  function setAllSavedPointCheckboxes(checked) {
-    selectedSavedPointIds = checked
-      ? new Set((currentGatewayTree?.points || []).map((point) => point.id))
-      : new Set();
-    document.querySelectorAll('[data-role="saved-point-select"]').forEach((checkbox) => {
-      checkbox.checked = checked;
-    });
+  function setSavedBranchSelected(pointIds, checked) {
+    for (const pointId of pointIds) {
+      if (checked) {
+        selectedSavedPointIds.add(pointId);
+      } else {
+        selectedSavedPointIds.delete(pointId);
+      }
+    }
+    syncSavedTreeSelection();
     renderSelectedSavedPoints();
+  }
+
+  function syncSavedTreeSelection() {
+    document.querySelectorAll('[data-role="saved-point-select"]').forEach((checkbox) => {
+      checkbox.checked = selectedSavedPointIds.has(checkbox.closest(".point-select-row")?.dataset.pointId);
+    });
+    document.querySelectorAll('[data-role="saved-branch-select"]').forEach((checkbox) => {
+      const pointIds = JSON.parse(checkbox.dataset.pointIds || "[]");
+      const selectedCount = pointIds.filter((pointId) => selectedSavedPointIds.has(pointId)).length;
+      checkbox.checked = pointIds.length > 0 && selectedCount === pointIds.length;
+      checkbox.indeterminate = selectedCount > 0 && selectedCount < pointIds.length;
+      checkbox.disabled = pointIds.length === 0;
+      checkbox.setAttribute("aria-checked", checkbox.indeterminate ? "mixed" : String(checkbox.checked));
+    });
+  }
+
+  function attachSavedBranchSelector(row, pointIds, label) {
+    const descendants = [...new Set(pointIds)];
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.role = "saved-branch-select";
+    checkbox.dataset.pointIds = JSON.stringify(descendants);
+    checkbox.className = "branch-point-select";
+    checkbox.title = `Select all points in ${label}`;
+    checkbox.setAttribute("aria-label", `Select all points in ${label}`);
+    checkbox.addEventListener("click", (event) => event.stopPropagation());
+    checkbox.addEventListener("keydown", (event) => event.stopPropagation());
+    checkbox.addEventListener("change", () => setSavedBranchSelected(descendants, checkbox.checked));
+    row.prepend(checkbox);
   }
 
   async function removeSelectedSavedPoints() {
@@ -2553,6 +2767,10 @@ APP_SCRIPT = r"""
     const selected = selectedSavedPoints();
     if (!selected.length) {
       setText("status", "Select at least one saved point first.", true);
+      return;
+    }
+    if (!window.confirm(`Remove ${selected.length} selected saved point${selected.length === 1 ? "" : "s"} from the tree?`)) {
+      setText("status", "Point removal canceled.");
       return;
     }
     const removeButton = byId("remove-selected-points");
@@ -2613,7 +2831,7 @@ APP_SCRIPT = r"""
   function pointSelectionRow(point, label, meta = "", depth = 0) {
     const showPointDetails = () => setTreeDetails(label, {
       property: point.property,
-      value: point.present_value,
+      value: formatPresentValue(point.present_value),
       units: point.units,
       writable: point.writable,
       latest_read_at: point.latest_read_at
@@ -2621,6 +2839,7 @@ APP_SCRIPT = r"""
     const row = document.createElement("div");
     row.className = "tree-row point-select-row";
     row.dataset.kind = "point";
+    row.setAttribute("role", "treeitem");
     row.draggable = true;
     row.dataset.pointId = point.id;
     row.style.setProperty("--depth", String(depth));
@@ -2749,19 +2968,34 @@ APP_SCRIPT = r"""
     parent.appendChild(row);
     const childWrap = document.createElement("div");
     childWrap.className = "tree-children";
+    childWrap.setAttribute("role", "group");
     childWrap.hidden = !expanded;
+    row.setAttribute("aria-expanded", String(expanded));
     row.querySelector(".twisty").textContent = expanded ? "[-]" : "[+]";
     for (const child of children) {
       childWrap.appendChild(child);
     }
     parent.appendChild(childWrap);
-    row.addEventListener("click", () => {
+    const toggle = () => {
       const hidden = childWrap.hidden;
       childWrap.hidden = !hidden;
+      row.setAttribute("aria-expanded", String(hidden));
       row.querySelector(".twisty").textContent = hidden ? "[-]" : "[+]";
       if (onSelect) {
         onSelect();
       }
+    };
+    row.addEventListener("click", (event) => {
+      if (!event.target.closest("input, button, a")) {
+        toggle();
+      }
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.target !== row || !["Enter", " "].includes(event.key)) {
+        return;
+      }
+      event.preventDefault();
+      toggle();
     });
   }
 
@@ -2778,6 +3012,8 @@ APP_SCRIPT = r"""
     const groupNames = new Map(tree.groups.map((group) => [group.id, group.name]));
     const root = document.createElement("div");
     root.className = "tree-view";
+    root.setAttribute("role", "tree");
+    root.setAttribute("aria-label", "Saved commissioning points");
 
     function deviceNode(device, depth) {
       const points = tree.points.filter((item) => item.saved_device_id === device.id);
@@ -2788,6 +3024,7 @@ APP_SCRIPT = r"""
       }
       const deviceLabel = `[${device.device_instance}] ${device.device_name || "Device " + device.device_instance}`;
       const row = treeRow("device", deviceLabel, device.network_number ? `network ${device.network_number}` : "", depth, false);
+      attachSavedBranchSelector(row, points.map((point) => point.id), deviceLabel);
       const showDeviceDetails = () => setTreeDetails(deviceLabel, {
         gateway_id: device.gateway_id,
         device_instance: device.device_instance,
@@ -2807,9 +3044,11 @@ APP_SCRIPT = r"""
       for (const [folderLabel, folderPoints] of pointGroups.entries()) {
         const pointRows = folderPoints.map((point) => {
           const pointLabel = savedPointLabel(point);
-          return pointSelectionRow(point, pointLabel, point.present_value ?? "", depth + 2);
+          return pointSelectionRow(point, pointLabel, formatPresentValue(point.present_value), depth + 2);
         });
-        addCollapsible(container.querySelector(".tree-children"), treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1, false), pointRows, null, false);
+        const folderRow = treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1, false);
+        attachSavedBranchSelector(folderRow, folderPoints.map((point) => point.id), `${deviceLabel} ${folderLabel}`);
+        addCollapsible(container.querySelector(".tree-children"), folderRow, pointRows, null, false);
       }
       if (!points.length) {
         container.querySelector(".tree-children").appendChild(leafRow("empty", "No imported points", "import edge template", depth + 1));
@@ -2823,6 +3062,10 @@ APP_SCRIPT = r"""
         ? groupedDevices.map((device) => deviceNode(device, 1))
         : [leafRow("empty", "No devices saved", "", 1)];
       const row = treeRow("folder", group.name, `${groupedDevices.length}`, 0);
+      const groupedDeviceIds = new Set(groupedDevices.map((device) => device.id));
+      const groupedPointIds = tree.points.filter((point) => groupedDeviceIds.has(point.saved_device_id)).map((point) => point.id);
+      row.dataset.kind = "group";
+      attachSavedBranchSelector(row, groupedPointIds, group.name);
       const showGroupDetails = () => setTreeDetails(group.name, {
         gateway_id: group.gateway_id,
         devices: groupedDevices.length
@@ -2831,9 +3074,14 @@ APP_SCRIPT = r"""
     }
     const ungroupedDevices = tree.devices.filter((item) => !item.group_id || !groupNames.has(item.group_id));
     if (ungroupedDevices.length) {
-      addCollapsible(root, treeRow("folder", "Ungrouped", `${ungroupedDevices.length}`, 0), ungroupedDevices.map((device) => deviceNode(device, 1)));
+      const row = treeRow("group", "Ungrouped", `${ungroupedDevices.length}`, 0);
+      const ungroupedDeviceIds = new Set(ungroupedDevices.map((device) => device.id));
+      const ungroupedPointIds = tree.points.filter((point) => ungroupedDeviceIds.has(point.saved_device_id)).map((point) => point.id);
+      attachSavedBranchSelector(row, ungroupedPointIds, "Ungrouped");
+      addCollapsible(root, row, ungroupedDevices.map((device) => deviceNode(device, 1)));
     }
     target.appendChild(root);
+    syncSavedTreeSelection();
     renderSelectedSavedPoints();
     renderCustomPointTable();
   }
@@ -3270,6 +3518,7 @@ APP_SCRIPT = r"""
         setText("status", errorMessage(error), true);
       }
     });
+    byId("template-file").addEventListener("change", () => loadTemplateImportPreview(gatewayId));
     importTemplateForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       const file = byId("template-file").files?.[0];
@@ -3277,23 +3526,48 @@ APP_SCRIPT = r"""
         setText("status", "Choose an edge commissioning template JSON file first.", true);
         return;
       }
-      setText("status", `Importing ${file.name}...`);
+      const template = pendingImportTemplate || await loadTemplateImportPreview(gatewayId);
+      if (!template) {
+        return;
+      }
+      const selectedTargets = (currentGatewayTree?.devices || []).filter((device) => selectedImportTargetDeviceIds.has(device.id));
+      if (!selectedTargets.length) {
+        setText("status", "Select at least one existing target device.", true);
+        return;
+      }
+      const sourcePoints = template.devices[0].points;
+      const selectedTemplate = {
+        ...template,
+        gateway_id: gatewayId,
+        groups: [],
+        devices: selectedTargets.map((target) => ({
+          device_instance: target.device_instance,
+          device_name: target.device_name || null,
+          vendor_name: target.vendor_name || null,
+          network_number: target.network_number ?? null,
+          mac_address: target.mac_address || null,
+          points: sourcePoints.map((point) => ({ ...point }))
+        }))
+      };
+      const importSubmit = byId("import-template-submit");
+      importSubmit.disabled = true;
+      setText("status", `Applying ${sourcePoints.length} point(s) from ${file.name} to ${selectedTargets.length} existing device(s)...`);
       try {
-        const fileText = await file.text();
-        const isCsv = file.name.toLowerCase().endsWith(".csv");
-        const template = isCsv
-          ? csvToCommissioningTemplate(fileText, file.name, gatewayId)
-          : JSON.parse(fileText);
         const result = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/commissioning-template/import`, {
           method: "POST",
-          body: JSON.stringify(template)
+          body: JSON.stringify(selectedTemplate)
         });
         byId("template-file").value = "";
+        clearTemplateImportPreview();
         await loadGatewayWorkspace();
         renderImportResult(result);
         setText("status", `Imported template: ${result.created_devices} device(s) created, ${result.updated_devices} updated, ${result.created_points} point(s) created, ${result.updated_points} updated.`);
       } catch (error) {
         setText("status", errorMessage(error), true);
+      } finally {
+        if (pendingImportTemplate) {
+          importSubmit.disabled = selectedImportTargetDeviceIds.size === 0;
+        }
       }
     });
     discoverButton.addEventListener("click", async () => {
@@ -3327,8 +3601,6 @@ APP_SCRIPT = r"""
     });
     removeSelectedPointsButton.addEventListener("click", removeSelectedSavedPoints);
     addSelectedToCustomTableButton.addEventListener("click", addSelectedPointsToCustomTable);
-    byId("select-all-saved-points").addEventListener("click", () => setAllSavedPointCheckboxes(true));
-    byId("clear-saved-point-selection").addEventListener("click", () => setAllSavedPointCheckboxes(false));
     clearCustomPointTableButton.addEventListener("click", clearCustomPointTable);
     byId("refresh-point-values").addEventListener("click", refreshCustomPointValues);
     byId("save-point-table").addEventListener("click", saveActivePointTableName);
@@ -4493,6 +4765,20 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       padding: 4px 8px;
       font-size: 11px;
     }}
+    .template-device-preview {{
+      margin: 0;
+      text-align: left;
+    }}
+    .template-device-preview .tree-view {{
+      max-height: 260px;
+      overflow: auto;
+      padding: 6px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+    }}
+    .template-device-preview p {{
+      margin: 4px 0 8px;
+    }}
     .tree-scroll {{
       min-height: 420px;
       max-height: 64vh;
@@ -4512,6 +4798,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       color: var(--ink);
       background: transparent !important;
       box-shadow: none !important;
+      cursor: pointer;
+    }}
+    .tree-row > input[type="checkbox"] {{
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      cursor: pointer;
     }}
     body[data-page="gateway-workspace"] .tree-row:hover {{
       color: var(--ink);
@@ -4521,10 +4814,12 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       color: #122329;
       background: rgba(8, 127, 134, 0.06) !important;
     }}
-    .tree-row[data-kind="folder"] {{
+    .tree-row[data-kind="folder"],
+    .tree-row[data-kind="group"] {{
       font-weight: 700;
     }}
     .tree-row[data-kind="folder"] .node-label,
+    .tree-row[data-kind="group"] .node-label,
     .tree-row[data-kind="device"] .node-label {{
       color: #ecfeff;
     }}
@@ -4536,6 +4831,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       font-weight: 700;
     }}
     body[data-theme="light"] .tree-row[data-kind="folder"] .node-label,
+    body[data-theme="light"] .tree-row[data-kind="group"] .node-label,
     body[data-theme="light"] .tree-row[data-kind="device"] .node-label,
     body[data-theme="light"] .tree-row[data-kind="point"] .node-label {{
       color: #122329;
@@ -4568,7 +4864,8 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       height: 14px;
       display: inline-block;
     }}
-    .tree-row[data-kind="folder"] .node-icon::before {{
+    .tree-row[data-kind="folder"] .node-icon::before,
+    .tree-row[data-kind="group"] .node-icon::before {{
       content: "";
       position: absolute;
       left: 1px;
@@ -4579,7 +4876,8 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       border-radius: 2px;
       background: rgba(245, 197, 66, 0.18);
     }}
-    .tree-row[data-kind="folder"] .node-icon::after {{
+    .tree-row[data-kind="folder"] .node-icon::after,
+    .tree-row[data-kind="group"] .node-icon::after {{
       content: "";
       position: absolute;
       left: 2px;
@@ -4685,6 +4983,18 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     body[data-theme="light"] .point-table td[data-column="present_value"] {{
       color: #075f66;
       text-shadow: none;
+    }}
+    .point-active-priority {{
+      display: inline-flex;
+      margin-left: 8px;
+      padding: 2px 6px;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      color: var(--warning);
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.2;
+      vertical-align: middle;
     }}
     .empty-table-cell {{
       height: 220px;
@@ -6235,25 +6545,20 @@ def gateway_workspace_html(gateway_id: str) -> str:
         <li>Name the table, choose visible columns, then save the table view. Trend setup is next.</li>
       </ol>
       <form id="import-template-form" class="grid">
-        <div class="span-4">
+        <div class="span-10">
           <label for="template-file">Point template or CSV</label>
           <input id="template-file" type="file" accept="application/json,.json,text/csv,.csv" required>
         </div>
         <div class="span-2">
-          <label for="csv-group-name">CSV group</label>
-          <input id="csv-group-name" type="text" maxlength="120" value="HVAC">
+          <button id="import-template-submit" type="submit" disabled>Import template</button>
         </div>
-        <div class="span-2">
-          <label for="csv-device-instance">CSV controller instance</label>
-          <input id="csv-device-instance" type="number" min="0" step="1" placeholder="190263">
-        </div>
-        <div class="span-3">
-          <label for="csv-device-name">CSV controller name</label>
-          <input id="csv-device-name" type="text" maxlength="255" placeholder="Controller name">
-        </div>
-        <div class="span-1">
-          <button type="submit">Import template</button>
-        </div>
+        <section id="template-device-preview" class="span-12 detail-panel compact-panel template-device-preview" aria-labelledby="template-device-preview-title" hidden>
+          <h3 id="template-device-preview-title">Choose Existing Target Devices</h3>
+          <p id="template-source-summary"></p>
+          <p id="template-device-selection-count" role="status" aria-live="polite"></p>
+          <p class="muted">Only devices already saved in this gateway tree can receive the source point definitions.</p>
+          <div id="template-device-tree" class="tree-view"></div>
+        </section>
       </form>
       <div id="import-result" class="detail-panel compact-panel" hidden></div>
       <div id="point-workbench" class="tree-shell point-workbench">
@@ -6263,10 +6568,6 @@ def gateway_workspace_html(gateway_id: str) -> str:
               <span class="eyebrow">Saved Tree</span>
               <h2>Groups / Devices / Points</h2>
             </div>
-          </div>
-          <div class="toolbar tree-toolbar">
-            <button id="select-all-saved-points" class="secondary" type="button">Select all</button>
-            <button id="clear-saved-point-selection" class="secondary" type="button">Clear all</button>
           </div>
           <div id="tree" class="tree-scroll">Loading...</div>
         </div>
