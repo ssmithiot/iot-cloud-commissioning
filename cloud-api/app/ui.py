@@ -2201,8 +2201,14 @@ APP_SCRIPT = r"""
     if (key === "writable") {
       return commandablePoint(point) ? "Yes" : "No";
     }
-    if (key === "priority_array" || key === "relinquish_default") {
-      return "not loaded";
+    if (key === "priority_array") {
+      if (point.active_priority != null) {
+        return `Commanded @${point.active_priority}`;
+      }
+      return point.priority_array ? "Relinquished" : "not loaded";
+    }
+    if (key === "relinquish_default") {
+      return point.relinquish_default ?? "not loaded";
     }
     if (key === "latest_read_at") {
       return point.latest_read_at ? new Date(point.latest_read_at).toLocaleString() : "";
