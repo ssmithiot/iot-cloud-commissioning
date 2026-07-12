@@ -3016,6 +3016,97 @@ APP_SCRIPT = r"""
     input.select();
   }
 
+  function showDeviceGroupEditor(device, pointCount) {
+    const panel = byId("tree-details");
+    const heading = panel?.querySelector(".tree-detail-title");
+    if (!heading) return;
+    heading.innerHTML = `<label class="tree-device-name-editor"><span>Group</span><select aria-label="Controller group">${groupOptions()}</select></label><button class="save-device-group" type="button">Save</button><button class="cancel-device-group secondary" type="button">Cancel</button>`;
+    const select = heading.querySelector("select");
+    select.value = device.group_id || "";
+    const save = async () => {
+      const saveButton = heading.querySelector(".save-device-group");
+      saveButton.disabled = true;
+      try {
+        const updated = await api(`/api/ui/devices/${encodeURIComponent(device.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ group_id: select.value || null })
+        });
+        await loadGatewayWorkspace();
+        renderDeviceDetails({ ...device, ...updated }, pointCount);
+        const selectedGroup = select.options[select.selectedIndex].textContent;
+        setText("status", `Moved controller ${device.device_instance} to ${selectedGroup}.`);
+      } catch (error) {
+        setText("status", errorMessage(error), true);
+        saveButton.disabled = false;
+      }
+    };
+    heading.querySelector(".save-device-group").addEventListener("click", save);
+    heading.querySelector(".cancel-device-group").addEventListener("click", () => renderDeviceDetails(device, pointCount));
+    select.focus();
+  }
+
+  function showGroupNameEditor(group, deviceCount) {
+    const panel = byId("tree-details");
+    const heading = panel?.querySelector(".tree-detail-title");
+    if (!heading) return;
+    heading.innerHTML = `<label class="tree-device-name-editor"><span>Group name</span><input type="text" maxlength="120" value="${escapeHtml(group.name)}" aria-label="Group name"></label><button class="save-group-name" type="button">Save</button><button class="cancel-group-name secondary" type="button">Cancel</button>`;
+    const input = heading.querySelector("input");
+    const save = async () => {
+      const name = input.value.trim();
+      if (!name) {
+        setText("status", "Group name cannot be blank.", true);
+        input.focus();
+        return;
+      }
+      const saveButton = heading.querySelector(".save-group-name");
+      saveButton.disabled = true;
+      try {
+        const updated = await api(`/api/ui/groups/${encodeURIComponent(group.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name })
+        });
+        await loadGatewayWorkspace();
+        renderGroupDetails({ ...group, ...updated }, deviceCount);
+        setText("status", `Renamed group to ${name}.`);
+      } catch (error) {
+        setText("status", errorMessage(error), true);
+        saveButton.disabled = false;
+      }
+    };
+    heading.querySelector(".save-group-name").addEventListener("click", save);
+    heading.querySelector(".cancel-group-name").addEventListener("click", () => renderGroupDetails(group, deviceCount));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); save(); }
+      if (event.key === "Escape") { event.preventDefault(); renderGroupDetails(group, deviceCount); }
+    });
+    input.focus();
+    input.select();
+  }
+
+  async function deleteGroup(group, deviceCount) {
+    if (!canEditTree()) return;
+    const moveMessage = deviceCount === 1
+      ? " Its controller will be moved to Ungrouped."
+      : deviceCount ? ` Its ${deviceCount} controllers will be moved to Ungrouped.` : "";
+    if (!window.confirm(`Delete group \"${group.name}\"?${moveMessage}`)) return;
+    try {
+      await api(`/api/ui/groups/${encodeURIComponent(group.id)}`, { method: "DELETE" });
+      setText("status", `Deleted group ${group.name}.${deviceCount ? " Controllers were moved to Ungrouped." : ""}`);
+      await loadGatewayWorkspace();
+    } catch (error) {
+      setText("status", errorMessage(error), true);
+    }
+  }
+
+  function renderGroupDetails(group, deviceCount) {
+    setTreeDetails(group.name, {
+      gateway_id: group.gateway_id,
+      controllers: deviceCount
+    }, [
+      { label: "Delete group", handler: () => deleteGroup(group, deviceCount) }
+    ], { label: "Rename group", handler: () => showGroupNameEditor(group, deviceCount) });
+  }
+
   function renderDeviceDetails(device, pointCount) {
     const deviceLabel = `[${device.device_instance}] ${device.device_name || "Device " + device.device_instance}`;
     setTreeDetails(deviceLabel, {
@@ -3027,8 +3118,9 @@ APP_SCRIPT = r"""
       latest_discovered_at: device.latest_discovered_at,
       points: pointCount
     }, [
-      { label: "Remove device", handler: () => removeTreeItem("device", device.id, deviceLabel) }
-    ], { label: "Edit device name", handler: () => showDeviceNameEditor(device, pointCount) });
+      { label: "Move controller", handler: () => showDeviceGroupEditor(device, pointCount) },
+      { label: "Delete controller", handler: () => removeTreeItem("device", device.id, deviceLabel) }
+    ], { label: "Rename controller", handler: () => showDeviceNameEditor(device, pointCount) });
   }
 
   function pointSelectionRow(point, label, meta = "", depth = 0) {
@@ -3270,10 +3362,7 @@ APP_SCRIPT = r"""
       row.dataset.kind = "group";
       row.dataset.treeKey = `group:${group.id}`;
       attachSavedBranchSelector(row, groupedPointIds, group.name);
-      const showGroupDetails = () => setTreeDetails(group.name, {
-        gateway_id: group.gateway_id,
-        devices: groupedDevices.length
-      });
+      const showGroupDetails = () => renderGroupDetails(group, groupedDevices.length);
       addCollapsible(root, row, children, showGroupDetails);
     }
     const ungroupedDevices = tree.devices.filter((item) => !item.group_id || !groupNames.has(item.group_id));

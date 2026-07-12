@@ -2743,6 +2743,51 @@ def test_ui_operator_can_soft_remove_device_from_tree() -> None:
     assert tree_response.json()["points"] == []
 
 
+def test_ui_operator_can_rename_delete_group_and_move_controllers_to_ungrouped() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    group = client.post("/api/ui/gateways/GW001/groups", headers=headers, json={"name": "Plant Floor"}).json()
+    device = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=headers,
+        json={"group_id": group["id"], "device_instance": 1001, "device_name": "AHU-1"},
+    ).json()
+
+    renamed = client.patch(f"/api/ui/groups/{group['id']}", headers=headers, json={"name": "Airside"})
+    moved = client.patch(f"/api/ui/devices/{device['id']}", headers=headers, json={"group_id": None})
+    deleted = client.delete(f"/api/ui/groups/{group['id']}", headers=headers)
+    tree = client.get("/api/ui/gateways/GW001/tree", headers=headers).json()
+
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "Airside"
+    assert moved.status_code == 200
+    assert moved.json()["group_id"] is None
+    assert deleted.status_code == 204
+    assert tree["groups"] == []
+    assert tree["devices"][0]["group_id"] is None
+
+
+def test_ui_deleting_group_preserves_controllers_by_moving_them_to_ungrouped() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    group = client.post("/api/ui/gateways/GW001/groups", headers=headers, json={"name": "Plant Floor"}).json()
+    device = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=headers,
+        json={"group_id": group["id"], "device_instance": 1001, "device_name": "AHU-1"},
+    ).json()
+
+    deleted = client.delete(f"/api/ui/groups/{group['id']}", headers=headers)
+    tree = client.get("/api/ui/gateways/GW001/tree", headers=headers).json()
+
+    assert deleted.status_code == 204
+    assert tree["groups"] == []
+    assert tree["devices"][0]["id"] == device["id"]
+    assert tree["devices"][0]["group_id"] is None
+
+
 def test_ui_viewer_cannot_remove_tree_items() -> None:
     create_gateway_token("GW001")
     operator_id = create_operator_user("operator@example.com", role="operator", status="active")

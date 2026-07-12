@@ -1982,9 +1982,11 @@ def ui_delete_group(
     db: Session = Depends(get_db),
 ) -> None:
     group = _require_group_site_access(db, auth, group_id)
-    has_devices = db.scalar(select(SavedBacnetDevice).where(SavedBacnetDevice.group_id == group.id).limit(1))
-    if has_devices is not None:
-        raise HTTPException(status_code=409, detail="Group is not empty")
+    # Deleting a folder must not delete its controllers. Preserve the saved
+    # inventory and place its controllers under the tree's Ungrouped branch.
+    for device in db.scalars(select(SavedBacnetDevice).where(SavedBacnetDevice.group_id == group.id)).all():
+        device.group_id = None
+        device.updated_at = utc_now()
     db.delete(group)
     db.commit()
 
@@ -2034,12 +2036,15 @@ def ui_patch_device(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     device = _require_device_site_access(db, auth, device_id)
-    if payload.group_id is not None:
-        group_id = _tree_id(payload.group_id)
-        group = db.get(GatewayGroup, group_id)
-        if group is None or group.gateway_id != device.gateway_id:
-            raise HTTPException(status_code=404, detail="Group not found")
-        device.group_id = group_id
+    if "group_id" in payload.model_fields_set:
+        if payload.group_id is None:
+            device.group_id = None
+        else:
+            group_id = _tree_id(payload.group_id)
+            group = db.get(GatewayGroup, group_id)
+            if group is None or group.gateway_id != device.gateway_id:
+                raise HTTPException(status_code=404, detail="Group not found")
+            device.group_id = group_id
     if payload.device_name is not None:
         device.device_name = payload.device_name
     if payload.vendor_name is not None:
