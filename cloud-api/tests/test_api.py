@@ -509,6 +509,7 @@ def test_gateway_workspace_applies_single_source_template_to_existing_target_dev
     assert 'id="template-source-summary"' in response.text
     assert 'data-role="template-target-group-select"' in response.text
     assert 'data-role="template-target-device-select"' in response.text
+    assert '.template-group-row,\n    .template-device-row {\n      grid-template-columns: 18px 18px 18px minmax(0, 1fr) auto;' in response.text
     assert "const targetDevices = currentGatewayTree?.devices || [];" in response.text
     assert "selectedImportTargetDeviceIds = new Set();" in response.text
     assert 'template.devices.length !== 1' in response.text

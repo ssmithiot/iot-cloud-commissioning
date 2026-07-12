@@ -4800,6 +4800,10 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       box-shadow: none !important;
       cursor: pointer;
     }}
+    .template-group-row,
+    .template-device-row {{
+      grid-template-columns: 18px 18px 18px minmax(0, 1fr) auto;
+    }}
     .tree-row > input[type="checkbox"] {{
       width: 14px;
       height: 14px;
