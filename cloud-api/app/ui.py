@@ -2229,12 +2229,11 @@ APP_SCRIPT = r"""
     return rounded.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
   }
 
-  function formatPriorityArray(value) {
+  function priorityArrayEntries(value) {
     const raw = value == null ? "" : String(value).trim();
     if (!raw) {
-      return "not loaded";
+      return [];
     }
-    const nullValues = new Set(["", "null", "(null)", "none", "--"]);
     const indexed = [...raw.matchAll(/\[\s*(\d{1,2})\s*\]\s*[:=]?\s*([^\n\[]+)/g)]
       .map((match) => ({ priority: Number(match[1]), value: match[2].trim().replace(/[,;:]$/, "") }))
       .filter((entry) => entry.priority >= 1 && entry.priority <= 16);
@@ -2249,6 +2248,20 @@ APP_SCRIPT = r"""
       const values = commaValues.length > 1 ? commaValues : lineValues;
       entries = values.slice(0, 16).map((entry, index) => ({ priority: index + 1, value: entry }));
     }
+    return entries;
+  }
+
+  function activePriorityFromArray(value) {
+    const nullValues = new Set(["", "null", "(null)", "none", "--"]);
+    return priorityArrayEntries(value).find((entry) => !nullValues.has(entry.value.toLowerCase()))?.priority ?? null;
+  }
+
+  function formatPriorityArray(value) {
+    const entries = priorityArrayEntries(value);
+    if (!entries.length) {
+      return "not loaded";
+    }
+    const nullValues = new Set(["", "null", "(null)", "none", "--"]);
     const active = entries.filter((entry) => !nullValues.has(entry.value.toLowerCase()));
     if (!active.length) {
       return "All priorities NULL (relinquished)";
@@ -2258,10 +2271,13 @@ APP_SCRIPT = r"""
 
   function pointTableCellHtml(point, key) {
     const value = `<span class="point-cell-value">${escapeHtml(pointTableValue(point, key))}</span>`;
-    if (key !== "present_value" || !Number.isInteger(point.active_priority) || point.active_priority < 1 || point.active_priority > 16) {
+    const activePriority = Number.isInteger(point.active_priority) && point.active_priority >= 1 && point.active_priority <= 16
+      ? point.active_priority
+      : activePriorityFromArray(point.priority_array);
+    if (key !== "present_value" || activePriority == null) {
       return value;
     }
-    return `${value}<span class="point-active-priority" title="Active BACnet write priority">@${escapeHtml(point.active_priority)}</span>`;
+    return `${value}<span class="point-active-priority" title="Active BACnet write priority">@${escapeHtml(activePriority)}</span>`;
   }
 
   function commandablePoint(point) {
