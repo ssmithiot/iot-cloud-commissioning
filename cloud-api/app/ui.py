@@ -2241,7 +2241,7 @@ APP_SCRIPT = r"""
     let entries = indexed;
     if (!entries.length) {
       let arrayText = raw.replace(/^priority[\s_-]*array\s*[:=]?\s*/i, "").trim();
-      if (arrayText.startsWith("(") && arrayText.endsWith(")")) {
+      if ((arrayText.startsWith("(") && arrayText.endsWith(")")) || (arrayText.startsWith("{") && arrayText.endsWith("}"))) {
         arrayText = arrayText.slice(1, -1).trim();
       }
       const commaValues = arrayText.split(",").map((entry) => entry.trim()).filter(Boolean);
@@ -2253,7 +2253,7 @@ APP_SCRIPT = r"""
     if (!active.length) {
       return "All priorities NULL (relinquished)";
     }
-    return active.map((entry) => `P${entry.priority}: ${entry.value}`).join("; ");
+    return active.map((entry) => `P${entry.priority}: ${formatPresentValue(entry.value)}`).join("; ");
   }
 
   function pointTableCellHtml(point, key) {

@@ -521,7 +521,7 @@ def test_gateway_workspace_formats_present_value_and_shows_active_priority() -> 
     assert "return formatPresentValue(point.present_value);" in response.text
     assert "function formatPriorityArray(value)" in response.text
     assert "All priorities NULL (relinquished)" in response.text
-    assert "P${entry.priority}: ${entry.value}" in response.text
+    assert "P${entry.priority}: ${formatPresentValue(entry.value)}" in response.text
     assert "function pointTableCellHtml(point, key)" in response.text
     assert 'point.active_priority > 16' in response.text
     assert 'class="point-active-priority"' in response.text

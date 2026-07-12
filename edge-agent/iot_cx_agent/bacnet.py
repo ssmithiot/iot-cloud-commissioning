@@ -579,9 +579,12 @@ def active_priority_from_array_output(raw_output: str) -> int | None:
         if value.strip(" ,;:(){}\t").lower() not in {"", "null", "none", "(null)", "--"}:
             return int(index)
 
-    match = re.search(r"priority[\s_-]*array\s*[:=]?\s*\((.*?)\)", text, flags=re.IGNORECASE | re.DOTALL)
-    if match is not None:
-        values = [part.strip(" ,;:(){}\t") for part in match.group(1).split(",")]
+    match = re.search(r"priority[\s_-]*array\s*[:=]?\s*([({])(.*?)[)}]", text, flags=re.IGNORECASE | re.DOTALL)
+    array_text = match.group(2) if match is not None else text
+    if (array_text.startswith("(") and array_text.endswith(")")) or (array_text.startswith("{") and array_text.endswith("}")):
+        array_text = array_text[1:-1]
+    values = [part.strip(" ,;:(){}\t") for part in array_text.split(",")]
+    if len(values) >= 2:
         for index, value in enumerate(values[:16], start=1):
             if value.lower() not in {"", "null", "none", "(null)", "--"}:
                 return index
