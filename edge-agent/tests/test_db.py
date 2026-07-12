@@ -11,6 +11,8 @@ from iot_cx_agent.db import (
     queue_trend_sample,
     pending_trend_samples,
     mark_trend_samples_uploaded,
+    record_trend_upload_failure,
+    trend_upload_attempt_count,
 )
 
 
@@ -61,3 +63,26 @@ def test_trend_sample_queue_is_durable_until_uploaded(tmp_path: Path) -> None:
     assert pending[0][1]["value"] == "72.5"
     mark_trend_samples_uploaded(db_path, [pending[0][0]], "2026-07-11T12:01:00+00:00")
     assert queued_upload_count(db_path) == 0
+
+
+def test_trend_queue_is_bounded_and_retries_after_backoff(tmp_path: Path) -> None:
+    db_path = tmp_path / "edge.db"
+    initialize_database(db_path)
+    first = {"point_id": "point-1", "sampled_at": "2026-07-11T12:00:00+00:00", "value": "72.5"}
+    second = {"point_id": "point-2", "sampled_at": "2026-07-11T12:00:00+00:00", "value": "73.5"}
+
+    assert queue_trend_sample(db_path, first, first["sampled_at"], max_pending=1) is True
+    assert queue_trend_sample(db_path, second, second["sampled_at"], max_pending=1) is False
+    pending = pending_trend_samples(db_path, now="2026-07-11T12:00:00+00:00")
+    row_id = pending[0][0]
+    record_trend_upload_failure(
+        db_path,
+        [row_id],
+        error="network unavailable",
+        retry_at="2026-07-11T12:01:00+00:00",
+        updated_at="2026-07-11T12:00:00+00:00",
+    )
+
+    assert trend_upload_attempt_count(db_path, [row_id]) == 1
+    assert pending_trend_samples(db_path, now="2026-07-11T12:00:30+00:00") == []
+    assert pending_trend_samples(db_path, now="2026-07-11T12:01:00+00:00")[0][0] == row_id
