@@ -57,7 +57,7 @@ APP_SCRIPT = r"""
     { key: "object_type", label: "Object Type" },
     { key: "present_value", label: "Present Value (Property 85)" },
     { key: "units", label: "Units" },
-    { key: "writable", label: "Writable" },
+    { key: "writable", label: "Commandable" },
     { key: "priority_array", label: "Priority Array" },
     { key: "relinquish_default", label: "Relinquish Default" },
     { key: "latest_read_at", label: "Latest Read" }
@@ -2199,7 +2199,7 @@ APP_SCRIPT = r"""
       return point.units ?? "";
     }
     if (key === "writable") {
-      return point.writable == null ? "" : (point.writable ? "Yes" : "No");
+      return commandablePoint(point) ? "Yes" : "No";
     }
     if (key === "priority_array" || key === "relinquish_default") {
       return "not loaded";
@@ -2228,10 +2228,20 @@ APP_SCRIPT = r"""
 
   function pointTableCellHtml(point, key) {
     const value = `<span class="point-cell-value">${escapeHtml(pointTableValue(point, key))}</span>`;
-    if (key !== "present_value" || point.active_priority == null) {
+    if (key !== "present_value" || !commandablePoint(point)) {
       return value;
     }
-    return `${value}<span class="point-active-priority" title="Last verified BACnet write priority">@${escapeHtml(point.active_priority)}</span>`;
+    if (point.active_priority != null) {
+      return `${value}<span class="point-active-priority" title="Active BACnet write priority">@${escapeHtml(point.active_priority)}</span>`;
+    }
+    if (point.priority_array) {
+      return `${value}<span class="point-active-priority" title="Commandable point; all write priorities are relinquished">@—</span>`;
+    }
+    return `${value}<span class="point-active-priority" title="Commandable point; refresh values to read Property 87">@?</span>`;
+  }
+
+  function commandablePoint(point) {
+    return ["analog-output", "analog-value", "binary-output", "binary-value", "multi-state-output", "multi-state-value"].includes(pointTableObjectTypeKey(point.object_type));
   }
 
   function tablePoints() {
