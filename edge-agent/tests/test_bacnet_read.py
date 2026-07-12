@@ -180,6 +180,37 @@ def test_bacnet_bulk_read_uses_one_rpm_command_for_multiple_points(tmp_path: Pat
     ]
 
 
+def test_bacnet_bulk_read_uses_edge_priority_array_read_before_property_87(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args[0])
+        if args[0] == [sys.executable, "1", "analog-value", "39", "85"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout="analog-value, 39\n  present-value: Real: 69\n", stderr="")
+        if args[0] == [sys.executable, "1", "analog-value", "39", "priority-array"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout="priority-array: (NULL, NULL, NULL, NULL, NULL, NULL, NULL, Real: 69)\n", stderr="")
+        raise AssertionError(f"unexpected command: {args[0]}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    status, result, error = execute_job(
+        config(tmp_path, bacrp_path=sys.executable, bacrpm_path=sys.executable),
+        bacnet_read_bulk_job({
+            "device_instance": 1,
+            "points": [{"saved_point_id": "point-39", "object_type": "analog-value", "object_instance": 39, "read_priority": True}],
+        }),
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert result is not None
+    assert calls == [
+        [sys.executable, "1", "analog-value", "39", "85"],
+        [sys.executable, "1", "analog-value", "39", "priority-array"],
+    ]
+    assert result["values"][0]["active_priority"] == 8
+
+
 def test_bacnet_bulk_read_falls_back_to_single_reads_when_rpm_returns_no_values(tmp_path: Path, monkeypatch) -> None:
     calls = []
 

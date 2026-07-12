@@ -561,13 +561,14 @@ def build_bacnet_priority_array_args(
     config: AgentConfig,
     device_instance: int,
     point: dict[str, object],
+    property_name: str | int = "priority-array",
 ) -> list[str]:
     return [
         config.bacrp_path,
         str(device_instance),
         str(point["object_type"]),
         str(point["object_instance"]),
-        str(BACNET_PRIORITY_ARRAY_PROPERTY_ID),
+        str(property_name),
     ]
 
 
@@ -843,24 +844,29 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
                 value, raw_value = parsed_value
                 priority_read: dict[str, object] = {}
                 if point.get("read_priority"):
-                    priority_args = build_bacnet_priority_array_args(
-                        config,
-                        int(normalized["device_instance"]),
-                        point,
-                    )
-                    priority_completed, priority_error = _run_command(
-                        priority_args,
-                        config,
-                        env,
-                        "BACnet priority-array read",
-                    )
-                    if priority_error is not None or priority_completed is None:
+                    priority_output = ""
+                    priority_error: str | None = None
+                    for property_name in ("priority-array", BACNET_PRIORITY_ARRAY_PROPERTY_ID):
+                        priority_args = build_bacnet_priority_array_args(
+                            config,
+                            int(normalized["device_instance"]),
+                            point,
+                            property_name,
+                        )
+                        priority_completed, priority_error = _run_command(
+                            priority_args,
+                            config,
+                            env,
+                            "BACnet priority-array read",
+                        )
+                        priority_output = _combined_output(priority_completed) if priority_completed is not None else ""
+                        if priority_error is None and priority_output:
+                            break
+                    if priority_error is not None or not priority_output:
                         priority_read["priority_read_error"] = priority_error or "priority-array not returned"
                     else:
-                        priority_output = _combined_output(priority_completed)
-                        if priority_output:
-                            raw_outputs.append(priority_output)
-                        priority_read["priority_array"] = priority_output or None
+                        raw_outputs.append(priority_output)
+                        priority_read["priority_array"] = priority_output
                         priority_read["active_priority"] = active_priority_from_array_output(priority_output)
                 values.append(
                     {
