@@ -405,6 +405,7 @@ def validate_bacnet_read_bulk_request(request: dict[str, Any]) -> dict[str, obje
                 "property": BACNET_PRESENT_VALUE,
                 "property_id": BACNET_PRESENT_VALUE_PROPERTY_ID,
                 "read_priority": bool(point.get("read_priority", False)),
+                "read_relinquish_default": bool(point.get("read_relinquish_default", False)),
             }
         )
 
@@ -881,6 +882,30 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
                         raw_outputs.append(priority_output)
                         priority_read["priority_array"] = priority_output
                         priority_read["active_priority"] = active_priority_from_array_output(priority_output)
+                if point.get("read_relinquish_default"):
+                    default_output = ""
+                    default_error: str | None = None
+                    for property_name in ("relinquish-default", 104):
+                        default_args = build_bacnet_priority_array_args(
+                            config,
+                            int(normalized["device_instance"]),
+                            point,
+                            property_name,
+                        )
+                        default_completed, default_error = _run_command(
+                            default_args,
+                            config,
+                            env,
+                            "BACnet relinquish-default read",
+                        )
+                        default_output = _combined_output(default_completed) if default_completed is not None else ""
+                        if default_error is None and default_output:
+                            break
+                    if default_error is not None or not default_output:
+                        priority_read["relinquish_default_read_error"] = default_error or "relinquish-default not returned"
+                    else:
+                        raw_outputs.append(default_output)
+                        priority_read["relinquish_default"] = default_output
                 values.append(
                     {
                         "saved_point_id": point.get("saved_point_id"),

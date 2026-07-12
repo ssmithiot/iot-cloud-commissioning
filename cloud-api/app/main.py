@@ -2257,6 +2257,7 @@ def ui_read_saved_points(
                         "object_instance": point.object_instance,
                         "object_name": point.object_name,
                         "read_priority": point.object_type in BACNET_WRITE_OBJECT_TYPES,
+                        "read_relinquish_default": point.object_type in BACNET_WRITE_OBJECT_TYPES,
                     }
                     for point in device_points
                 ],
@@ -3097,6 +3098,11 @@ def receive_job_result(
                         priority_array = value_payload["priority_array"]
                         if priority_array is None or isinstance(priority_array, str):
                             point.priority_array = priority_array
+                            changed = True
+                    if "relinquish_default" in value_payload:
+                        relinquish_default = value_payload["relinquish_default"]
+                        if relinquish_default is None or isinstance(relinquish_default, str):
+                            point.relinquish_default = relinquish_default
                             changed = True
                     if changed:
                         point.latest_read_at = now

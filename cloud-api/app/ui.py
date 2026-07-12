@@ -2380,7 +2380,7 @@ APP_SCRIPT = r"""
     if (!point || !commandablePoint(point) || currentUser?.role !== "admin") return;
     pendingPointWrite = point;
     byId("point-write-summary").textContent = `Device ${point.device_instance} | ${objectIdentifier(point)} | ${point.object_name || "Unnamed point"} | Current PV: ${formatPresentValue(point.present_value)}${activePriorityFromArray(point.priority_array) ? ` @${activePriorityFromArray(point.priority_array)}` : ""}`;
-    byId("point-write-value").value = point.present_value ?? "";
+    byId("point-write-value").value = point.relinquish_default ?? point.present_value ?? "";
     byId("point-write-action").value = "relinquish-default";
     byId("point-write-priority").value = "0";
     byId("point-write-confirm").checked = false;

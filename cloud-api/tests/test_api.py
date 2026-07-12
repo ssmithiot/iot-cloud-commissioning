@@ -2408,6 +2408,7 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
                         "raw_value": "72.4",
                         "active_priority": 8,
                         "priority_array": "(NULL, NULL, NULL, NULL, NULL, NULL, NULL, Real: 72.4)",
+                        "relinquish_default": "relinquish-default: Real: 68",
                         "status": "ok",
                     },
                     {
@@ -2436,6 +2437,7 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
     assert tree_response.json()["points"][0]["present_value"] == "72.4"
     assert tree_response.json()["points"][0]["active_priority"] == 8
     assert tree_response.json()["points"][0]["priority_array"] == "(NULL, NULL, NULL, NULL, NULL, NULL, NULL, Real: 72.4)"
+    assert tree_response.json()["points"][0]["relinquish_default"] == "relinquish-default: Real: 68"
     assert tree_response.json()["points"][1]["present_value"] == "active"
 
 

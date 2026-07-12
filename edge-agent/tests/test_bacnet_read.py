@@ -189,6 +189,8 @@ def test_bacnet_bulk_read_uses_edge_priority_array_read_before_property_87(tmp_p
             return subprocess.CompletedProcess(args[0], 0, stdout="analog-value, 39\n  present-value: Real: 69\n", stderr="")
         if args[0] == [sys.executable, "1", "analog-value", "39", "priority-array"]:
             return subprocess.CompletedProcess(args[0], 0, stdout="priority-array: (NULL, NULL, NULL, NULL, NULL, NULL, NULL, Real: 69)\n", stderr="")
+        if args[0] == [sys.executable, "1", "analog-value", "39", "relinquish-default"]:
+            return subprocess.CompletedProcess(args[0], 0, stdout="relinquish-default: Real: 72\n", stderr="")
         raise AssertionError(f"unexpected command: {args[0]}")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -197,7 +199,7 @@ def test_bacnet_bulk_read_uses_edge_priority_array_read_before_property_87(tmp_p
         config(tmp_path, bacrp_path=sys.executable, bacrpm_path=sys.executable),
         bacnet_read_bulk_job({
             "device_instance": 1,
-            "points": [{"saved_point_id": "point-39", "object_type": "analog-value", "object_instance": 39, "read_priority": True}],
+            "points": [{"saved_point_id": "point-39", "object_type": "analog-value", "object_instance": 39, "read_priority": True, "read_relinquish_default": True}],
         }),
     )
 
@@ -207,8 +209,10 @@ def test_bacnet_bulk_read_uses_edge_priority_array_read_before_property_87(tmp_p
     assert calls == [
         [sys.executable, "1", "analog-value", "39", "85"],
         [sys.executable, "1", "analog-value", "39", "priority-array"],
+        [sys.executable, "1", "analog-value", "39", "relinquish-default"],
     ]
     assert result["values"][0]["active_priority"] == 8
+    assert result["values"][0]["relinquish_default"] == "relinquish-default: Real: 72"
 
 
 def test_bacnet_bulk_read_falls_back_to_single_reads_when_rpm_returns_no_values(tmp_path: Path, monkeypatch) -> None:
