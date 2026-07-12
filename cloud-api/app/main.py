@@ -141,6 +141,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lifespan)
 logger = logging.getLogger("iot-cloud-api.tunnel")
+request_logger = logging.getLogger("iot-cloud-api.request")
 
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -170,6 +171,26 @@ TUNNEL_GATEWAY_LOCAL_ROUTE_PREFIXES = (
 TUNNEL_JS_ROOT_RELATIVE_PATH_PATTERN = re.compile(
     r"(?P<quote>[\"'`])(?P<url>/(?!/)[^\"'`]*)(?P=quote)"
 )
+
+
+def _request_id(value: str | None) -> str:
+    """Accept a bounded caller correlation ID or generate one for the request."""
+    if value and re.fullmatch(r"[A-Za-z0-9._-]{8,128}", value):
+        return value
+    return uuid4().hex
+
+
+@app.middleware("http")
+async def add_request_correlation(request: Request, call_next):
+    request_id = _request_id(request.headers.get("x-request-id"))
+    request.state.request_id = request_id
+    try:
+        response = await call_next(request)
+    except Exception:
+        request_logger.exception("Unhandled request error request_id=%s method=%s path=%s", request_id, request.method, request.url.path)
+        raise
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 def _aware_utc(value: datetime | None) -> datetime | None:
@@ -1180,6 +1201,25 @@ def health() -> dict[str, str]:
 def database_health(db: Session = Depends(get_db)) -> dict[str, object]:
     db.execute(text("select 1"))
     return {"status": "ok", "connection_pool": connection_pool_status(engine)}
+
+
+@app.get("/health/ready")
+def readiness_health() -> dict[str, object]:
+    """Readiness gate for deploys and uptime monitors; no state is modified."""
+    schema = schema_revision_status(engine, auto_create_tables=settings.auto_create_tables)
+    if not settings.auto_create_tables and not schema.is_current:
+        raise HTTPException(status_code=503, detail="Database schema is not current")
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("select 1"))
+    except Exception as exc:
+        request_logger.exception("Readiness database check failed")
+        raise HTTPException(status_code=503, detail="Database is unavailable") from exc
+    return {
+        "status": "ok",
+        "schema": schema.as_dict(),
+        "connection_pool": connection_pool_status(engine),
+    }
 
 
 @app.get("/health/schema")

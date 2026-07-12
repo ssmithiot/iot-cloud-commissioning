@@ -219,6 +219,14 @@ def test_health() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+    assert response.headers["x-request-id"]
+
+
+def test_health_reuses_valid_request_correlation_id() -> None:
+    response = client.get("/health", headers={"X-Request-ID": "gateway-smoke-0001"})
+
+    assert response.status_code == 200
+    assert response.headers["x-request-id"] == "gateway-smoke-0001"
 
 
 def test_settings_load_database_url_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -279,6 +287,15 @@ def test_database_health() -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["connection_pool"]["implementation"]
+
+
+def test_readiness_health() -> None:
+    response = client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["schema"]["migration_authority"] == "alembic"
     assert response.json()["connection_pool"]["implementation"]
 
 
