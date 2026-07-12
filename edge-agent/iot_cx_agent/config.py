@@ -32,6 +32,7 @@ class AgentConfig:
     # Maximum time allowed for a relayed request to the gateway-local UI.
     # This is intentionally independent from the WebSocket connect timeout.
     tunnel_request_timeout_sec: float = 900.0
+    local_ui_write_timeout_sec: float = 120.0
     bacnet_router_profile: str = "contemporary"
     bacnet_default_port: int = DEFAULT_BACNET_PORT
     bacwi_path: str = "bacwi"
@@ -46,6 +47,7 @@ class AgentConfig:
     ui_version: str = DEFAULT_UI_VERSION
     sqlite_path: Path = DEFAULT_SQLITE_PATH
     gateway_api_token: str | None = None
+    edge_agent_write_token: str | None = None
 
     @property
     def is_provisioned(self) -> bool:
@@ -130,6 +132,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         tunnel_enabled=bool(raw.get("tunnel_enabled", True)),
         local_ui_url=str(raw.get("local_ui_url", "http://127.0.0.1:5000")).rstrip("/"),
         tunnel_request_timeout_sec=float(raw.get("tunnel_request_timeout_sec", 900)),
+        local_ui_write_timeout_sec=float(raw.get("local_ui_write_timeout_sec", 120)),
         bacnet_router_profile=profile,
         bacnet_default_port=bacnet_port,
         bacwi_path=str(bacnet.get("bacwi_path", "bacwi")),
@@ -144,4 +147,5 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         ui_version=_configured_ui_version(raw.get("ui_version")),
         sqlite_path=sqlite_path,
         gateway_api_token=os.getenv("GATEWAY_API_TOKEN") or raw.get("gateway_api_token"),
+        edge_agent_write_token=os.getenv("EDGE_AGENT_WRITE_TOKEN") or raw.get("edge_agent_write_token"),
     )

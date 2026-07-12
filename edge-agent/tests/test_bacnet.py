@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from iot_cx_agent.bacnet import parse_bacnet_object_list, parse_bacwi_output, run_bacnet_runtime_check
+from iot_cx_agent.bacnet import active_priority_from_array_output, parse_bacnet_object_list, parse_bacwi_output, run_bacnet_runtime_check
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.jobs import execute_job
 
@@ -80,6 +80,12 @@ def test_parse_bacwi_output() -> None:
             "apdu": 480,
         },
     ]
+
+
+def test_active_priority_from_array_output() -> None:
+    assert active_priority_from_array_output("priority-array: (NULL, NULL, Real: 72.5, NULL)") == 3
+    assert active_priority_from_array_output("[1] NULL\n[2] Enumerated: active\n[3] NULL") == 2
+    assert active_priority_from_array_output("priority-array: (NULL, NULL, NULL)") is None
 
 
 def test_parse_bacnet_object_list_skips_device_and_duplicates() -> None:

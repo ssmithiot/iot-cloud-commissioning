@@ -14,6 +14,7 @@ from iot_cx_agent.bacnet import (
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.db import record_claimed_job, record_job_result
 from iot_cx_agent.heartbeat import auth_headers
+from iot_cx_agent.local_write import dispatch_bacnet_write_batch
 from iot_cx_agent.status import utc_timestamp
 
 
@@ -89,6 +90,12 @@ def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str
         result, error_message = run_bacnet_load_points(config, request if isinstance(request, dict) else {})
         if error_message == BACNET_RUNTIME_BUSY:
             return "deferred", result, error_message
+        if error_message is not None:
+            return "failed", result, error_message
+        return "completed", result, None
+
+    if job_type == "bacnet_write_batch":
+        result, error_message = dispatch_bacnet_write_batch(config, job)
         if error_message is not None:
             return "failed", result, error_message
         return "completed", result, None

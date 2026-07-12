@@ -65,6 +65,7 @@ def make_request() -> UpgradeRequest:
         ui_source_folder=r"C:\Dev\edge-bacnet-ui-v2",
         ui_username="admin",
         ui_password="ui-secret",
+        edge_agent_write_token="gateway-local-write-secret",
     )
 
 
@@ -101,10 +102,18 @@ def test_auth_commands_include_safe_verification() -> None:
     commands = auth_commands(make_request())
     labels = [label for label, _command, _sudo in commands]
     assert "backup start.sh" in labels
+    assert "write local edge UI adapter token" in labels
+    assert "write edge agent adapter token" in labels
     assert "verify safe start.sh auth" in labels
     verify_command = commands[-1][1]
     assert "sed -E" in verify_command
     assert "***SET***" in verify_command
+
+
+def test_apply_ui_commands_replaces_start_script() -> None:
+    commands = apply_ui_commands(make_request())
+    apply_command = next(command for label, command, _sudo in commands if label == "apply UI files")
+    assert "/tmp/edge-bacnet-ui-v2-update/start.sh" in apply_command
 
 
 def test_config_commands_write_root_owned_token_env_with_600_mode() -> None:
