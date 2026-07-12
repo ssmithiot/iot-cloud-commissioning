@@ -50,7 +50,7 @@ APP_SCRIPT = r"""
   const trendChartSizeStorageKey = "iot-cloud-trend-chart-size";
   const trendChartThemeStorageKey = "iot-cloud-trend-chart-theme";
   const trendChartRangeStorageKey = "iot-cloud-trend-chart-range";
-  const edgeResourceHealthMinimumVersion = "0.1.5";
+  const edgeResourceHealthMinimumVersion = "0.1.6";
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
   const pointTableColumns = [
@@ -5087,24 +5087,28 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .point-write-trigger,
     .point-write-trigger:hover,
     .point-write-trigger:focus-visible {{
-      display: inline;
-      min-height: 0;
-      padding: 0;
-      border: 0;
-      border-radius: 0;
+      display: inline-flex;
+      min-width: 88px;
+      min-height: 28px;
+      box-sizing: border-box;
+      justify-content: center;
+      align-items: center;
+      padding: 2px 8px;
+      border: 1px solid rgba(34, 211, 197, 0.4);
+      border-radius: 5px;
       color: inherit;
-      background: transparent;
+      background: rgba(34, 211, 197, 0.08);
       box-shadow: none;
       font: inherit;
       cursor: pointer;
     }}
     .point-write-trigger:hover {{
       color: var(--accent);
-      text-decoration: underline;
+      background: rgba(34, 211, 197, 0.16);
     }}
     .point-write-trigger:focus-visible {{
-      outline: 1px solid var(--accent);
-      outline-offset: 3px;
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }}
     .site-info-form-actions {{
       display: flex;

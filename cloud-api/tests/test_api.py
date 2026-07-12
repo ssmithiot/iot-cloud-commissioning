@@ -366,7 +366,7 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'id="update-selected-gateways"' in response.text
     assert 'data-select-update="${escapeHtml(gateway.gateway_id)}"' in response.text
     assert "queueGatewayUpdates" in response.text
-    assert 'const edgeResourceHealthMinimumVersion = "0.1.5";' in response.text
+    assert 'const edgeResourceHealthMinimumVersion = "0.1.6";' in response.text
     assert "return !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);" in response.text
     assert 'version.toLowerCase() !== "current"' in response.text
     assert 'data-sort="version">Edge App</button>' in response.text
