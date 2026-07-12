@@ -7,6 +7,10 @@ class Settings(BaseSettings):
         default="sqlite:///./cloud-api-dev.db",
         validation_alias=AliasChoices("DATABASE_URL", "CLOUD_DATABASE_URL"),
     )
+    database_pool_size: int = Field(default=2, ge=1, le=100, validation_alias="DATABASE_POOL_SIZE")
+    database_max_overflow: int = Field(default=0, ge=0, le=100, validation_alias="DATABASE_MAX_OVERFLOW")
+    database_pool_timeout_sec: int = Field(default=30, ge=1, le=300, validation_alias="DATABASE_POOL_TIMEOUT_SEC")
+    database_pool_recycle_sec: int = Field(default=300, ge=30, le=86_400, validation_alias="DATABASE_POOL_RECYCLE_SEC")
     auto_create_tables: bool = Field(
         default=False,
         validation_alias=AliasChoices("AUTO_CREATE_TABLES", "CLOUD_AUTO_CREATE_TABLES"),

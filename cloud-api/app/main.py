@@ -34,7 +34,7 @@ from app.auth import (
 )
 from app.access import require_site_access, visible_site_ids
 from app.config import settings
-from app.database import Base, engine, get_db
+from app.database import Base, connection_pool_status, engine, get_db
 from app.models import (
     BacnetWriteBatch,
     BacnetWriteCommand,
@@ -1177,9 +1177,9 @@ def health() -> dict[str, str]:
 
 
 @app.get("/health/db")
-def database_health(db: Session = Depends(get_db)) -> dict[str, str]:
+def database_health(db: Session = Depends(get_db)) -> dict[str, object]:
     db.execute(text("select 1"))
-    return {"status": "ok"}
+    return {"status": "ok", "connection_pool": connection_pool_status(engine)}
 
 
 @app.get("/health/schema")
