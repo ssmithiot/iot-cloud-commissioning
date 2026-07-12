@@ -435,9 +435,13 @@ def test_gateway_workspace_trend_chart_tracks_resized_detail_pane() -> None:
     assert 'renderResponsivePointTrend(chart, samples, point.units || "");' in response.text
     assert '--trend-plot-fill: #fff;' in response.text
     assert 'font: 13px/1 "JetBrains Mono", Consolas, monospace;' in response.text
-    assert 'if (!points.length) return `<span class="muted">No numeric samples are available yet.</span>`;' in response.text
+    assert "if (!points.length) return binaryTrendChart(samples, chartWidth, chartHeight);" in response.text
     assert 'const plottedPoints = points.length === 1' in response.text
     assert '1 sample · value ${points[0].valueNumber.toFixed(2)}' in response.text
+    assert "function binaryTrendSamples(samples)" in response.text
+    assert "function binaryTrendChart(samples" in response.text
+    assert 'current ${escapeHtml(current.stateLabel)}' in response.text
+    assert "No numeric or binary samples are available yet." in response.text
 
 
 def test_gateway_workspace_stacks_trends_for_selected_points() -> None:
