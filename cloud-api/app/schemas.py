@@ -610,13 +610,13 @@ class BacnetWriteBatchOut(BaseModel):
     batch_id: str
     gateway_id: str
     requested_by: str
-    approved_by: str
+    approved_by: str | None
     status: str
     write_count: int
     queued_count: int
     job_ids: list[str]
     requested_at: datetime
-    approved_at: datetime
+    approved_at: datetime | None
     completed_at: datetime | None
     commands: list[BacnetWriteCommandOut]
 

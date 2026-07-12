@@ -64,6 +64,7 @@ BACNET_OBJECT_TYPE_BY_ID = {
 }
 BACNET_PRESENT_VALUE = "present-value"
 BACNET_PRESENT_VALUE_PROPERTY_ID = 85
+BACNET_PRIORITY_ARRAY_PROPERTY_ID = 87
 BACNET_OBJECT_LIST_PROPERTY_ID = 76
 BACNET_OBJECT_NAME_PROPERTY_ID = 77
 BACNET_POINT_LOAD_BATCH_SIZE = 40
@@ -403,6 +404,7 @@ def validate_bacnet_read_bulk_request(request: dict[str, Any]) -> dict[str, obje
                 "object_name": point.get("object_name") if isinstance(point.get("object_name"), str) else None,
                 "property": BACNET_PRESENT_VALUE,
                 "property_id": BACNET_PRESENT_VALUE_PROPERTY_ID,
+                "read_priority": bool(point.get("read_priority", False)),
             }
         )
 
@@ -553,6 +555,36 @@ def build_bacnet_rpm_value_batch_args(
     for point in points:
         args.extend([str(point["object_type"]), str(point["object_instance"]), str(BACNET_PRESENT_VALUE_PROPERTY_ID)])
     return args
+
+
+def build_bacnet_priority_array_args(
+    config: AgentConfig,
+    device_instance: int,
+    point: dict[str, object],
+) -> list[str]:
+    return [
+        config.bacrp_path,
+        str(device_instance),
+        str(point["object_type"]),
+        str(point["object_instance"]),
+        str(BACNET_PRIORITY_ARRAY_PROPERTY_ID),
+    ]
+
+
+def active_priority_from_array_output(raw_output: str) -> int | None:
+    text = (raw_output or "").strip()
+    indexed = re.findall(r"\[\s*(\d{1,2})\s*\]\s*[:=]?\s*([^\n\[]+)", text)
+    for index, value in indexed:
+        if value.strip(" ,;:(){}\t").lower() not in {"", "null", "none", "(null)", "--"}:
+            return int(index)
+
+    match = re.search(r"priority[\s_-]*array\s*[:=]?\s*\((.*?)\)", text, flags=re.IGNORECASE | re.DOTALL)
+    if match is not None:
+        values = [part.strip(" ,;:(){}\t") for part in match.group(1).split(",")]
+        for index, value in enumerate(values[:16], start=1):
+            if value.lower() not in {"", "null", "none", "(null)", "--"}:
+                return index
+    return None
 
 
 def build_bacnet_rpm_point_args(
@@ -809,6 +841,27 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
                 else:
                     read_source = "rpm-bulk"
                 value, raw_value = parsed_value
+                priority_read: dict[str, object] = {}
+                if point.get("read_priority"):
+                    priority_args = build_bacnet_priority_array_args(
+                        config,
+                        int(normalized["device_instance"]),
+                        point,
+                    )
+                    priority_completed, priority_error = _run_command(
+                        priority_args,
+                        config,
+                        env,
+                        "BACnet priority-array read",
+                    )
+                    if priority_error is not None or priority_completed is None:
+                        priority_read["priority_read_error"] = priority_error or "priority-array not returned"
+                    else:
+                        priority_output = _combined_output(priority_completed)
+                        if priority_output:
+                            raw_outputs.append(priority_output)
+                        priority_read["priority_array"] = priority_output or None
+                        priority_read["active_priority"] = active_priority_from_array_output(priority_output)
                 values.append(
                     {
                         "saved_point_id": point.get("saved_point_id"),
@@ -818,6 +871,7 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
                         "raw_value": raw_value,
                         "status": "ok",
                         "read_source": read_source,
+                        **priority_read,
                     }
                 )
     finally:

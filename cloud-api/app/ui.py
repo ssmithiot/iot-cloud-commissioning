@@ -47,7 +47,7 @@ APP_SCRIPT = r"""
   const trendChartSizeStorageKey = "iot-cloud-trend-chart-size";
   const trendChartThemeStorageKey = "iot-cloud-trend-chart-theme";
   const trendChartRangeStorageKey = "iot-cloud-trend-chart-range";
-  const edgeResourceHealthMinimumVersion = "0.1.3";
+  const edgeResourceHealthMinimumVersion = "0.1.4";
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
   const pointTableColumns = [
@@ -1397,7 +1397,7 @@ APP_SCRIPT = r"""
   }
 
   function gatewayNeedsResourceHealthUpdate(gateway) {
-    return !hasResourceMetric(gateway.cpu_load_pct) && !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);
+    return !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);
   }
 
   function gatewayRequiresUpdate(gateway) {
@@ -2217,7 +2217,7 @@ APP_SCRIPT = r"""
     if (key !== "present_value" || point.active_priority == null) {
       return value;
     }
-    return `${value}<span class="point-active-priority" title="Last verified BACnet write priority">Priority ${escapeHtml(point.active_priority)}</span>`;
+    return `${value}<span class="point-active-priority" title="Last verified BACnet write priority">@${escapeHtml(point.active_priority)}</span>`;
   }
 
   function tablePoints() {

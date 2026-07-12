@@ -245,11 +245,11 @@ class BacnetWriteBatch(Base):
         index=True,
     )
     requested_by: Mapped[str] = mapped_column(String(320), nullable=False)
-    approved_by: Mapped[str] = mapped_column(String(320), nullable=False)
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="queued", index=True)
+    approved_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending_approval", index=True)
     write_count: Mapped[int] = mapped_column(Integer, nullable=False)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
-    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     commands: Mapped[list["BacnetWriteCommand"]] = relationship(

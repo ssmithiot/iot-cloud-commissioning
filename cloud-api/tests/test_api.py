@@ -366,6 +366,8 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'id="update-selected-gateways"' in response.text
     assert 'data-select-update="${escapeHtml(gateway.gateway_id)}"' in response.text
     assert "queueGatewayUpdates" in response.text
+    assert 'const edgeResourceHealthMinimumVersion = "0.1.4";' in response.text
+    assert "return !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);" in response.text
     assert 'version.toLowerCase() !== "current"' in response.text
     assert 'data-sort="version">Edge App</button>' in response.text
     assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
@@ -479,7 +481,7 @@ def test_gateway_workspace_formats_present_value_and_shows_active_priority() -> 
     assert "function pointTableCellHtml(point, key)" in response.text
     assert 'point.active_priority == null' in response.text
     assert 'class="point-active-priority"' in response.text
-    assert 'Priority ${escapeHtml(point.active_priority)}' in response.text
+    assert '@${escapeHtml(point.active_priority)}' in response.text
     assert 'present_value: point.present_value == null ? null : String(point.present_value)' in response.text
 
 
@@ -2350,6 +2352,8 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
                         "object_instance": 1,
                         "value": 72.4,
                         "raw_value": "72.4",
+                        "active_priority": 8,
+                        "priority_array": "(NULL, NULL, NULL, NULL, NULL, NULL, NULL, Real: 72.4)",
                         "status": "ok",
                     },
                     {
@@ -2373,9 +2377,60 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
     assert next_response.json()["job_type"] == "bacnet_read_bulk"
     assert len(next_response.json()["request"]["points"]) == 2
     assert next_response.json()["request"]["points"][0]["saved_point_id"] == point_response.json()["id"]
+    assert next_response.json()["request"]["points"][0]["read_priority"] is True
     assert result_response.status_code == 200
     assert tree_response.json()["points"][0]["present_value"] == "72.4"
+    assert tree_response.json()["points"][0]["active_priority"] == 8
     assert tree_response.json()["points"][1]["present_value"] == "active"
+
+
+def test_admin_stages_then_approves_bacnet_write_batch() -> None:
+    raw_token = create_gateway_token("GW001")
+    set_gateway_heartbeat("GW001", seconds_ago=15)
+    headers = admin_headers()
+    group = client.post("/api/ui/gateways/GW001/groups", headers=headers, json={"name": "HVAC"}).json()
+    device = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=headers,
+        json={"group_id": group["id"], "device_instance": 1001, "device_name": "AHU-1"},
+    ).json()
+    point = client.post(
+        f"/api/ui/devices/{device['id']}/points",
+        headers=headers,
+        json={
+            "object_type": "analog-value",
+            "object_instance": 5,
+            "object_name": "Setpoint",
+            "property": "present-value",
+            "writable": True,
+        },
+    ).json()
+
+    staged = client.post(
+        "/api/ui/gateways/GW001/points/write",
+        headers=headers,
+        json={"writes": [{"point_id": point["id"], "value": "72.5", "priority": 8}]},
+    )
+    before_approval = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
+    approved = client.post(
+        f"/api/ui/gateways/GW001/points/write/{staged.json()['batch_id']}/approve",
+        headers=headers,
+    )
+    next_job = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
+
+    assert staged.status_code == 200
+    assert staged.json()["status"] == "pending_approval"
+    assert staged.json()["approved_by"] is None
+    assert staged.json()["job_ids"] == []
+    assert before_approval.status_code in {200, 204}
+    if before_approval.status_code == 200:
+        assert before_approval.json() is None
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "queued"
+    assert approved.json()["approved_by"] == "admin_api_token"
+    assert len(approved.json()["job_ids"]) == 1
+    assert next_job.json()["job_type"] == "bacnet_write_batch"
+    assert next_job.json()["request"]["writes"][0]["priority"] == 8
 
 
 def test_ui_operator_can_import_edge_commissioning_template() -> None:

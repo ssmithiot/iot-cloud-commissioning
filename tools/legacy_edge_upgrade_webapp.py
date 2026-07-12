@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from html import escape
@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import re
+import secrets
 import shlex
 import socket
 import tempfile
@@ -37,7 +38,10 @@ REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
 NESTED_UPLOAD_CHUNK_SIZE = 3000
-UPDATE_AGENT_PHASES = (0, 7, 9, 10, 11)
+# Manual Cloud-triggered 0.1.4 updates replace both halves of the local handoff:
+# the proven edge UI writer and the agent that delegates queued jobs to it.
+# Nothing polls this list to auto-update a gateway when it reconnects.
+UPDATE_AGENT_PHASES = (0, 1, 2, 3, 4, 5, 7, 9, 10, 11)
 JOBS: dict[str, "UpgradeJob"] = {}
 JOBS_LOCK = threading.Lock()
 WORKER_STATUS: dict[str, object] = {
@@ -93,6 +97,7 @@ class UpgradeRequest:
     skip_edge_ui_stop: bool = False
     cloud_portal_verified: bool = False
     selected_phases: tuple[int, ...] = tuple(range(len(PHASES)))
+    edge_agent_write_token: str = ""
 
 
 @dataclass
@@ -788,7 +793,7 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         ("verify normalized templates", r"""test -d /tmp/edge-bacnet-ui-v2-update/templates && ! find /tmp/edge-bacnet-ui-v2-update -maxdepth 1 -name 'templates\*' | grep -q . && ls -lah /tmp/edge-bacnet-ui-v2-update/templates""", False),
         stop_command,
         ("confirm edge UI stopped", "systemctl is-active edge-bacnet-ui.service || true", False),
-        ("apply UI files", "cp /tmp/edge-bacnet-ui-v2-update/app.py /home/swadmin/edge-bacnet-ui-v2/app.py && cp /tmp/edge-bacnet-ui-v2-update/README.md /home/swadmin/edge-bacnet-ui-v2/README.md && cp /tmp/edge-bacnet-ui-v2-update/requirements.txt /home/swadmin/edge-bacnet-ui-v2/requirements.txt && rm -rf /home/swadmin/edge-bacnet-ui-v2/templates && cp -a /tmp/edge-bacnet-ui-v2-update/templates /home/swadmin/edge-bacnet-ui-v2/templates", False),
+        ("apply UI files", "cp /tmp/edge-bacnet-ui-v2-update/app.py /home/swadmin/edge-bacnet-ui-v2/app.py && cp /tmp/edge-bacnet-ui-v2-update/README.md /home/swadmin/edge-bacnet-ui-v2/README.md && cp /tmp/edge-bacnet-ui-v2-update/requirements.txt /home/swadmin/edge-bacnet-ui-v2/requirements.txt && cp /tmp/edge-bacnet-ui-v2-update/start.sh /home/swadmin/edge-bacnet-ui-v2/start.sh && rm -rf /home/swadmin/edge-bacnet-ui-v2/templates && cp -a /tmp/edge-bacnet-ui-v2-update/templates /home/swadmin/edge-bacnet-ui-v2/templates", False),
         ("verify UI file ownership", "find /home/swadmin/edge-bacnet-ui-v2 -maxdepth 2 \\( ! -user swadmin -o ! -group swadmin \\) -print | head -20 || true", False),
         ("preserve start.sh executable", "chmod +x /home/swadmin/edge-bacnet-ui-v2/start.sh", False),
         ("verify replaced templates", "ls -lah /home/swadmin/edge-bacnet-ui-v2/templates", False),
@@ -796,9 +801,20 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
 
 
 def auth_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
+    if not request.edge_agent_write_token:
+        raise ValueError("A gateway-local edge-agent write token is required.")
+    token_b64 = b64(request.edge_agent_write_token + "\n")
+    agent_env_script = (
+        "set -eu; tmp=$(mktemp); "
+        "grep -v '^EDGE_AGENT_WRITE_TOKEN=' /etc/iot-cx-agent/edge-agent.env 2>/dev/null > \"$tmp\" || true; "
+        f"printf %s {shell_quote(token_b64)} | base64 -d >> \"$tmp\"; "
+        "install -m 0600 -o root -g root \"$tmp\" /etc/iot-cx-agent/edge-agent.env; rm -f \"$tmp\""
+    )
     return [
         ("backup start.sh", 'cd /home/swadmin/edge-bacnet-ui-v2 && cp start.sh "start.sh.bak.$(date +%Y%m%d-%H%M%S)"', False),
         ("update start.sh auth and BACnet port", update_start_sh_command(request.ui_username, request.ui_password), False),
+        ("write local edge UI adapter token", f"printf %s {shell_quote(token_b64)} | base64 -d > /home/swadmin/edge-bacnet-ui-v2/.edge-agent-write-token && chmod 600 /home/swadmin/edge-bacnet-ui-v2/.edge-agent-write-token", False),
+        ("write edge agent adapter token", f"sudo -S -p '' sh -c {shell_quote(agent_env_script)}", True),
         (
             "verify safe start.sh auth",
             r"""grep -nE 'BACNET_IP_PORT|AUTH_ENABLED|EDGE_UI_USERNAME|EDGE_UI_PASSWORD|RPM_BLOCK_SIZE|RPM_VIEW_BLOCK_SIZE|DEFAULT_SCAN_LIMIT|MAX_OBJECTS' /home/swadmin/edge-bacnet-ui-v2/start.sh | sed -E "s/(EDGE_UI_PASSWORD=).*/\1'***SET***'/" """,
@@ -946,14 +962,14 @@ def disable_agent_commands() -> list[tuple[str, str, bool]]:
 
 def create_update_zip(source_folder: str) -> Path:
     source = Path(source_folder)
-    required = ["app.py", "templates", "README.md", "requirements.txt"]
+    required = ["app.py", "templates", "README.md", "requirements.txt", "start.sh"]
     missing = [item for item in required if not (source / item).exists()]
     if missing:
         raise RuntimeError(f"Local BACnet UI source folder is missing: {', '.join(missing)}")
     temp_dir = Path(tempfile.mkdtemp(prefix="legacy-edge-upgrade-"))
     zip_path = temp_dir / "edge-bacnet-ui-v2-update.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file_name in ["app.py", "README.md", "requirements.txt"]:
+        for file_name in ["app.py", "README.md", "requirements.txt", "start.sh"]:
             archive.write(source / file_name, arcname=file_name)
         for path in (source / "templates").rglob("*"):
             if path.is_file():
@@ -1017,6 +1033,7 @@ class LegacyUpgradeRunner:
                 request.cradlepoint_password,
                 request.gateway_password,
                 request.ui_password,
+                request.edge_agent_write_token,
             ]
         )
         self.log = LiveLog(job_id, self.redactor)
@@ -1300,7 +1317,7 @@ class LegacyUpgradeRunner:
         if self.request.dry_run:
             zip_path = Path(tempfile.gettempdir()) / "edge-bacnet-ui-v2-update.dry-run.zip"
             self.log.append(f"[dry-run] Would build ZIP from {self.request.ui_source_folder} and upload to {REMOTE_ZIP_PATH}.\n")
-            self.log.append(f"[dry-run] Required contents: app.py, templates/, README.md, requirements.txt\n")
+            self.log.append(f"[dry-run] Required contents: app.py, templates/, README.md, requirements.txt, start.sh\n")
             return
         zip_path = create_update_zip(self.request.ui_source_folder)
         self.log.append(f"Built local UI update ZIP: {zip_path} ({zip_path.stat().st_size} bytes)\n")
@@ -1378,6 +1395,8 @@ def run_until_checkpoint(job_id: str) -> None:
 
 def start_job(request: UpgradeRequest) -> str:
     job_id = uuid.uuid4().hex
+    if not request.edge_agent_write_token:
+        request = replace(request, edge_agent_write_token=secrets.token_urlsafe(32))
     with JOBS_LOCK:
         JOBS[job_id] = UpgradeJob(request=request, status="queued", log="Queued legacy edge upgrade job.\n")
     thread = threading.Thread(target=run_until_checkpoint, args=(job_id,), daemon=True)
