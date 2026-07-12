@@ -435,6 +435,9 @@ def test_gateway_workspace_trend_chart_tracks_resized_detail_pane() -> None:
     assert 'renderResponsivePointTrend(chart, samples, point.units || "");' in response.text
     assert '--trend-plot-fill: #fff;' in response.text
     assert 'font: 13px/1 "JetBrains Mono", Consolas, monospace;' in response.text
+    assert 'if (!points.length) return `<span class="muted">No numeric samples are available yet.</span>`;' in response.text
+    assert 'const plottedPoints = points.length === 1' in response.text
+    assert '1 sample · value ${points[0].valueNumber.toFixed(2)}' in response.text
 
 
 def test_gateway_workspace_stacks_trends_for_selected_points() -> None:
@@ -490,7 +493,10 @@ def test_gateway_workspace_defaults_devices_and_object_folders_to_collapsed() ->
     assert "treeBranchExpansion.set(treeKey, hidden);" in response.text
     assert "row.dataset.treeKey = `device:${device.id}`;" in response.text
     assert "target.scrollTop = previousScrollTop;" in response.text
-    assert "grid-template-columns: 18px 18px minmax(0, max-content) max-content max-content;" in response.text
+    assert "grid-template-columns: 18px 18px 18px minmax(0, max-content) max-content max-content;" in response.text
+    assert 'row.querySelector(".node-icon").after(checkbox);' in response.text
+    assert "max-height: none;" in response.text
+    assert "overflow: visible;" in response.text
 
 
 def test_gateway_workspace_formats_present_value_and_shows_active_priority() -> None:
