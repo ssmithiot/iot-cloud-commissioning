@@ -2632,6 +2632,22 @@ APP_SCRIPT = r"""
       : `Trend disabled for ${savedPointLabel(point)}. Existing samples remain available.`);
   }
 
+  async function updateSelectedPointTrends(points, enabled, interval) {
+    if (!points.length) return;
+    await api(`/api/ui/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/trends`, {
+      method: "PUT",
+      body: JSON.stringify({ point_ids: points.map((point) => point.id), enabled, interval_sec: interval }),
+    });
+    points.forEach((point) => {
+      point.trend_enabled = enabled;
+      point.trend_interval_sec = interval;
+    });
+    renderSelectedPointTrends(selectedSavedPoints());
+    setText("status", enabled
+      ? `Trend enabled for ${points.length} selected point${points.length === 1 ? "" : "s"} every ${trendIntervalLabel(interval)}.`
+      : `Trend disabled for ${points.length} selected point${points.length === 1 ? "" : "s"}. Existing samples remain available.`);
+  }
+
   function renderTrendCardControls(card, point) {
     const controls = card.querySelector(".trend-card-controls");
     if (!controls) return;
@@ -2676,7 +2692,21 @@ APP_SCRIPT = r"""
     const chartRange = trendChartRange();
     panel.dataset.chartSize = chartSize;
     panel.dataset.chartTheme = chartTheme;
-    panel.innerHTML = `<div class="trend-panel-header"><h2>Trends (${points.length})</h2><div class="trend-panel-controls"><label>Chart size <select class="trend-chart-size"><option value="compact"${chartSize === "compact" ? " selected" : ""}>Compact</option><option value="standard"${chartSize === "standard" ? " selected" : ""}>Standard</option><option value="tall"${chartSize === "tall" ? " selected" : ""}>Tall</option></select></label><label>Time range <select class="trend-chart-range"><option value="1h"${chartRange === "1h" ? " selected" : ""}>1 hour</option><option value="4h"${chartRange === "4h" ? " selected" : ""}>4 hours</option><option value="12h"${chartRange === "12h" ? " selected" : ""}>12 hours</option><option value="24h"${chartRange === "24h" ? " selected" : ""}>24 hours</option><option value="7d"${chartRange === "7d" ? " selected" : ""}>7 days</option><option value="all"${chartRange === "all" ? " selected" : ""}>All history</option></select></label><label>Theme <select class="trend-chart-theme"><option value="light"${chartTheme === "light" ? " selected" : ""}>Light</option><option value="dark"${chartTheme === "dark" ? " selected" : ""}>Dark</option></select></label></div></div><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><div class="trend-card-header"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3><div class="trend-card-details"><div class="trend-card-controls">${trendCardControls(point)}</div><span class="trend-card-summary">Loading samples...</span></div></div><div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
+    panel.innerHTML = `<div class="trend-panel-header"><h2>Trends (${points.length})</h2><div class="trend-panel-controls"><label>Chart size <select class="trend-chart-size"><option value="compact"${chartSize === "compact" ? " selected" : ""}>Compact</option><option value="standard"${chartSize === "standard" ? " selected" : ""}>Standard</option><option value="tall"${chartSize === "tall" ? " selected" : ""}>Tall</option></select></label><label>Time range <select class="trend-chart-range"><option value="1h"${chartRange === "1h" ? " selected" : ""}>1 hour</option><option value="4h"${chartRange === "4h" ? " selected" : ""}>4 hours</option><option value="12h"${chartRange === "12h" ? " selected" : ""}>12 hours</option><option value="24h"${chartRange === "24h" ? " selected" : ""}>24 hours</option><option value="7d"${chartRange === "7d" ? " selected" : ""}>7 days</option><option value="all"${chartRange === "all" ? " selected" : ""}>All history</option></select></label><label>Theme <select class="trend-chart-theme"><option value="light"${chartTheme === "light" ? " selected" : ""}>Light</option><option value="dark"${chartTheme === "dark" ? " selected" : ""}>Dark</option></select></label></div></div><div class="global-trend-setup"><strong>Global initial trend setup</strong><label><input class="global-trend-enabled" type="checkbox" checked${canEditTree() ? "" : " disabled"}> Enable trends</label><label>Interval <select class="global-trend-interval"${canEditTree() ? "" : " disabled"}>${trendIntervalOptions(300)}</select></label><button class="apply-global-trend-setup" type="button"${canEditTree() ? "" : " disabled"}>Apply to all selected</button></div><div class="point-trend-list">${points.map((point) => `<section class="point-trend-card"><div class="trend-card-header"><h3>Trend: ${escapeHtml(point.object_name || savedPointLabel(point))}</h3><div class="trend-card-details"><div class="trend-card-controls">${trendCardControls(point)}</div><span class="trend-card-summary">Loading samples...</span></div></div><div class="point-trend-chart-wrap">Loading samples...</div></section>`).join("")}</div>`;
+    panel.querySelector(".apply-global-trend-setup")?.addEventListener("click", async () => {
+      const button = panel.querySelector(".apply-global-trend-setup");
+      button.disabled = true;
+      try {
+        await updateSelectedPointTrends(
+          points,
+          panel.querySelector(".global-trend-enabled").checked,
+          Number(panel.querySelector(".global-trend-interval").value),
+        );
+      } catch (error) {
+        setText("status", errorMessage(error), true);
+        button.disabled = false;
+      }
+    });
     panel.querySelector(".trend-chart-size")?.addEventListener("change", (event) => {
       const size = event.target.value;
       panel.dataset.chartSize = size;
@@ -4517,6 +4547,23 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       align-items: end;
       flex-wrap: wrap;
       gap: 10px;
+    }}
+    .global-trend-setup {{
+      display: flex;
+      align-items: end;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+    }}
+    .global-trend-setup strong {{
+      margin-right: 4px;
+    }}
+    .global-trend-setup label {{
+      margin: 0;
+      font-size: 12px;
     }}
     .point-trend-list {{
       display: grid;
