@@ -86,6 +86,7 @@ def test_active_priority_from_array_output() -> None:
     assert active_priority_from_array_output("priority-array: (NULL, NULL, Real: 72.5, NULL)") == 3
     assert active_priority_from_array_output("[1] NULL\n[2] Enumerated: active\n[3] NULL") == 2
     assert active_priority_from_array_output("priority-array: (NULL, NULL, NULL)") is None
+    assert active_priority_from_array_output("priority-array:\n" + "\n".join(["NULL"] * 7 + ["Real: 72.5"] + ["NULL"] * 8)) == 8
 
 
 def test_parse_bacnet_object_list_skips_device_and_duplicates() -> None:

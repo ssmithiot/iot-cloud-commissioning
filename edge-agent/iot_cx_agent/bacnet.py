@@ -585,6 +585,16 @@ def active_priority_from_array_output(raw_output: str) -> int | None:
         for index, value in enumerate(values[:16], start=1):
             if value.lower() not in {"", "null", "none", "(null)", "--"}:
                 return index
+        return None
+
+    # A few bacnet-stack versions render the 16 slots as one value per line
+    # instead of a comma-separated parenthesized array.
+    lines = [line.strip(" ,;:(){}[]\t") for line in text.splitlines()]
+    lines = [line for line in lines if line and not re.fullmatch(r"priority[\s_-]*array", line, flags=re.IGNORECASE)]
+    if len(lines) >= 16:
+        for index, value in enumerate(lines[:16], start=1):
+            if value.lower() not in {"", "null", "none", "(null)", "--"}:
+                return index
     return None
 
 

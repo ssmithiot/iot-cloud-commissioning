@@ -519,6 +519,9 @@ def test_gateway_workspace_formats_present_value_and_shows_active_priority() -> 
     assert 'label: "Present Value (Property 85)"' in response.text
     assert "function formatPresentValue(value)" in response.text
     assert "return formatPresentValue(point.present_value);" in response.text
+    assert "function formatPriorityArray(value)" in response.text
+    assert "All priorities NULL (relinquished)" in response.text
+    assert "P${entry.priority}: ${entry.value}" in response.text
     assert "function pointTableCellHtml(point, key)" in response.text
     assert 'point.active_priority > 16' in response.text
     assert 'class="point-active-priority"' in response.text
@@ -2427,6 +2430,7 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
     assert result_response.status_code == 200
     assert tree_response.json()["points"][0]["present_value"] == "72.4"
     assert tree_response.json()["points"][0]["active_priority"] == 8
+    assert tree_response.json()["points"][0]["priority_array"] == "(NULL, NULL, NULL, NULL, NULL, NULL, NULL, Real: 72.4)"
     assert tree_response.json()["points"][1]["present_value"] == "active"
 
 

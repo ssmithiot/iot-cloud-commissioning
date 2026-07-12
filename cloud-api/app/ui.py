@@ -2202,10 +2202,7 @@ APP_SCRIPT = r"""
       return commandablePoint(point) ? "Yes" : "No";
     }
     if (key === "priority_array") {
-      if (point.active_priority != null) {
-        return `Commanded @${point.active_priority}`;
-      }
-      return point.priority_array ? "Relinquished" : "not loaded";
+      return formatPriorityArray(point.priority_array);
     }
     if (key === "relinquish_default") {
       return point.relinquish_default ?? "not loaded";
@@ -2230,6 +2227,33 @@ APP_SCRIPT = r"""
       rounded = 0;
     }
     return rounded.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+  }
+
+  function formatPriorityArray(value) {
+    const raw = value == null ? "" : String(value).trim();
+    if (!raw) {
+      return "not loaded";
+    }
+    const nullValues = new Set(["", "null", "(null)", "none", "--"]);
+    const indexed = [...raw.matchAll(/\[\s*(\d{1,2})\s*\]\s*[:=]?\s*([^\n\[]+)/g)]
+      .map((match) => ({ priority: Number(match[1]), value: match[2].trim().replace(/[,;:]$/, "") }))
+      .filter((entry) => entry.priority >= 1 && entry.priority <= 16);
+    let entries = indexed;
+    if (!entries.length) {
+      let arrayText = raw.replace(/^priority[\s_-]*array\s*[:=]?\s*/i, "").trim();
+      if (arrayText.startsWith("(") && arrayText.endsWith(")")) {
+        arrayText = arrayText.slice(1, -1).trim();
+      }
+      const commaValues = arrayText.split(",").map((entry) => entry.trim()).filter(Boolean);
+      const lineValues = arrayText.split(/\r?\n/).map((entry) => entry.trim().replace(/^[\[\]{}()\s]+|[\[\]{}()\s]+$/g, "")).filter(Boolean);
+      const values = commaValues.length > 1 ? commaValues : lineValues;
+      entries = values.slice(0, 16).map((entry, index) => ({ priority: index + 1, value: entry }));
+    }
+    const active = entries.filter((entry) => !nullValues.has(entry.value.toLowerCase()));
+    if (!active.length) {
+      return "All priorities NULL (relinquished)";
+    }
+    return active.map((entry) => `P${entry.priority}: ${entry.value}`).join("; ");
   }
 
   function pointTableCellHtml(point, key) {
