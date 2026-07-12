@@ -477,10 +477,12 @@ def test_gateway_workspace_table_view_defaults_to_tree_selection_or_no_saved_tab
     assert response.status_code == 200
     assert '<span class="eyebrow">Table View</span>' in response.text
     assert '<h2>Table View</h2>' in response.text
-    assert '<option value="">No saved table selected</option>' in response.text
-    assert "const selectedPoints = selectedSavedPoints();" in response.text
-    assert "if (!selectedPointTableName)" in response.text
-    assert "Select values in the tree or choose a saved table." in response.text
+    assert '<option value="">No saved selection selected</option>' in response.text
+    assert "function tablePoints()" in response.text
+    assert "return selectedSavedPoints();" in response.text
+    assert "Select one or more saved points in the tree before saving a table." in response.text
+    assert "selectedSavedPointIds = new Set([...customTablePointIds]" in response.text
+    assert "Select values in the tree to show them in Table View." in response.text
 
 
 def test_gateway_workspace_defaults_devices_and_object_folders_to_collapsed() -> None:

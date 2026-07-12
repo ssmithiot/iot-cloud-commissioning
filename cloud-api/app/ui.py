@@ -2122,26 +2122,33 @@ APP_SCRIPT = r"""
       return;
     }
     const names = Object.keys(savedPointTables);
-    select.innerHTML = `<option value="">No saved table selected</option>${names.map((name) => (
+    select.innerHTML = `<option value="">No saved selection selected</option>${names.map((name) => (
       `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`
     )).join("")}`;
     select.value = selectedPointTableName;
   }
 
   function saveActivePointTableName() {
+    const selected = selectedSavedPoints();
+    if (!selected.length) {
+      setText("status", "Select one or more saved points in the tree before saving a table.", true);
+      return;
+    }
     const inputName = byId("point-table-name").value.trim() || "New Table View";
     if (inputName !== activePointTableName) {
       delete savedPointTables[activePointTableName];
       activePointTableName = inputName;
     }
+    customTablePointIds = new Set(selected.map((point) => point.id));
+    selectedPointTableName = activePointTableName;
     saveCustomPointTableState();
-    setText("status", `Saved table ${inputName}.`);
+    setText("status", `Saved ${selected.length} selected point(s) as ${inputName}.`);
   }
 
   function switchActivePointTable(name) {
     selectedPointTableName = name;
     if (!name) {
-      renderCustomPointTable();
+      renderPointTableControls();
       return;
     }
     if (!savedPointTables[name]) {
@@ -2151,9 +2158,11 @@ APP_SCRIPT = r"""
     const activeTable = savedPointTables[name] || {};
     customTablePointIds = new Set(Array.isArray(activeTable.pointIds) ? activeTable.pointIds : []);
     visiblePointTableColumns = Array.isArray(activeTable.columns) && activeTable.columns.length ? normalizePointTableColumns(activeTable.columns) : ["object_identifier", "present_value", "units"];
-    saveCustomPointTableState();
-    renderCustomPointTable();
+    const availableIds = new Set((currentGatewayTree?.points || []).map((point) => point.id));
+    selectedSavedPointIds = new Set([...customTablePointIds].filter((pointId) => availableIds.has(pointId)));
+    renderTree(currentGatewayTree);
     renderPropertyPicker();
+    setText("status", `Selected ${selectedSavedPointIds.size} point(s) from ${name}.`);
   }
 
   function newPointTable() {
@@ -2164,12 +2173,13 @@ APP_SCRIPT = r"""
       name = `New Table View ${index}`;
     }
     activePointTableName = name;
-    selectedPointTableName = name;
+    selectedPointTableName = "";
     customTablePointIds = new Set();
+    selectedSavedPointIds = new Set();
     visiblePointTableColumns = ["object_identifier", "present_value", "units"];
     savedPointTables[name] = { pointIds: [], columns: visiblePointTableColumns };
     saveCustomPointTableState();
-    renderCustomPointTable();
+    renderTree(currentGatewayTree);
   }
 
   function pointTableValue(point, key) {
@@ -2225,25 +2235,16 @@ APP_SCRIPT = r"""
   }
 
   function tablePoints() {
-    const points = currentGatewayTree?.points || [];
-    const selectedPoints = selectedSavedPoints();
-    if (selectedPoints.length) {
-      return selectedPoints;
-    }
-    if (!selectedPointTableName) {
-      return [];
-    }
-    const byPointId = new Map(points.map((point) => [point.id, point]));
-    return [...customTablePointIds].map((id) => byPointId.get(id)).filter(Boolean);
+    return selectedSavedPoints();
   }
 
   function addPointToCustomTable(pointId) {
     if (!pointId) {
       return;
     }
-    customTablePointIds.add(pointId);
-    saveCustomPointTableState();
-    renderCustomPointTable();
+    selectedSavedPointIds.add(pointId);
+    syncSavedTreeSelection();
+    renderSelectedSavedPoints();
   }
 
   function addSelectedPointsToCustomTable() {
@@ -2252,24 +2253,19 @@ APP_SCRIPT = r"""
       setText("status", "Select saved points in the tree first.", true);
       return;
     }
-    for (const point of selected) {
-      customTablePointIds.add(point.id);
-    }
-    saveCustomPointTableState();
-    renderCustomPointTable();
-    setText("status", `Added ${selected.length} point(s) to the custom table.`);
+    setText("status", `${selected.length} selected point(s) are already shown in Table View.`);
   }
 
   function removePointFromCustomTable(pointId) {
-    customTablePointIds.delete(pointId);
-    saveCustomPointTableState();
-    renderCustomPointTable();
+    selectedSavedPointIds.delete(pointId);
+    syncSavedTreeSelection();
+    renderSelectedSavedPoints();
   }
 
   function clearCustomPointTable() {
-    customTablePointIds = new Set();
-    saveCustomPointTableState();
-    renderCustomPointTable();
+    selectedSavedPointIds = new Set();
+    syncSavedTreeSelection();
+    renderSelectedSavedPoints();
   }
 
   async function refreshCustomPointValues() {
@@ -2348,10 +2344,9 @@ APP_SCRIPT = r"""
       return;
     }
     const points = tablePoints();
-    const showingTreeSelection = selectedSavedPoints().length > 0;
     count.textContent = `${points.length} point${points.length === 1 ? "" : "s"}`;
     if (removeAll) {
-      removeAll.disabled = !points.length || showingTreeSelection || !selectedPointTableName;
+      removeAll.disabled = !points.length;
     }
     const refreshButton = byId("refresh-point-values");
     if (refreshButton) {
@@ -2365,13 +2360,12 @@ APP_SCRIPT = r"""
           const column = pointTableColumns.find((item) => item.key === key);
           return `<th>${escapeHtml(column?.label || key)}</th>`;
         }).join("")}
-        ${showingTreeSelection ? "" : "<th>Actions</th>"}
       </tr>
     `;
     body.textContent = "";
     if (!points.length) {
       const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="${columns.length + 1}" class="empty-table-cell">Select values in the tree or choose a saved table.</td>`;
+      row.innerHTML = `<td colspan="${columns.length + 1}" class="empty-table-cell">Select values in the tree to show them in Table View.</td>`;
       body.appendChild(row);
       return;
     }
@@ -2382,13 +2376,9 @@ APP_SCRIPT = r"""
           <strong>${escapeHtml(point.object_name || "unnamed")}</strong>
         </td>
         ${columns.map((key) => `<td data-column="${escapeHtml(key)}">${pointTableCellHtml(point, key)}</td>`).join("")}
-        ${showingTreeSelection ? "" : `<td><button class="secondary table-command" type="button" data-remove-table-point="${escapeHtml(point.id)}">Remove</button></td>`}
       `;
       body.appendChild(row);
     }
-    body.querySelectorAll("[data-remove-table-point]").forEach((button) => {
-      button.addEventListener("click", () => removePointFromCustomTable(button.dataset.removeTablePoint));
-    });
   }
 
   function renderPropertyPicker() {
@@ -2925,7 +2915,7 @@ APP_SCRIPT = r"""
       <span class="node-icon" aria-hidden="true"></span>
       <span class="node-label">${escapeHtml(label)}</span>
       <span class="node-meta">${escapeHtml(meta)}</span>
-      <button class="tree-add-point" type="button" title="Add point to custom table" aria-label="Add ${escapeHtml(label)} to custom table">Add</button>
+      <button class="tree-add-point" type="button" title="Select point for Table View" aria-label="Select ${escapeHtml(label)} for Table View">Select</button>
     `;
     const checkbox = row.querySelector('[data-role="saved-point-select"]');
     const addButton = row.querySelector(".tree-add-point");
@@ -2948,7 +2938,7 @@ APP_SCRIPT = r"""
     addButton.addEventListener("click", (event) => {
       event.stopPropagation();
       addPointToCustomTable(point.id);
-      setText("status", `Added ${objectIdentifier(point)} to the custom table.`);
+      setText("status", `Selected ${objectIdentifier(point)} for Table View.`);
     });
     return row;
   }
@@ -3693,7 +3683,7 @@ APP_SCRIPT = r"""
       });
     });
     removeSelectedPointsButton.addEventListener("click", removeSelectedSavedPoints);
-    addSelectedToCustomTableButton.addEventListener("click", addSelectedPointsToCustomTable);
+    addSelectedToCustomTableButton?.addEventListener("click", addSelectedPointsToCustomTable);
     clearCustomPointTableButton.addEventListener("click", clearCustomPointTable);
     byId("refresh-point-values").addEventListener("click", refreshCustomPointValues);
     byId("save-point-table").addEventListener("click", saveActivePointTableName);
@@ -3721,7 +3711,7 @@ APP_SCRIPT = r"""
       customPointTableDropZone.classList.remove("drag-over");
       const pointId = event.dataTransfer.getData("text/plain");
       addPointToCustomTable(pointId);
-      setText("status", "Point added to the custom table.");
+      setText("status", "Point selected for Table View.");
     });
     saveSelectedPointsButton.addEventListener("click", async () => {
       if (!currentPointCandidateDevice) {
@@ -6699,14 +6689,14 @@ def gateway_workspace_html(gateway_id: str) -> str:
               <h2>Table View</h2>
             </div>
             <div class="toolbar">
-              <select id="saved-point-table-select" aria-label="Saved tables"><option value="">No saved table selected</option></select>
-              <input id="point-table-name" class="point-table-name" type="text" maxlength="80" value="New Table View" aria-label="Point table name">
-              <button id="save-point-table" type="button">Save table</button>
+              <select id="saved-point-table-select" aria-label="Saved selections"><option value="">No saved selection selected</option></select>
+              <input id="point-table-name" class="point-table-name" type="text" maxlength="80" value="New Table View" aria-label="Saved selection name">
+              <button id="save-point-table" type="button">Save selection</button>
               <button id="refresh-point-values" type="button" disabled>Refresh values</button>
               <span id="point-read-status" class="notice point-read-inline" role="status" aria-live="polite"></span>
               <button id="new-point-table" class="secondary" type="button">New</button>
               <button id="edit-point-columns" class="secondary" type="button">Columns</button>
-              <button id="clear-custom-point-table" class="secondary" type="button" disabled>Clear</button>
+              <button id="clear-custom-point-table" class="secondary" type="button" disabled>Clear selection</button>
             </div>
           </div>
           <div class="table-wrap point-table-wrap">
