@@ -2513,6 +2513,7 @@ APP_SCRIPT = r"""
   function trendSummary(samples, units = "") {
     const points = numericTrendSamples(samples);
     if (!points.length) return "No numeric samples";
+    if (points.length === 1) return `1 sample · value ${points[0].valueNumber.toFixed(2)}${units ? ` ${units}` : ""}`;
     const minimum = Math.min(...points.map((point) => point.valueNumber));
     const maximum = Math.max(...points.map((point) => point.valueNumber));
     return `${points.length} samples · range ${minimum.toFixed(2)}–${maximum.toFixed(2)}${units ? ` ${units}` : ""}`;
@@ -2520,7 +2521,7 @@ APP_SCRIPT = r"""
 
   function trendChart(samples, units = "", chartWidth = 600, chartHeight = trendChartFrame.height) {
     const points = numericTrendSamples(samples);
-    if (points.length < 2) return `<span class="muted">Two numeric samples are needed before a trend line can be drawn.</span>`;
+    if (!points.length) return `<span class="muted">No numeric samples are available yet.</span>`;
     const width = Math.max(trendChartFrame.minWidth, Math.round(Number(chartWidth) || trendChartFrame.minWidth));
     const height = Math.max(150, Math.round(Number(chartHeight) || trendChartFrame.height));
     const { left, right, top, bottom } = trendChartFrame;
@@ -2531,11 +2532,12 @@ APP_SCRIPT = r"""
     const yMin = minimum - valuePadding, yMax = maximum + valuePadding;
     const firstTime = points[0].time, lastTime = points.at(-1).time, timeSpan = lastTime - firstTime || 1;
     points.forEach((point, index) => {
-      point.x = left + ((point.time - firstTime) / timeSpan || index / (points.length - 1)) * plotWidth;
+      point.x = points.length === 1 ? left : left + ((point.time - firstTime) / timeSpan || index / (points.length - 1)) * plotWidth;
       point.y = top + (1 - ((point.valueNumber - yMin) / (yMax - yMin))) * plotHeight;
     });
     const ticks = [0, 0.25, 0.5, 0.75, 1];
-    const path = points.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
+    const plottedPoints = points.length === 1 ? [{ ...points[0], x: left }, { ...points[0], x: width - right }] : points;
+    const path = plottedPoints.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
     return `<div class="trend-plot-shell"><svg class="point-trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${points.length} samples from ${minimum} to ${maximum}${units ? ` ${units}` : ""}"><rect class="trend-plot-bg" x="${left}" y="${top}" width="${plotWidth}" height="${plotHeight}"/>${ticks.map((tick) => { const y = top + (1 - tick) * plotHeight; const value = yMin + tick * (yMax - yMin); return `<line class="trend-grid" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="trend-axis-text" x="${left - 8}" y="${y + 4}" text-anchor="end">${value.toFixed(1)}</text>`; }).join("")}<line class="trend-axis" x1="${left}" y1="${top + plotHeight}" x2="${width - right}" y2="${top + plotHeight}"/><line class="trend-axis" x1="${left}" y1="${top}" x2="${left}" y2="${top + plotHeight}"/><text class="trend-axis-text" x="${left}" y="${height - 18}" text-anchor="start">${escapeHtml(formatPointTrendTime(points[0].sampled_at))}</text><text class="trend-axis-text" x="${width - right}" y="${height - 18}" text-anchor="end">${escapeHtml(formatPointTrendTime(points.at(-1).sampled_at))}</text><text class="trend-axis-label" transform="translate(15 ${top + plotHeight / 2}) rotate(-90)" text-anchor="middle">Value${units ? ` (${escapeHtml(units)})` : ""}</text><text class="trend-axis-label" x="${left + plotWidth / 2}" y="${height - 2}" text-anchor="middle">Time</text><polyline class="trend-line" points="${path}"/><line class="trend-crosshair trend-crosshair-x"/><line class="trend-crosshair trend-crosshair-y"/><circle class="trend-hover-dot" r="4"/></svg><div class="trend-tooltip" hidden></div></div><small>${points.length} samples · range ${minimum.toFixed(2)}–${maximum.toFixed(2)}${units ? ` ${escapeHtml(units)}` : ""}</small>`;
   }
 
@@ -2799,7 +2801,7 @@ APP_SCRIPT = r"""
     checkbox.addEventListener("click", (event) => event.stopPropagation());
     checkbox.addEventListener("keydown", (event) => event.stopPropagation());
     checkbox.addEventListener("change", () => setSavedBranchSelected(descendants, checkbox.checked));
-    row.prepend(checkbox);
+    row.querySelector(".node-icon").after(checkbox);
   }
 
   async function removeSelectedSavedPoints() {
@@ -4809,7 +4811,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .point-workbench > .tree-panel {{
       min-width: 0;
-      overflow: auto;
+      overflow: visible;
       border-top-right-radius: 0;
       border-bottom-right-radius: 0;
     }}
@@ -4857,8 +4859,8 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .tree-scroll {{
       min-height: 420px;
-      max-height: 64vh;
-      overflow: auto;
+      max-height: none;
+      overflow: visible;
       padding-right: 4px;
     }}
     .tree-view {{
@@ -4868,7 +4870,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .tree-row {{
       width: fit-content !important;
       max-width: 100%;
-      grid-template-columns: 18px 18px minmax(0, max-content) max-content max-content;
+      grid-template-columns: 18px 18px 18px minmax(0, max-content) max-content max-content;
       min-height: 24px;
       border: 0 !important;
       border-radius: 0;
@@ -4877,6 +4879,9 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       background: transparent !important;
       box-shadow: none !important;
       cursor: pointer;
+    }}
+    .point-select-row {{
+      grid-template-columns: 18px 18px minmax(0, max-content) max-content max-content;
     }}
     .template-group-row,
     .template-device-row {{
@@ -6133,7 +6138,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       .tree-shell {{ grid-template-columns: 1fr; }}
       .point-workbench {{ grid-template-columns: 1fr; }}
       .pane-splitter {{ display: none; }}
-      .tree-scroll {{ max-height: 420px; }}
+      .tree-scroll {{ max-height: none; }}
       .property-options {{ grid-template-columns: 1fr; }}
       .command-strip,
       .gateway-toolbar {{
