@@ -520,9 +520,13 @@ def test_gateway_workspace_formats_present_value_and_shows_active_priority() -> 
     assert "function formatPresentValue(value)" in response.text
     assert "return formatPresentValue(point.present_value);" in response.text
     assert "function pointTableCellHtml(point, key)" in response.text
-    assert 'point.active_priority == null' in response.text
+    assert 'point.active_priority != null' in response.text
     assert 'class="point-active-priority"' in response.text
     assert '@${escapeHtml(point.active_priority)}' in response.text
+    assert 'label: "Commandable"' in response.text
+    assert "function commandablePoint(point)" in response.text
+    assert "@—" in response.text
+    assert "refresh values to read Property 87" in response.text
     assert 'present_value: point.present_value == null ? null : String(point.present_value)' in response.text
 
 
