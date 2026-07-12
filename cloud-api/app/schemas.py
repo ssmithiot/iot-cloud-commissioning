@@ -727,6 +727,10 @@ class PointTrendConfigIn(BaseModel):
     interval_sec: int = Field(default=300, ge=30, le=86400)
 
 
+class PointTrendConfigBulkIn(PointTrendConfigIn):
+    point_ids: list[str] = Field(min_length=1, max_length=1000)
+
+
 class PointTrendConfigOut(BaseModel):
     point_id: str
     gateway_id: str

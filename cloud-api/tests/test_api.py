@@ -458,6 +458,10 @@ def test_gateway_workspace_stacks_trends_for_selected_points() -> None:
     assert "trend-edit-button" in response.text
     assert "disable-point-trend" in response.text
     assert "updatePointTrend(point, false" in response.text
+    assert "Global initial trend setup" in response.text
+    assert 'class="global-trend-enabled"' in response.text
+    assert 'class="global-trend-interval"' in response.text
+    assert "updateSelectedPointTrends(" in response.text
 
 
 def test_gateway_workspace_defaults_devices_and_object_folders_to_collapsed() -> None:
@@ -2592,6 +2596,46 @@ def test_point_trend_config_and_edge_sample_upload() -> None:
 
     assert disabled.status_code == 200
     assert disabled_tree.json()["points"][0]["trend_enabled"] is False
+
+
+def test_ui_operator_can_apply_global_trend_setup_to_selected_points() -> None:
+    raw_token = create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    device = client.post(
+        "/api/ui/gateways/GW001/devices",
+        headers=headers,
+        json={"device_instance": 1001, "device_name": "AHU-1"},
+    ).json()
+    first = client.post(
+        f"/api/ui/devices/{device['id']}/points",
+        headers=headers,
+        json={"object_type": "analog-input", "object_instance": 1, "object_name": "Supply Air"},
+    ).json()
+    second = client.post(
+        f"/api/ui/devices/{device['id']}/points",
+        headers=headers,
+        json={"object_type": "analog-value", "object_instance": 2, "object_name": "Setpoint"},
+    ).json()
+
+    configured = client.put(
+        "/api/ui/gateways/GW001/trends",
+        headers=headers,
+        json={"point_ids": [first["id"], second["id"]], "enabled": True, "interval_sec": 900},
+    )
+    edge_configs = client.get("/api/edge/GW001/trend-configs", headers=auth_headers(raw_token))
+    disabled = client.put(
+        "/api/ui/gateways/GW001/trends",
+        headers=headers,
+        json={"point_ids": [first["id"], second["id"]], "enabled": False, "interval_sec": 900},
+    )
+
+    assert configured.status_code == 200
+    assert {item["point_id"] for item in configured.json()} == {first["id"], second["id"]}
+    assert all(item["enabled"] is True and item["interval_sec"] == 900 for item in configured.json())
+    assert {item["point_id"] for item in edge_configs.json()} == {first["id"], second["id"]}
+    assert disabled.status_code == 200
+    assert client.get("/api/edge/GW001/trend-configs", headers=auth_headers(raw_token)).json() == []
 
 
 def test_ui_operator_can_bulk_remove_points_from_tree() -> None:

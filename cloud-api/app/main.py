@@ -92,6 +92,7 @@ from app.schemas import (
     OrganizationOut,
     PublicAuthConfigOut,
     PointTrendConfigIn,
+    PointTrendConfigBulkIn,
     PointTrendConfigOut,
     PointTrendSampleIn,
     PointTrendSampleOut,
@@ -2447,6 +2448,43 @@ def ui_upsert_point_trend(
     db.commit()
     db.refresh(config)
     return config
+
+
+@app.put("/api/ui/gateways/{gateway_id}/trends", response_model=list[PointTrendConfigOut])
+def ui_upsert_gateway_point_trends(
+    gateway_id: str,
+    payload: PointTrendConfigBulkIn,
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> list[PointTrendConfig]:
+    _require_gateway_site_access(db, auth, gateway_id)
+    point_ids = {_tree_id(point_id) for point_id in payload.point_ids}
+    points = list(
+        db.scalars(
+            select(SavedBacnetPoint).where(
+                SavedBacnetPoint.gateway_id == gateway_id,
+                SavedBacnetPoint.id.in_(point_ids),
+            )
+        ).all()
+    )
+    if len(points) != len(point_ids):
+        raise HTTPException(status_code=404, detail="One or more saved points were not found in this gateway")
+    configs = {
+        config.point_id: config
+        for config in db.scalars(select(PointTrendConfig).where(PointTrendConfig.point_id.in_(point_ids))).all()
+    }
+    updated_at = utc_now()
+    for point in points:
+        config = configs.get(point.id)
+        if config is None:
+            config = PointTrendConfig(point_id=point.id, gateway_id=gateway_id)
+            db.add(config)
+        config.enabled = payload.enabled
+        config.interval_sec = payload.interval_sec
+        config.updated_at = updated_at
+        configs[point.id] = config
+    db.commit()
+    return [configs[point.id] for point in points]
 
 
 @app.get("/api/ui/points/{point_id}/trend", response_model=list[PointTrendSampleOut])
