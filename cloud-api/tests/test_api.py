@@ -529,8 +529,9 @@ def test_gateway_workspace_formats_present_value_and_shows_active_priority() -> 
     assert '@${escapeHtml(activePriority)}' in response.text
     assert 'label: "Commandable"' in response.text
     assert "function commandablePoint(point)" in response.text
-    assert "function queueSelectedPointWrites()" in response.text
-    assert 'id="queue-point-writes"' in response.text
+    assert "function openPointWriteDialog(pointId)" in response.text
+    assert 'id="point-write-modal"' in response.text
+    assert 'data-write-point="${escapeHtml(point.id)}"' in response.text
     assert "/points/write" in response.text
     assert "@—" not in response.text
     assert "refresh values to read Property 87" not in response.text
@@ -2459,19 +2460,34 @@ def test_admin_queues_bacnet_write_batch_with_audit_record() -> None:
             "writable": True,
         },
     ).json()
+    second_point = client.post(
+        f"/api/ui/devices/{device['id']}/points",
+        headers=headers,
+        json={
+            "object_type": "analog-value",
+            "object_instance": 6,
+            "object_name": "Second Setpoint",
+            "property": "present-value",
+            "writable": True,
+        },
+    ).json()
 
     staged = client.post(
         "/api/ui/gateways/GW001/points/write",
         headers=headers,
-        json={"writes": [{"point_id": point["id"], "value": "72.5", "priority": 8}]},
+        json={"writes": [
+            {"point_id": point["id"], "value": "72.5", "priority": 8},
+            {"point_id": second_point["id"], "value": "73.5", "priority": 8},
+        ]},
     )
     next_job = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
 
     assert staged.status_code == 200
     assert staged.json()["status"] == "queued"
     assert staged.json()["approved_by"] is None
-    assert len(staged.json()["job_ids"]) == 1
+    assert len(staged.json()["job_ids"]) == 2
     assert next_job.json()["job_type"] == "bacnet_write_batch"
+    assert len(next_job.json()["request"]["writes"]) == 1
     assert next_job.json()["request"]["writes"][0]["priority"] == 8
 
 

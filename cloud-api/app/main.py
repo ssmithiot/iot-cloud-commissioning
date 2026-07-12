@@ -1046,33 +1046,27 @@ def _refresh_write_batch_status(db: Session, batch_id: UUID, now: datetime) -> N
 
 
 def _queue_write_batch_jobs(db: Session, batch: BacnetWriteBatch) -> None:
-    """Queue a validated write batch while retaining its command audit records."""
-    commands_by_device: dict[int, list[BacnetWriteCommand]] = {}
+    """Queue one edge job per audited BACnet command."""
     for command in batch.commands:
-        commands_by_device.setdefault(command.device_instance, []).append(command)
-    for device_instance, commands in commands_by_device.items():
         job_id = f"job-{uuid4().hex}"
-        writes: list[dict[str, object]] = []
-        for command in commands:
-            request_item: dict[str, object] = {
-                "saved_point_id": command.saved_point_id,
-                "object_type": command.object_type,
-                "object_instance": command.object_instance,
-                "action": command.action,
-                "priority": command.priority,
-            }
-            if command.action != "relinquish":
-                request_item["value"] = command.requested_value
-            writes.append(request_item)
-            command.edge_job_id = job_id
-            command.status = "queued"
+        request_item: dict[str, object] = {
+            "saved_point_id": command.saved_point_id,
+            "object_type": command.object_type,
+            "object_instance": command.object_instance,
+            "action": command.action,
+            "priority": command.priority,
+        }
+        if command.action != "relinquish":
+            request_item["value"] = command.requested_value
+        command.edge_job_id = job_id
+        command.status = "queued"
         db.add(
             EdgeJob(
                 job_id=job_id,
                 gateway_id=batch.gateway_id,
                 job_type="bacnet_write_batch",
                 status="queued",
-                request_json={"device_instance": device_instance, "writes": writes},
+                request_json={"device_instance": command.device_instance, "writes": [request_item]},
             )
         )
     batch.status = "queued"
