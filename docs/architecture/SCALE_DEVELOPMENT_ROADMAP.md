@@ -45,6 +45,11 @@ outside production before it can be considered for a merge.
 - Record baseline throughput, p95 latency, database connections, errors, and
   recovery time after API restart.
 
+`scripts/load_api_health.py` is the initial safe load tool. By default it only
+targets local `/health`, `/health/db`, and `/health/ready` routes. A remote URL
+requires the explicit `--allow-remote` flag, and the tool cannot queue jobs,
+open tunnels, or issue BACnet commands.
+
 ### 3. Build the future replica control plane in isolation
 
 - Define a `TunnelRegistry` interface; do not replace `TunnelManager`.
