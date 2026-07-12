@@ -2345,6 +2345,47 @@ APP_SCRIPT = r"""
     }
   }
 
+  async function queueSelectedPointWrites() {
+    const points = tablePoints().filter(commandablePoint);
+    if (!points.length) {
+      setText("status", "Select at least one commandable point before queueing a write.", true);
+      return;
+    }
+    const priority = Number(window.prompt("BACnet write priority (1-16):", "16"));
+    if (!Number.isInteger(priority) || priority < 1 || priority > 16) {
+      setText("status", "Priority must be an integer from 1 through 16.", true);
+      return;
+    }
+    const writes = [];
+    for (const point of points) {
+      const value = window.prompt(`Write ${point.object_name || objectIdentifier(point)} (leave blank to relinquish priority ${priority}):`, point.present_value ?? "");
+      if (value == null) {
+        setText("status", "Write request cancelled.");
+        return;
+      }
+      writes.push(value.trim()
+        ? { point_id: point.id, action: "write", value, priority }
+        : { point_id: point.id, action: "relinquish", priority });
+    }
+    if (!window.confirm(`Queue ${writes.length} BACnet write request(s) at priority ${priority}?`)) {
+      return;
+    }
+    const button = byId("queue-point-writes");
+    button.disabled = true;
+    try {
+      const result = await api(`/api/ui/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/points/write`, {
+        method: "POST",
+        body: JSON.stringify({ writes })
+      });
+      setText("status", `Queued ${result.write_count} BACnet write request(s) in ${result.job_ids.length} edge job(s).`);
+      await loadGatewayWorkspace();
+    } catch (error) {
+      setText("status", errorMessage(error), true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   async function pollPointValueReads(jobIds) {
     const waiting = new Set(jobIds);
     const terminalJobs = new Map();
@@ -2401,6 +2442,11 @@ APP_SCRIPT = r"""
     const refreshButton = byId("refresh-point-values");
     if (refreshButton) {
       refreshButton.disabled = !points.length;
+    }
+    const writeButton = byId("queue-point-writes");
+    if (writeButton) {
+      writeButton.hidden = currentUser?.role !== "admin";
+      writeButton.disabled = !points.some(commandablePoint);
     }
     const columns = normalizePointTableColumns(visiblePointTableColumns);
     head.innerHTML = `
@@ -3810,6 +3856,7 @@ APP_SCRIPT = r"""
     addSelectedToCustomTableButton?.addEventListener("click", addSelectedPointsToCustomTable);
     clearCustomPointTableButton.addEventListener("click", clearCustomPointTable);
     byId("refresh-point-values").addEventListener("click", refreshCustomPointValues);
+    byId("queue-point-writes").addEventListener("click", queueSelectedPointWrites);
     byId("save-point-table").addEventListener("click", saveActivePointTableName);
     byId("new-point-table").addEventListener("click", newPointTable);
     byId("saved-point-table-select").addEventListener("change", (event) => {
@@ -6875,6 +6922,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
               <input id="point-table-name" class="point-table-name" type="text" maxlength="80" value="New Table View" aria-label="Saved selection name">
               <button id="save-point-table" type="button">Save selection</button>
               <button id="refresh-point-values" type="button" disabled>Refresh values</button>
+              <button id="queue-point-writes" type="button" disabled>Queue writes</button>
               <span id="point-read-status" class="notice point-read-inline" role="status" aria-live="polite"></span>
               <button id="new-point-table" class="secondary" type="button">New</button>
               <button id="edit-point-columns" class="secondary" type="button">Columns</button>

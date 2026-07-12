@@ -1045,6 +1045,39 @@ def _refresh_write_batch_status(db: Session, batch_id: UUID, now: datetime) -> N
         batch.completed_at = now
 
 
+def _queue_write_batch_jobs(db: Session, batch: BacnetWriteBatch) -> None:
+    """Queue a validated write batch while retaining its command audit records."""
+    commands_by_device: dict[int, list[BacnetWriteCommand]] = {}
+    for command in batch.commands:
+        commands_by_device.setdefault(command.device_instance, []).append(command)
+    for device_instance, commands in commands_by_device.items():
+        job_id = f"job-{uuid4().hex}"
+        writes: list[dict[str, object]] = []
+        for command in commands:
+            request_item: dict[str, object] = {
+                "saved_point_id": command.saved_point_id,
+                "object_type": command.object_type,
+                "object_instance": command.object_instance,
+                "action": command.action,
+                "priority": command.priority,
+            }
+            if command.action != "relinquish":
+                request_item["value"] = command.requested_value
+            writes.append(request_item)
+            command.edge_job_id = job_id
+            command.status = "queued"
+        db.add(
+            EdgeJob(
+                job_id=job_id,
+                gateway_id=batch.gateway_id,
+                job_type="bacnet_write_batch",
+                status="queued",
+                request_json={"device_instance": device_instance, "writes": writes},
+            )
+        )
+    batch.status = "queued"
+
+
 def _readback_value(result: dict[str, object], field: str) -> tuple[bool, object | None]:
     if field in result:
         return True, result[field]
@@ -2303,7 +2336,7 @@ def ui_write_saved_points(
         gateway_id=gateway_id,
         requested_by=actor,
         approved_by=None,
-        status="pending_approval",
+        status="queued",
         write_count=len(normalized_writes),
         requested_at=now,
         approved_at=None,
@@ -2325,11 +2358,12 @@ def ui_write_saved_points(
                 action=item.action,
                 requested_value=item.value,
                 priority=item.priority,
-                status="pending_approval",
+                status="queued",
                 created_at=now,
             )
         )
 
+    _queue_write_batch_jobs(db, batch)
     db.commit()
     db.refresh(batch)
     return _write_batch_out(batch)
@@ -2352,35 +2386,7 @@ def ui_approve_saved_point_write(
     now = utc_now()
     batch.approved_by = _write_audit_actor(auth)
     batch.approved_at = now
-    batch.status = "queued"
-    commands_by_device: dict[int, list[BacnetWriteCommand]] = {}
-    for command in batch.commands:
-        commands_by_device.setdefault(command.device_instance, []).append(command)
-    for device_instance, commands in commands_by_device.items():
-        job_id = f"job-{uuid4().hex}"
-        writes: list[dict[str, object]] = []
-        for command in commands:
-            request_item: dict[str, object] = {
-                "saved_point_id": command.saved_point_id,
-                "object_type": command.object_type,
-                "object_instance": command.object_instance,
-                "action": command.action,
-                "priority": command.priority,
-            }
-            if command.action != "relinquish":
-                request_item["value"] = command.requested_value
-            writes.append(request_item)
-            command.edge_job_id = job_id
-            command.status = "queued"
-        db.add(
-            EdgeJob(
-                job_id=job_id,
-                gateway_id=gateway_id,
-                job_type="bacnet_write_batch",
-                status="queued",
-                request_json={"device_instance": device_instance, "writes": writes},
-            )
-        )
+    _queue_write_batch_jobs(db, batch)
     db.commit()
     db.refresh(batch)
     return _write_batch_out(batch)
