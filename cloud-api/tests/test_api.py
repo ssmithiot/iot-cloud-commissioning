@@ -478,6 +478,21 @@ def test_gateway_workspace_stacks_trends_for_selected_points() -> None:
     assert "updateSelectedPointTrends(" in response.text
 
 
+def test_gateway_workspace_exports_and_imports_saved_table_view_templates() -> None:
+    response = client.get("/gateways/GW777")
+
+    assert response.status_code == 200
+    assert 'id="export-point-table-template"' in response.text
+    assert 'id="point-table-template-file"' in response.text
+    assert 'id="point-table-template-target"' in response.text
+    assert 'id="import-point-table-template"' in response.text
+    assert 'const POINT_TABLE_TEMPLATE_KIND = "iot-cloud-point-table-template-pack";' in response.text
+    assert "function downloadPointTableTemplate()" in response.text
+    assert "async function importPointTableTemplate(file, targetDeviceId)" in response.text
+    assert "point.saved_device_id === targetDeviceId" in response.text
+    assert "object_type: pointTableObjectTypeKey(point.object_type)" in response.text
+
+
 def test_gateway_workspace_table_view_defaults_to_tree_selection_or_no_saved_table() -> None:
     response = client.get("/gateways/GW777")
 

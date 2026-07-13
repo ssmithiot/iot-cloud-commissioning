@@ -2126,6 +2126,7 @@ APP_SCRIPT = r"""
       `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`
     )).join("")}`;
     select.value = selectedPointTableName;
+    renderPointTableTemplateTargets();
   }
 
   function saveActivePointTableName() {
@@ -2180,6 +2181,95 @@ APP_SCRIPT = r"""
     savedPointTables[name] = { pointIds: [], columns: visiblePointTableColumns };
     saveCustomPointTableState();
     renderTree(currentGatewayTree);
+  }
+
+  const POINT_TABLE_TEMPLATE_KIND = "iot-cloud-point-table-template-pack";
+  const POINT_TABLE_TEMPLATE_VERSION = 1;
+
+  function pointTableTemplatePoint(point) {
+    return { object_type: pointTableObjectTypeKey(point.object_type), object_instance: Number(point.object_instance) };
+  }
+
+  function downloadPointTableTemplate() {
+    const pointsById = new Map((currentGatewayTree?.points || []).map((point) => [point.id, point]));
+    const views = Object.entries(savedPointTables).map(([name, table]) => ({
+      name,
+      columns: normalizePointTableColumns(table.columns),
+      points: (Array.isArray(table.pointIds) ? table.pointIds : []).map((pointId) => pointsById.get(pointId)).filter(Boolean).map(pointTableTemplatePoint)
+    })).filter((view) => view.points.length);
+    if (!views.length) {
+      setText("status", "Save at least one table view containing saved points before exporting a template.", true);
+      return;
+    }
+    const blob = new Blob([JSON.stringify({ kind: POINT_TABLE_TEMPLATE_KIND, version: POINT_TABLE_TEMPLATE_VERSION, exported_at: new Date().toISOString(), views }, null, 2)], { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${document.body.dataset.gatewayId || "gateway"}-table-view-templates.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    setText("status", `Exported ${views.length} table view template(s).`);
+  }
+
+  function renderPointTableTemplateTargets() {
+    const select = byId("point-table-template-target");
+    if (!select) return;
+    const devices = currentGatewayTree?.devices || [];
+    const currentValue = select.value;
+    select.innerHTML = `<option value="">Choose target controller</option>${devices.map((device) => `<option value="${escapeHtml(device.id)}">${escapeHtml(device.device_name || `Device ${device.device_instance}`)} (${escapeHtml(device.device_instance)})</option>`).join("")}`;
+    if (devices.some((device) => device.id === currentValue)) select.value = currentValue;
+  }
+
+  function uniqueImportedPointTableName(baseName) {
+    const cleanBase = String(baseName || "Imported Table View").trim().slice(0, 80) || "Imported Table View";
+    if (!savedPointTables[cleanBase]) return cleanBase;
+    let index = 2;
+    while (savedPointTables[`${cleanBase} (${index})`]) index += 1;
+    return `${cleanBase} (${index})`;
+  }
+
+  async function importPointTableTemplate(file, targetDeviceId) {
+    if (!file || !targetDeviceId) {
+      setText("status", "Choose a table view template and target controller before importing.", true);
+      return;
+    }
+    let payload;
+    try { payload = JSON.parse(await file.text()); } catch {
+      setText("status", "The table view template is not valid JSON.", true);
+      return;
+    }
+    if (payload?.kind !== POINT_TABLE_TEMPLATE_KIND || payload?.version !== POINT_TABLE_TEMPLATE_VERSION || !Array.isArray(payload.views)) {
+      setText("status", "This is not a supported table view template export.", true);
+      return;
+    }
+    const target = (currentGatewayTree?.devices || []).find((device) => device.id === targetDeviceId);
+    const targetByObject = new Map((currentGatewayTree?.points || []).filter((point) => point.saved_device_id === targetDeviceId).map((point) => [`${pointTableObjectTypeKey(point.object_type)}:${Number(point.object_instance)}`, point]));
+    let created = 0;
+    let matched = 0;
+    let missing = 0;
+    let lastName = null;
+    for (const view of payload.views) {
+      if (!view || !Array.isArray(view.points)) continue;
+      const pointIds = [];
+      for (const descriptor of view.points) {
+        const point = targetByObject.get(`${pointTableObjectTypeKey(descriptor?.object_type)}:${Number(descriptor?.object_instance)}`);
+        if (point && !pointIds.includes(point.id)) { pointIds.push(point.id); matched += 1; } else { missing += 1; }
+      }
+      if (!pointIds.length) continue;
+      lastName = uniqueImportedPointTableName(`${String(view.name || "Imported Table View").trim()} — ${target?.device_name || `Device ${target?.device_instance || "target"}`}`);
+      savedPointTables[lastName] = { pointIds, columns: normalizePointTableColumns(view.columns) };
+      created += 1;
+    }
+    if (!created) {
+      setText("status", "No exported points matched the selected controller. Confirm its BACnet object types and instances match the template.", true);
+      return;
+    }
+    activePointTableName = lastName;
+    selectedPointTableName = lastName;
+    customTablePointIds = new Set(savedPointTables[lastName].pointIds);
+    visiblePointTableColumns = savedPointTables[lastName].columns;
+    saveCustomPointTableState();
+    switchActivePointTable(lastName);
+    setText("status", `Imported ${created} table view(s): ${matched} point(s) matched, ${missing} unavailable on ${target?.device_name || "the target controller"}.`);
   }
 
   function pointTableValue(point, key) {
@@ -3730,6 +3820,9 @@ APP_SCRIPT = r"""
     const editPointColumnsButton = byId("edit-point-columns");
     const applyPointColumnsButton = byId("apply-point-columns");
     const cancelPointColumnsButton = byId("cancel-point-columns");
+    const exportPointTableTemplateButton = byId("export-point-table-template");
+    const importPointTableTemplateButton = byId("import-point-table-template");
+    const pointTableTemplateFileInput = byId("point-table-template-file");
     const customPointTableDropZone = byId("custom-point-table-dropzone");
     const gatewayId = document.body.dataset.gatewayId;
     const technicalSection = byId("technical-section");
@@ -3901,6 +3994,10 @@ APP_SCRIPT = r"""
     byId("refresh-point-values").addEventListener("click", refreshCustomPointValues);
     byId("save-point-table").addEventListener("click", saveActivePointTableName);
     byId("new-point-table").addEventListener("click", newPointTable);
+    exportPointTableTemplateButton.addEventListener("click", downloadPointTableTemplate);
+    importPointTableTemplateButton.addEventListener("click", () => {
+      importPointTableTemplate(pointTableTemplateFileInput.files?.[0], byId("point-table-template-target").value);
+    });
     byId("saved-point-table-select").addEventListener("change", (event) => {
       switchActivePointTable(event.target.value);
     });
@@ -6963,6 +7060,10 @@ def gateway_workspace_html(gateway_id: str) -> str:
               <select id="saved-point-table-select" aria-label="Saved selections"><option value="">No saved selection selected</option></select>
               <input id="point-table-name" class="point-table-name" type="text" maxlength="80" value="New Table View" aria-label="Saved selection name">
               <button id="save-point-table" type="button">Save selection</button>
+              <button id="export-point-table-template" class="secondary" type="button">Export templates</button>
+              <label class="button secondary">Import templates<input id="point-table-template-file" type="file" accept="application/json,.json" hidden></label>
+              <select id="point-table-template-target" aria-label="Target controller for imported table templates"><option value="">Choose target controller</option></select>
+              <button id="import-point-table-template" class="secondary" type="button">Apply import</button>
               <button id="refresh-point-values" type="button" disabled>Refresh values</button>
               <span id="point-read-status" class="notice point-read-inline" role="status" aria-live="polite"></span>
               <button id="new-point-table" class="secondary" type="button">New</button>
