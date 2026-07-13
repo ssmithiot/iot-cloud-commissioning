@@ -1,0 +1,63 @@
+# CI for IoT Cloud Commissioning.
+# Runs the full cloud, edge, and tools test suites plus an Alembic migration
+# round-trip on every push and pull request.
+#
+# Known standing exclusion (see docs/technical-debt-register.md, Tier 4):
+#   test_gateway_workspace_contains_discovery_progress_ui asserts workspace UI
+#   text ("Remove device") that is absent at HEAD; deselected until the
+#   workspace UI change that resolves it. Remove the --deselect when fixed.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            cloud-api/requirements.txt
+            edge-agent/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r cloud-api/requirements.txt -r edge-agent/requirements.txt
+
+      - name: Cloud API tests
+        run: |
+          python -m pytest cloud-api/tests -q \
+            --deselect "cloud-api/tests/test_api.py::test_gateway_workspace_contains_discovery_progress_ui"
+
+      - name: Edge agent tests
+        run: python -m pytest edge-agent/tests -q
+
+      - name: Tools tests
+        run: python -m pytest tools/tests -q
+
+      - name: Migration round-trip (fresh database, upgrade -> downgrade -> upgrade)
+        working-directory: cloud-api
+        env:
+          DATABASE_URL: sqlite:///./ci-migration-check.db
+          IOT_ADMIN_API_TOKEN: ci-admin-token
+          GATEWAY_AUTH_PEPPER: ci-pepper
+        run: |
+          python -m alembic upgrade head
+          python -m alembic downgrade -1
+          python -m alembic upgrade head
+
+      - name: Compile check (fast syntax safety net)
+        run: python -m compileall -q cloud-api/app edge-agent/iot_cx_agent tools

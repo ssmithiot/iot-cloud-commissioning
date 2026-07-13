@@ -202,7 +202,70 @@ def cloud_json_request(
         return json.loads(response.read().decode("utf-8"))
 
 
-def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str]) -> None:
+def _parse_cloud_timestamp(raw: object) -> datetime | None:
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def evaluate_post_update_health(gateway: dict[str, object], update_finished_at: datetime) -> tuple[bool, str]:
+    """Cloud-observed post-update health: the gateway must have heartbeated
+    AFTER the update finished, be online, and report a healthy local database.
+
+    The in-run shell verifies prove the update script executed; this proves
+    the gateway actually came back to the platform afterward.
+    """
+    heartbeat_at = _parse_cloud_timestamp(gateway.get("latest_heartbeat_at"))
+    if heartbeat_at is None or heartbeat_at <= update_finished_at:
+        return False, "no heartbeat received since the update finished"
+    if gateway.get("effective_status") != "online":
+        return False, f"gateway status is {gateway.get('effective_status')!r}, expected online"
+    if gateway.get("sqlite_db_ok") is not True:
+        return False, "gateway reports sqlite_db_ok=false after update"
+    return True, f"online with post-update heartbeat; agent_version={gateway.get('agent_version')!r}"
+
+
+def wait_for_post_update_health(
+    cloud_url: str,
+    admin_api_token: str,
+    gateway_id: str,
+    update_finished_at: datetime,
+    *,
+    timeout_sec: float | None = None,
+    poll_sec: float | None = None,
+    fetch=cloud_json_request,
+    sleep=time.sleep,
+) -> tuple[bool, str]:
+    """Poll the cloud until the gateway proves healthy or the window expires."""
+    timeout_sec = float(os.environ.get("IOT_EDGE_UPDATE_HEALTH_TIMEOUT_SEC", "300")) if timeout_sec is None else timeout_sec
+    poll_sec = float(os.environ.get("IOT_EDGE_UPDATE_HEALTH_POLL_SEC", "15")) if poll_sec is None else poll_sec
+    deadline = time.monotonic() + timeout_sec
+    detail = "health gate never ran"
+    while True:
+        try:
+            gateway = fetch(cloud_url, admin_api_token, f"/api/ui/gateways/{gateway_id}")
+        except (urllib_error.HTTPError, urllib_error.URLError, ValueError) as exc:
+            gateway, detail = None, f"could not read gateway health: {exc}"
+        if isinstance(gateway, dict):
+            healthy, detail = evaluate_post_update_health(gateway, update_finished_at)
+            if healthy:
+                return True, detail
+        if time.monotonic() >= deadline:
+            return False, f"post-update health gate failed after {int(timeout_sec)}s: {detail}"
+        sleep(poll_sec)
+
+
+def health_gate_enabled() -> bool:
+    return os.environ.get("IOT_EDGE_UPDATE_HEALTH_GATE", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str]) -> str | None:
+    """Process one queued update. Returns 'completed', 'failed', or None when
+    the request could not be claimed (not a gateway outcome)."""
     cloud_url = os.environ.get("IOT_CLOUD_API_URL", DEFAULT_CLOUD_URL).rstrip("/")
     admin_api_token = defaults["IOT_ADMIN_API_TOKEN"]
     request_id = str(update["request_id"])
@@ -214,10 +277,10 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
             method="POST",
         )
     except (urllib_error.HTTPError, urllib_error.URLError, ValueError):
-        return
+        return None
 
     if not isinstance(claimed, dict):
-        return
+        return None
     request = UpgradeRequest(
         gateway_id=str(claimed["gateway_id"]),
         site_id=str(claimed["site_id"]),
@@ -245,7 +308,7 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
             method="POST",
             body={"status": "failed", "error_message": "No Cradlepoint host is configured for this gateway."},
         )
-        return
+        return "failed"
 
     job_id = start_job(request)
     while True:
@@ -257,6 +320,19 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
             result = {"status": "completed" if status == "complete" else "failed"}
             if error:
                 result["error_message"] = error[:1000]
+            if status == "complete" and health_gate_enabled():
+                # The shell phases succeeded; now require cloud-observed
+                # health (fresh heartbeat, online, sqlite ok) before calling
+                # this update done.
+                healthy, detail = wait_for_post_update_health(
+                    cloud_url,
+                    admin_api_token,
+                    request.gateway_id,
+                    datetime.now(timezone.utc),
+                )
+                print(f"Post-update health gate for {request.gateway_id}: {detail}", flush=True)
+                if not healthy:
+                    result = {"status": "failed", "error_message": detail[:1000]}
             try:
                 cloud_json_request(
                     cloud_url,
@@ -267,15 +343,26 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
                 )
             except (urllib_error.HTTPError, urllib_error.URLError, ValueError):
                 pass
-            return
+            return result["status"]
         time.sleep(2)
 
 
 def gateway_update_worker() -> None:
     poll_seconds = max(5, int(os.environ.get("IOT_EDGE_UPDATE_POLL_SECONDS", "10")))
+    halt_after = max(1, int(os.environ.get("IOT_EDGE_UPDATE_HALT_AFTER_FAILURES", "2")))
+    consecutive_failures = 0
+    halted = False
     while True:
         with WORKER_STATUS_LOCK:
             WORKER_STATUS["last_poll_at"] = datetime.now(timezone.utc).isoformat()
+        if halted:
+            # Stop-the-line: consecutive failures suggest a bad build or a
+            # systemic problem. Do not ship it to more gateways. Restart the
+            # webapp to resume after investigating.
+            with WORKER_STATUS_LOCK:
+                WORKER_STATUS["state"] = "halted"
+            time.sleep(poll_seconds)
+            continue
         try:
             defaults = load_env_defaults()
             token = defaults["IOT_ADMIN_API_TOKEN"]
@@ -286,11 +373,27 @@ def gateway_update_worker() -> None:
             if isinstance(updates, list):
                 for update in updates:
                     if isinstance(update, dict):
-                        run_queued_gateway_update(update, defaults)
-            with WORKER_STATUS_LOCK:
-                WORKER_STATUS["state"] = "polling"
-                WORKER_STATUS["last_success_at"] = datetime.now(timezone.utc).isoformat()
-                WORKER_STATUS["last_error"] = None
+                        outcome = run_queued_gateway_update(update, defaults)
+                        if outcome == "failed":
+                            consecutive_failures += 1
+                            if consecutive_failures >= halt_after:
+                                halted = True
+                                message = (
+                                    f"halted after {consecutive_failures} consecutive failed updates; "
+                                    "queued updates left unclaimed - investigate, then restart the webapp to resume"
+                                )
+                                with WORKER_STATUS_LOCK:
+                                    WORKER_STATUS["state"] = "halted"
+                                    WORKER_STATUS["last_error"] = message
+                                print(f"Cloud update worker {message}", flush=True)
+                                break
+                        elif outcome == "completed":
+                            consecutive_failures = 0
+            if not halted:
+                with WORKER_STATUS_LOCK:
+                    WORKER_STATUS["state"] = "polling"
+                    WORKER_STATUS["last_success_at"] = datetime.now(timezone.utc).isoformat()
+                    WORKER_STATUS["last_error"] = None
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             with WORKER_STATUS_LOCK:
