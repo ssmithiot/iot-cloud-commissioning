@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import ARRAY, JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import ARRAY, JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ENUM as PostgresEnum
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -156,6 +156,10 @@ class EdgeNode(Base):
     ui_version: Mapped[str] = mapped_column(String(80), nullable=False)
     sqlite_db_ok: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     queued_upload_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trend_pending_upload_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trend_deferred_upload_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trend_oldest_pending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    trend_max_upload_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cpu_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cpu_load_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     cpu_load_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -174,6 +178,9 @@ class EdgeNode(Base):
 
 class EdgeHeartbeat(Base):
     __tablename__ = "edge_heartbeats"
+    __table_args__ = (
+        Index("ix_edge_heartbeats_gateway_timestamp", "gateway_id", "timestamp_utc"),
+    )
 
     id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
     edge_node_id: Mapped[UUID] = mapped_column(ForeignKey("edge_nodes.id"), nullable=False, index=True)
@@ -186,6 +193,10 @@ class EdgeHeartbeat(Base):
     ui_version: Mapped[str] = mapped_column(String(80), nullable=False)
     sqlite_db_ok: Mapped[bool] = mapped_column(Boolean, nullable=False)
     queued_upload_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    trend_pending_upload_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trend_deferred_upload_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trend_oldest_pending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    trend_max_upload_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cpu_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cpu_load_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     cpu_load_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -197,6 +208,34 @@ class EdgeHeartbeat(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     edge_node: Mapped[EdgeNode] = relationship(back_populates="heartbeats")
+
+
+class GatewayAlertState(Base):
+    """Transition memory for fleet alerting.
+
+    One row per (gateway, alert type). `active` mirrors whether the alert
+    condition currently holds; a change flips the row and queues one
+    notification. Gateways that have never heartbeated get no rows and can
+    never alert (preprovisioned units awaiting installation stay silent).
+    """
+
+    __tablename__ = "gateway_alert_states"
+    __table_args__ = (
+        UniqueConstraint("gateway_id", "alert_type", name="uq_gateway_alert_states_gateway_type"),
+    )
+
+    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    gateway_id: Mapped[str] = mapped_column(
+        String(120),
+        ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    alert_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_transition_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
 class GatewayUpdateRequest(Base):
@@ -219,7 +258,10 @@ class GatewayUpdateRequest(Base):
 
 class EdgeJob(Base):
     __tablename__ = "edge_jobs"
-    __table_args__ = (UniqueConstraint("job_id", name="uq_edge_jobs_job_id"),)
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_edge_jobs_job_id"),
+        Index("ix_edge_jobs_gateway_status_created", "gateway_id", "status", "created_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
     job_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
@@ -463,13 +505,19 @@ class PointTrendConfig(Base):
 
 class PointTrendSample(Base):
     __tablename__ = "point_trend_samples"
-    __table_args__ = (UniqueConstraint("point_id", "sampled_at", name="uq_point_trend_sample_time"),)
+    __table_args__ = (
+        UniqueConstraint("point_id", "sampled_at", name="uq_point_trend_sample_time"),
+        Index("ix_point_trend_samples_point_sampled_at", "point_id", "sampled_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     point_id: Mapped[str] = mapped_column(String(36), ForeignKey("saved_bacnet_points.id", ondelete="CASCADE"), nullable=False, index=True)
     gateway_id: Mapped[str] = mapped_column(String(120), ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"), nullable=False, index=True)
     sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    quality: Mapped[str] = mapped_column(String(20), nullable=False, default="good")
+    source: Mapped[str] = mapped_column(String(80), nullable=False, default="edge-agent")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     point: Mapped["SavedBacnetPoint"] = relationship(back_populates="trend_samples")

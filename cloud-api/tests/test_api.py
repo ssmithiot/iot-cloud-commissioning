@@ -56,6 +56,10 @@ def heartbeat_payload(gateway_id: str = "GW001") -> dict[str, object]:
         "ui_version": "0.1.0",
         "sqlite_db_ok": True,
         "queued_upload_count": 0,
+        "trend_pending_upload_count": 0,
+        "trend_deferred_upload_count": 0,
+        "trend_oldest_pending_at": None,
+        "trend_max_upload_attempt_count": 0,
         "cpu_count": 4,
         "cpu_load_1m": 0.5,
         "cpu_load_pct": 12.5,
@@ -218,7 +222,7 @@ def test_health() -> None:
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "environment": "development", "version": app.version}
 
 
 def test_settings_load_database_url_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -660,6 +664,10 @@ def test_ui_gateway_heartbeat_trend_returns_ordered_history() -> None:
             "status": "degraded",
             "sqlite_db_ok": False,
             "queued_upload_count": 0,
+            "trend_pending_upload_count": 0,
+            "trend_deferred_upload_count": 0,
+            "trend_oldest_pending_at": None,
+            "trend_max_upload_attempt_count": 0,
             "cpu_load_pct": 12.5,
             "memory_used_pct": 42.0,
             "disk_used_pct": 31.5,
@@ -2643,6 +2651,62 @@ def test_point_trend_config_and_edge_sample_upload() -> None:
 
     assert disabled.status_code == 200
     assert disabled_tree.json()["points"][0]["trend_enabled"] is False
+
+
+def test_trend_upload_is_bounded_idempotent_and_returns_operational_metadata() -> None:
+    raw_token = create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    device = client.post("/api/ui/gateways/GW001/devices", headers=headers, json={"device_instance": 1001}).json()
+    point = client.post(
+        f"/api/ui/devices/{device['id']}/points",
+        headers=headers,
+        json={"object_type": "analog-value", "object_instance": 10},
+    ).json()
+    sample = {"point_id": point["id"], "sampled_at": "2026-07-12T12:00:00Z", "value": "72.5", "quality": "uncertain"}
+
+    first = client.post("/api/edge/GW001/trend-samples", headers=auth_headers(raw_token), json=[sample])
+    repeat = client.post("/api/edge/GW001/trend-samples", headers=auth_headers(raw_token), json=[sample])
+    duplicate = client.post("/api/edge/GW001/trend-samples", headers=auth_headers(raw_token), json=[sample, sample])
+    oversized = client.post(
+        "/api/edge/GW001/trend-samples",
+        headers=auth_headers(raw_token),
+        json=[sample] * 501,
+    )
+    history = client.get(f"/api/ui/points/{point['id']}/trend?limit=1", headers=headers)
+
+    assert first.status_code == 200
+    assert first.json()[0]["quality"] == "uncertain"
+    assert first.json()[0]["source"] == "edge-agent"
+    assert first.json()[0]["received_at"]
+    assert repeat.status_code == 200
+    assert duplicate.status_code == 422
+    assert oversized.status_code == 422
+    assert len(history.json()) == 1
+
+
+def test_trend_retrieval_enforces_its_limit() -> None:
+    raw_token = create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    device = client.post("/api/ui/gateways/GW001/devices", headers=headers, json={"device_instance": 1001}).json()
+    point = client.post(
+        f"/api/ui/devices/{device['id']}/points",
+        headers=headers,
+        json={"object_type": "analog-value", "object_instance": 10},
+    ).json()
+    samples = [
+        {"point_id": point["id"], "sampled_at": f"2026-07-12T12:00:0{offset}Z", "value": str(offset)}
+        for offset in range(3)
+    ]
+
+    assert client.post("/api/edge/GW001/trend-samples", headers=auth_headers(raw_token), json=samples).status_code == 200
+    response = client.get(f"/api/ui/points/{point['id']}/trend?limit=2", headers=headers)
+    invalid_limit = client.get(f"/api/ui/points/{point['id']}/trend?limit=5001", headers=headers)
+
+    assert response.status_code == 200
+    assert [sample["value"] for sample in response.json()] == ["1", "2"]
+    assert invalid_limit.status_code == 422
 
 
 def test_ui_operator_can_apply_global_trend_setup_to_selected_points() -> None:

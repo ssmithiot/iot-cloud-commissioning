@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 import hashlib
 import hmac
 import re
@@ -95,6 +96,24 @@ def _is_expired(expires_at: datetime | None) -> bool:
     return expires_at <= utc_now()
 
 
+def _telemetry_write_due(last_written_at: datetime | None) -> bool:
+    """Rate-limit auth telemetry writes so hot request paths stay read-only.
+
+    Gateways send a heartbeat, a job poll, and trend uploads every cycle;
+    writing last_used_at/last_login_at on every request adds an UPDATE+COMMIT
+    per authenticated call at fleet scale. Telemetry stays accurate to within
+    settings.auth_telemetry_min_interval_sec (0 restores write-every-request).
+    """
+    if last_written_at is None:
+        return True
+    interval = settings.auth_telemetry_min_interval_sec
+    if interval <= 0:
+        return True
+    if last_written_at.tzinfo is None:
+        last_written_at = last_written_at.replace(tzinfo=timezone.utc)
+    return last_written_at <= utc_now() - timedelta(seconds=interval)
+
+
 def require_gateway_auth(
     authorization: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_db),
@@ -120,8 +139,9 @@ def require_gateway_auth(
     if credential.revoked_at is not None or _is_expired(credential.expires_at):
         raise _unauthorized()
 
-    credential.last_used_at = utc_now()
-    db.commit()
+    if _telemetry_write_due(credential.last_used_at):
+        credential.last_used_at = utc_now()
+        db.commit()
 
     return GatewayAuthContext(
         gateway_id=credential.gateway_id,
@@ -174,11 +194,23 @@ def _decode_supabase_hs256_jwt(raw_token: str) -> dict[str, object]:
     )
 
 
+@lru_cache(maxsize=4)
+def _jwks_client(jwks_url: str) -> PyJWKClient:
+    """Cache the JWKS client per process.
+
+    Constructing PyJWKClient per request discards its internal key cache and
+    forces an outbound JWKS fetch on every RS256/ES256 request. JWKS content
+    is public signing material, so a process-local cache is safe across
+    multiple workers and instances.
+    """
+    return PyJWKClient(jwks_url)
+
+
 def _decode_supabase_jwks_jwt(raw_token: str, algorithm: str) -> dict[str, object]:
     jwks_url = _supabase_jwks_url()
     if not jwks_url:
         raise _admin_unauthorized()
-    signing_key = PyJWKClient(jwks_url).get_signing_key_from_jwt(raw_token)
+    signing_key = _jwks_client(jwks_url).get_signing_key_from_jwt(raw_token)
     return jwt.decode(
         raw_token,
         signing_key.key,
@@ -245,10 +277,11 @@ def require_operator_auth(
     if operator is None or operator.status != "active" or operator.role not in {"admin", "operator", "viewer"}:
         raise _admin_unauthorized()
 
-    operator.supabase_user_id = operator.supabase_user_id or supabase_user.supabase_user_id
-    operator.last_login_at = utc_now()
-    operator.updated_at = utc_now()
-    db.commit()
+    if operator.supabase_user_id is None or _telemetry_write_due(operator.last_login_at):
+        operator.supabase_user_id = operator.supabase_user_id or supabase_user.supabase_user_id
+        operator.last_login_at = utc_now()
+        operator.updated_at = utc_now()
+        db.commit()
 
     return AdminAuthContext(
         auth_type="supabase_user",
@@ -277,11 +310,12 @@ def require_known_user_auth(
     if operator is None:
         raise _admin_unauthorized()
 
-    operator.supabase_user_id = operator.supabase_user_id or supabase_user.supabase_user_id
-    if operator.status == "active":
-        operator.last_login_at = utc_now()
-    operator.updated_at = utc_now()
-    db.commit()
+    if operator.supabase_user_id is None or _telemetry_write_due(operator.last_login_at):
+        operator.supabase_user_id = operator.supabase_user_id or supabase_user.supabase_user_id
+        if operator.status == "active":
+            operator.last_login_at = utc_now()
+        operator.updated_at = utc_now()
+        db.commit()
 
     return AdminAuthContext(
         auth_type="supabase_user",

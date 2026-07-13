@@ -12,6 +12,7 @@ from iot_cx_agent.db import (
     pending_trend_samples,
     mark_trend_samples_uploaded,
     record_trend_upload_failure,
+    trend_queue_status,
     trend_upload_attempt_count,
 )
 
@@ -86,3 +87,25 @@ def test_trend_queue_is_bounded_and_retries_after_backoff(tmp_path: Path) -> Non
     assert trend_upload_attempt_count(db_path, [row_id]) == 1
     assert pending_trend_samples(db_path, now="2026-07-11T12:00:30+00:00") == []
     assert pending_trend_samples(db_path, now="2026-07-11T12:01:00+00:00")[0][0] == row_id
+
+
+def test_trend_queue_status_separates_deferred_samples(tmp_path: Path) -> None:
+    db_path = tmp_path / "edge.db"
+    initialize_database(db_path)
+    queue_trend_sample(db_path, {"point_id": "point-1", "value": "72"}, "2026-07-12T00:00:00+00:00")
+    queue_trend_sample(db_path, {"point_id": "point-2", "value": "73"}, "2026-07-12T00:01:00+00:00")
+    ids = [item_id for item_id, _ in pending_trend_samples(db_path)]
+    record_trend_upload_failure(
+        db_path,
+        [ids[1]],
+        error="cloud offline",
+        retry_at="2026-07-12T01:00:00+00:00",
+        updated_at="2026-07-12T00:02:00+00:00",
+    )
+
+    assert trend_queue_status(db_path, now="2026-07-12T00:30:00+00:00") == {
+        "pending_count": 2,
+        "deferred_count": 1,
+        "oldest_pending_at": "2026-07-12T00:00:00+00:00",
+        "max_attempt_count": 1,
+    }

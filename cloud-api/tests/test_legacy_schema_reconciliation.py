@@ -7,8 +7,14 @@ from alembic.config import Config
 from sqlalchemy import create_engine
 
 
+# Settings are snapshotted by whichever test module imports the app first.
+# Set the full standard test environment so this module is safe to import
+# first (see the same note in test_bacnet_read_jobs.py).
+os.environ.setdefault("DATABASE_URL", "sqlite:///./test-cloud-api.db")
+os.environ.setdefault("AUTO_CREATE_TABLES", "true")
 os.environ.setdefault("GATEWAY_AUTH_PEPPER", "test-pepper")
 os.environ.setdefault("IOT_ADMIN_API_TOKEN", "test-admin-token")
+os.environ.setdefault("SUPABASE_JWT_SECRET", "test-supabase-jwt-secret")
 
 from app.config import settings
 from app.database import Base

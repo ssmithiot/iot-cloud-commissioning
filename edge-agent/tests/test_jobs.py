@@ -178,6 +178,19 @@ def test_load_config_reads_gateway_api_token_from_env(tmp_path: Path, monkeypatc
     assert agent_config.gateway_api_token == "iotcc_gw_prefix_secret"
 
 
+def test_load_config_rejects_invalid_trend_retry_settings(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW001\nsite_id: demo-site\ncloud_url: https://cloud.example\ntrend_upload_retry_base_sec: 0\n",
+        encoding="utf-8",
+    )
+
+    import pytest
+
+    with pytest.raises(ValueError, match="trend_upload_retry_base_sec"):
+        load_config(config_path)
+
+
 def test_load_config_reads_tunnel_settings(tmp_path: Path) -> None:
     config_path = tmp_path / "agent.yaml"
     config_path.write_text(

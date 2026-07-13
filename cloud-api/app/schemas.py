@@ -132,6 +132,10 @@ class HeartbeatIn(BaseModel):
     ui_version: str = Field(min_length=1, max_length=80)
     sqlite_db_ok: bool
     queued_upload_count: int = Field(ge=0)
+    trend_pending_upload_count: int = Field(default=0, ge=0)
+    trend_deferred_upload_count: int = Field(default=0, ge=0)
+    trend_oldest_pending_at: datetime | None = None
+    trend_max_upload_attempt_count: int = Field(default=0, ge=0)
     cpu_count: int | None = Field(default=None, ge=1)
     cpu_load_1m: float | None = Field(default=None, ge=0)
     cpu_load_pct: float | None = Field(default=None, ge=0)
@@ -286,6 +290,10 @@ class GatewayOut(BaseModel):
     ui_version: str
     sqlite_db_ok: bool
     queued_upload_count: int
+    trend_pending_upload_count: int = 0
+    trend_deferred_upload_count: int = 0
+    trend_oldest_pending_at: datetime | None = None
+    trend_max_upload_attempt_count: int = 0
     cpu_count: int | None = None
     cpu_load_1m: float | None = None
     cpu_load_pct: float | None = None
@@ -328,6 +336,10 @@ class GatewayHeartbeatTrendOut(BaseModel):
     status: Literal["online", "degraded"]
     sqlite_db_ok: bool
     queued_upload_count: int
+    trend_pending_upload_count: int = 0
+    trend_deferred_upload_count: int = 0
+    trend_oldest_pending_at: datetime | None = None
+    trend_max_upload_attempt_count: int = 0
     cpu_load_pct: float | None = None
     memory_used_pct: float | None = None
     disk_used_pct: float | None = None
@@ -380,6 +392,42 @@ class GatewayProvisionOut(BaseModel):
     ui_version: str
     gateway_api_token: str
     token_prefix: str
+
+
+class TrendConfigRepairOut(BaseModel):
+    disabled_count: int
+    gateway_id: str | None = None
+
+
+class AlertEventOut(BaseModel):
+    type: str
+    gateway_id: str
+    site_id: str
+    hostname: str
+    text: str
+    occurred_at: datetime
+    delivered: bool
+
+
+class AlertEvaluationOut(BaseModel):
+    environment: str
+    webhook_configured: bool
+    evaluated_gateways: int
+    events: list[AlertEventOut]
+    delivery_failures: int
+
+
+class GatewayCredentialOut(BaseModel):
+    credential_id: str
+    gateway_id: str
+    name: str | None
+    token_prefix: str
+    scopes: list[str]
+    created_at: datetime
+    last_used_at: datetime | None
+    expires_at: datetime | None
+    revoked_at: datetime | None
+    status: Literal["active", "revoked", "expired"]
 
 
 class JobCreateIn(BaseModel):
@@ -750,10 +798,13 @@ class PointTrendSampleIn(BaseModel):
     point_id: str
     sampled_at: datetime
     value: str | None = Field(default=None, max_length=255)
+    quality: Literal["good", "uncertain", "bad"] = "good"
 
 
 class PointTrendSampleOut(PointTrendSampleIn):
     gateway_id: str
+    source: str
+    received_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
 

@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import re
+import time
 from urllib.parse import parse_qsl, quote, urlsplit
 from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest
@@ -15,7 +16,7 @@ from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import String, cast, select, text
+from sqlalchemy import String, cast, delete, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -32,8 +33,8 @@ from app.auth import (
     require_operator_auth,
     require_supabase_user_auth,
 )
-from app.access import require_site_access, visible_site_ids
-from app.config import settings
+from app.access import is_platform_admin, require_site_access, visible_site_ids
+from app.config import production_resource_conflicts, settings
 from app.database import Base, engine, get_db
 from app.models import (
     BacnetWriteBatch,
@@ -41,6 +42,7 @@ from app.models import (
     EdgeHeartbeat,
     EdgeJob,
     EdgeNode,
+    GatewayAlertState,
     GatewayCredential,
     GatewayGroup,
     GatewayUpdateRequest,
@@ -62,6 +64,8 @@ from app.schemas import (
     AccessMembershipOut,
     AccessMembershipUpsertIn,
     AccessOverviewOut,
+    AlertEvaluationOut,
+    AlertEventOut,
     BACNET_WRITE_OBJECT_TYPES,
     BacnetWriteBatchOut,
     CommissioningTemplateImportOut,
@@ -70,6 +74,7 @@ from app.schemas import (
     DirectConnectOut,
     EdgeJobClaimOut,
     EdgeTrendConfigOut,
+    GatewayCredentialOut,
     GatewayGroupIn,
     GatewayGroupOut,
     GatewayHeartbeatTrendOut,
@@ -110,6 +115,7 @@ from app.schemas import (
     SiteOut,
     SiteUpdate,
     SiteWeatherOut,
+    TrendConfigRepairOut,
     TunnelSessionCreateIn,
     TunnelSessionOut,
     TunnelStatusOut,
@@ -132,6 +138,15 @@ from app.ui import (
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    # Staging safety guard: refuse to start a staging instance that points at
+    # known production resources. Reports setting NAMES only, never values.
+    conflicts = production_resource_conflicts(settings)
+    if conflicts:
+        raise RuntimeError(
+            "Staging environment is configured with known production resources: "
+            f"{', '.join(conflicts)}. Use staging-specific values or set "
+            "ALLOW_PRODUCTION_RESOURCES=true only if this is intentional."
+        )
     if settings.auto_create_tables:
         Base.metadata.create_all(bind=engine)
     else:
@@ -141,6 +156,31 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lifespan)
 logger = logging.getLogger("iot-cloud-api.tunnel")
+request_logger = logging.getLogger("iot-cloud-api.requests")
+
+_REQUEST_LOG_EXCLUDED_PATHS = {"/health", "/health/db", "/health/schema"}
+
+
+@app.middleware("http")
+async def request_timing_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    """Structured per-request observability: method, route, status, duration.
+
+    Uses the route template (not the raw path) to keep log cardinality low at
+    fleet scale. Additive only; never blocks or alters the response.
+    """
+    start = time.perf_counter()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    path_template = getattr(route, "path", request.url.path)
+    if path_template not in _REQUEST_LOG_EXCLUDED_PATHS:
+        request_logger.info(
+            "request method=%s path=%s status=%s duration_ms=%.1f",
+            request.method,
+            path_template,
+            response.status_code,
+            (time.perf_counter() - start) * 1000,
+        )
+    return response
 
 
 DIRECT_CONNECT_HOST_PATTERN = re.compile(r"^[A-Za-z0-9.-]+$")
@@ -220,6 +260,10 @@ def _gateway_out(edge_node: EdgeNode, now: datetime | None = None) -> dict[str, 
         "ui_version": edge_node.ui_version,
         "sqlite_db_ok": edge_node.sqlite_db_ok,
         "queued_upload_count": edge_node.queued_upload_count,
+        "trend_pending_upload_count": edge_node.trend_pending_upload_count,
+        "trend_deferred_upload_count": edge_node.trend_deferred_upload_count,
+        "trend_oldest_pending_at": edge_node.trend_oldest_pending_at,
+        "trend_max_upload_attempt_count": edge_node.trend_max_upload_attempt_count,
         "cpu_count": edge_node.cpu_count,
         "cpu_load_1m": edge_node.cpu_load_1m,
         "cpu_load_pct": edge_node.cpu_load_pct,
@@ -1146,7 +1190,9 @@ def root() -> RedirectResponse:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    # Environment identity for humans and tooling (staging vs production).
+    # Never include secrets, URLs, tokens, or credentials here.
+    return {"status": "ok", "environment": settings.environment, "version": app.version}
 
 
 @app.get("/health/db")
@@ -1628,6 +1674,10 @@ def ui_gateway_heartbeat_trend(
             "status": "online" if heartbeat.sqlite_db_ok else "degraded",
             "sqlite_db_ok": heartbeat.sqlite_db_ok,
             "queued_upload_count": heartbeat.queued_upload_count,
+            "trend_pending_upload_count": heartbeat.trend_pending_upload_count,
+            "trend_deferred_upload_count": heartbeat.trend_deferred_upload_count,
+            "trend_oldest_pending_at": heartbeat.trend_oldest_pending_at,
+            "trend_max_upload_attempt_count": heartbeat.trend_max_upload_attempt_count,
             "cpu_load_pct": heartbeat.cpu_load_pct,
             "memory_used_pct": heartbeat.memory_used_pct,
             "disk_used_pct": heartbeat.disk_used_pct,
@@ -2068,11 +2118,13 @@ def ui_remove_device(
     device.updated_at = utc_now()
     device.lifecycle_state = "retired"
     device.retired_at = device.updated_at
-    for point in db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id)).all():
+    device_points = db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id)).all()
+    for point in device_points:
         point.enabled = False
         point.updated_at = utc_now()
         point.lifecycle_state = "retired"
         point.retired_at = point.updated_at
+    _disable_trend_configs_for_points(db, [point.id for point in device_points], device.updated_at)
     db.commit()
     db.refresh(device)
     return _device_out(device)
@@ -2145,6 +2197,24 @@ def ui_save_point(
     return _point_out(point)
 
 
+def _disable_trend_configs_for_points(db: Session, point_ids: list[str], now: datetime) -> int:
+    """Disable enabled trend configs for the given points (same transaction
+    as retirement). GW032 incident: a retired point with a live trend config
+    keeps the edge sampling ghosts and grows its upload queue."""
+    if not point_ids:
+        return 0
+    configs = db.scalars(
+        select(PointTrendConfig).where(
+            PointTrendConfig.point_id.in_(point_ids),
+            PointTrendConfig.enabled.is_(True),
+        )
+    ).all()
+    for config in configs:
+        config.enabled = False
+        config.updated_at = now
+    return len(configs)
+
+
 @app.delete("/api/ui/points/{point_id}", response_model=SavedPointOut)
 def ui_remove_point(
     point_id: str,
@@ -2156,6 +2226,7 @@ def ui_remove_point(
     point.updated_at = utc_now()
     point.lifecycle_state = "retired"
     point.retired_at = point.updated_at
+    _disable_trend_configs_for_points(db, [point.id], point.updated_at)
     db.commit()
     db.refresh(point)
     return _point_out(point)
@@ -2183,6 +2254,7 @@ def ui_bulk_remove_points(
             point.lifecycle_state = "retired"
             point.retired_at = now
             removed_count += 1
+    _disable_trend_configs_for_points(db, [point.id for point in points], now)
     db.commit()
     missing_ids = [point_id for point_id in payload.point_ids if _tree_id(point_id) not in points_by_id]
     return SavedPointsBulkRemoveOut(
@@ -2671,20 +2743,34 @@ def edge_list_trend_configs(
 ) -> list[dict[str, object]]:
     if auth.gateway_id != gateway_id:
         raise HTTPException(status_code=403, detail="Gateway credential does not match requested gateway_id")
-    configs = db.scalars(select(PointTrendConfig).where(PointTrendConfig.gateway_id == gateway_id, PointTrendConfig.enabled.is_(True))).all()
+    # GW032 incident (docs/gw032-trend-backlog-incident.md): retired points
+    # must never reach the edge trend workload. Require the saved point to be
+    # enabled, not just the trend config.
+    configs = db.scalars(
+        select(PointTrendConfig)
+        .join(SavedBacnetPoint, PointTrendConfig.point_id == SavedBacnetPoint.id)
+        .where(
+            PointTrendConfig.gateway_id == gateway_id,
+            PointTrendConfig.enabled.is_(True),
+            SavedBacnetPoint.enabled.is_(True),
+        )
+    ).all()
     return [{"point_id": config.point_id, "gateway_id": config.gateway_id, "enabled": config.enabled, "interval_sec": config.interval_sec, "updated_at": config.updated_at, "device_instance": config.point.device_instance, "object_type": config.point.object_type, "object_instance": config.point.object_instance} for config in configs]
 
 
 @app.post("/api/edge/{gateway_id}/trend-samples", response_model=list[PointTrendSampleOut])
 def edge_upload_trend_samples(
     gateway_id: str,
-    payload: list[PointTrendSampleIn],
+    payload: list[PointTrendSampleIn] = Body(min_length=1, max_length=500),
     auth: GatewayAuthContext = Depends(require_gateway_auth),
     db: Session = Depends(get_db),
 ) -> list[PointTrendSample]:
     if auth.gateway_id != gateway_id:
         raise HTTPException(status_code=403, detail="Gateway credential does not match trend sample gateway_id")
     point_ids = {_tree_id(sample.point_id) for sample in payload}
+    sample_keys = [(_tree_id(sample.point_id), sample.sampled_at) for sample in payload]
+    if len(sample_keys) != len(set(sample_keys)):
+        raise HTTPException(status_code=422, detail="Trend sample batch must not contain duplicate point_id and sampled_at pairs")
     points = {point.id: point for point in db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.id.in_(point_ids), SavedBacnetPoint.gateway_id == gateway_id)).all()}
     stored: list[PointTrendSample] = []
     for sample in payload:
@@ -2693,9 +2779,22 @@ def edge_upload_trend_samples(
             raise HTTPException(status_code=403, detail="Trend sample point does not belong to gateway")
         existing = db.scalar(select(PointTrendSample).where(PointTrendSample.point_id == point_id, PointTrendSample.sampled_at == sample.sampled_at))
         if existing is None:
-            existing = PointTrendSample(point_id=point_id, gateway_id=gateway_id, sampled_at=sample.sampled_at, value=sample.value)
+            existing = PointTrendSample(
+                point_id=point_id,
+                gateway_id=gateway_id,
+                sampled_at=sample.sampled_at,
+                value=sample.value,
+                quality=sample.quality,
+                source="edge-agent",
+            )
             db.add(existing)
         stored.append(existing)
+    retention_cutoff = utc_now() - timedelta(days=settings.trend_retention_days)
+    db.execute(
+        delete(PointTrendSample)
+        .where(PointTrendSample.sampled_at < retention_cutoff)
+        .execution_options(synchronize_session=False)
+    )
     db.commit()
     return stored
 
@@ -2731,6 +2830,10 @@ def receive_heartbeat(
     edge_node.ui_version = payload.ui_version
     edge_node.sqlite_db_ok = payload.sqlite_db_ok
     edge_node.queued_upload_count = payload.queued_upload_count
+    edge_node.trend_pending_upload_count = payload.trend_pending_upload_count
+    edge_node.trend_deferred_upload_count = payload.trend_deferred_upload_count
+    edge_node.trend_oldest_pending_at = payload.trend_oldest_pending_at
+    edge_node.trend_max_upload_attempt_count = payload.trend_max_upload_attempt_count
     edge_node.cpu_count = payload.cpu_count
     edge_node.cpu_load_1m = payload.cpu_load_1m
     edge_node.cpu_load_pct = payload.cpu_load_pct
@@ -2755,6 +2858,10 @@ def receive_heartbeat(
             ui_version=payload.ui_version,
             sqlite_db_ok=payload.sqlite_db_ok,
             queued_upload_count=payload.queued_upload_count,
+            trend_pending_upload_count=payload.trend_pending_upload_count,
+            trend_deferred_upload_count=payload.trend_deferred_upload_count,
+            trend_oldest_pending_at=payload.trend_oldest_pending_at,
+            trend_max_upload_attempt_count=payload.trend_max_upload_attempt_count,
             cpu_count=payload.cpu_count,
             cpu_load_1m=payload.cpu_load_1m,
             cpu_load_pct=payload.cpu_load_pct,
@@ -2764,6 +2871,15 @@ def receive_heartbeat(
             disk_free_mb=payload.disk_free_mb,
             timestamp_utc=payload.timestamp_utc,
         )
+    )
+    # Bounded retention: prune this gateway's heartbeat history older than the
+    # configured window. Scoping to the sending gateway keeps each delete
+    # small and indexed; the fleet self-prunes as gateways heartbeat.
+    heartbeat_cutoff = now - timedelta(days=settings.heartbeat_retention_days)
+    db.execute(
+        delete(EdgeHeartbeat)
+        .where(EdgeHeartbeat.gateway_id == payload.gateway_id, EdgeHeartbeat.timestamp_utc < heartbeat_cutoff)
+        .execution_options(synchronize_session=False)
     )
     db.commit()
 
@@ -2776,22 +2892,33 @@ def receive_heartbeat(
 
 @app.get("/api/edge/gateways", response_model=list[GatewayOut])
 def list_gateways(
-    _: AdminAuthContext = Depends(require_operator_auth),
+    auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> list[dict[str, object]]:
     now = utc_now()
+    # Same site scoping as /api/ui/gateways: scoped operators must not see
+    # gateways belonging to other organizations or sites.
     return [
         _gateway_out(edge_node, now)
-        for edge_node in db.scalars(select(EdgeNode).options(joinedload(EdgeNode.site)).order_by(EdgeNode.gateway_id)).all()
+        for edge_node in db.scalars(_scoped_gateway_statement(db, auth)).all()
     ]
 
 
 @app.post("/api/edge/jobs", response_model=JobOut)
 def create_job(
     payload: JobCreateIn,
-    _: AdminAuthContext = Depends(require_job_operator_auth),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> EdgeJob:
+    # Tenant boundary: scoped operators may only queue jobs on gateways within
+    # their site scope, and cannot probe unknown gateway IDs. Platform admins
+    # retain the legacy ability to queue jobs for gateways that have not yet
+    # heartbeated (pre-provisioning flow).
+    edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == payload.gateway_id))
+    if edge_node is not None:
+        require_site_access(db, auth, edge_node.site)
+    elif not is_platform_admin(auth):
+        raise HTTPException(status_code=404, detail="Gateway not found")
     job = EdgeJob(
         job_id=f"job-{uuid4().hex}",
         gateway_id=payload.gateway_id,
@@ -2925,6 +3052,216 @@ def provision_gateway(
     )
 
 
+def _credential_out(credential: GatewayCredential) -> dict[str, object]:
+    """Serialize a credential for admin views. Never includes the token hash."""
+    if credential.revoked_at is not None:
+        status_value = "revoked"
+    else:
+        expires_at = _aware_utc(credential.expires_at)
+        status_value = "expired" if expires_at is not None and expires_at <= utc_now() else "active"
+    return {
+        "credential_id": str(credential.id),
+        "gateway_id": credential.gateway_id,
+        "name": credential.name,
+        "token_prefix": credential.token_prefix,
+        "scopes": list(credential.scopes or []),
+        "created_at": credential.created_at,
+        "last_used_at": credential.last_used_at,
+        "expires_at": credential.expires_at,
+        "revoked_at": credential.revoked_at,
+        "status": status_value,
+    }
+
+
+@app.get("/api/admin/gateways/{gateway_id}/credentials", response_model=list[GatewayCredentialOut])
+def admin_list_gateway_credentials(
+    gateway_id: str,
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> list[dict[str, object]]:
+    _get_gateway_with_site_or_404(db, gateway_id)
+    credentials = db.scalars(
+        select(GatewayCredential)
+        .where(GatewayCredential.gateway_id == gateway_id)
+        .order_by(GatewayCredential.created_at.desc(), GatewayCredential.token_prefix)
+    ).all()
+    return [_credential_out(credential) for credential in credentials]
+
+
+@app.post("/api/admin/credentials/{credential_id}/revoke", response_model=GatewayCredentialOut)
+def admin_revoke_gateway_credential(
+    credential_id: str,
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    try:
+        credential_uuid = UUID(credential_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Credential not found") from None
+    credential = db.get(GatewayCredential, credential_uuid)
+    if credential is None:
+        raise HTTPException(status_code=404, detail="Credential not found")
+    # Idempotent: revoking an already-revoked credential returns it unchanged.
+    if credential.revoked_at is None:
+        credential.revoked_at = utc_now()
+        db.commit()
+    return _credential_out(credential)
+
+
+@app.post("/api/admin/maintenance/disable-retired-trend-configs", response_model=TrendConfigRepairOut)
+def admin_disable_retired_trend_configs(
+    gateway_id: str | None = Query(default=None),
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Idempotent repair for the GW032 defect class: disable every enabled
+    trend config whose saved point is retired/disabled. Reports the affected
+    count; a second run reports zero. Optionally scoped to one gateway."""
+    statement = (
+        select(PointTrendConfig)
+        .join(SavedBacnetPoint, PointTrendConfig.point_id == SavedBacnetPoint.id)
+        .where(PointTrendConfig.enabled.is_(True), SavedBacnetPoint.enabled.is_(False))
+    )
+    if gateway_id:
+        statement = statement.where(PointTrendConfig.gateway_id == gateway_id)
+    configs = db.scalars(statement).all()
+    now = utc_now()
+    for config in configs:
+        config.enabled = False
+        config.updated_at = now
+    db.commit()
+    return {"disabled_count": len(configs), "gateway_id": gateway_id}
+
+
+alert_logger = logging.getLogger("iot-cloud-api.alerts")
+
+
+def _deliver_alert_webhook(webhook_url: str, payload: dict[str, object]) -> bool:
+    """POST one alert to the configured webhook. Best-effort; never raises."""
+    import httpx
+
+    try:
+        response = httpx.post(webhook_url, json=payload, timeout=5.0)
+        return 200 <= response.status_code < 300
+    except Exception as exc:  # noqa: BLE001 - delivery must never break evaluation
+        alert_logger.warning("alert webhook delivery failed: %s", exc)
+        return False
+
+
+@app.post("/api/admin/alerts/evaluate", response_model=AlertEvaluationOut)
+def admin_evaluate_alerts(
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Transition-based fleet alert evaluation.
+
+    Designed to be called by an external scheduler (e.g. Render cron) every
+    few minutes; also safe to invoke manually. Alerts fire on state CHANGES
+    only: offline->online, backlog appears/clears. Gateways that have never
+    heartbeated (preprovisioned, awaiting installation) are ineligible and
+    stay silent. With no webhook configured, transitions are recorded and
+    acknowledged silently so enabling a webhook later does not replay
+    historical events.
+    """
+    now = utc_now()
+    webhook_url = (settings.alert_webhook_url or "").strip()
+    events: list[dict[str, object]] = []
+    delivery_failures = 0
+    deliveries_attempted = 0
+
+    eligible = db.scalars(
+        select(EdgeNode)
+        .options(joinedload(EdgeNode.site))
+        .where(EdgeNode.latest_heartbeat_at.isnot(None))
+        .order_by(EdgeNode.gateway_id)
+    ).all()
+
+    states = {
+        (state.gateway_id, state.alert_type): state
+        for state in db.scalars(select(GatewayAlertState)).all()
+    }
+
+    def process(edge_node: EdgeNode, alert_type: str, condition_active: bool, alert_text: str, recovery_text: str) -> None:
+        nonlocal delivery_failures, deliveries_attempted
+        key = (edge_node.gateway_id, alert_type)
+        state = states.get(key)
+        if state is None:
+            state = GatewayAlertState(gateway_id=edge_node.gateway_id, alert_type=alert_type, active=False)
+            db.add(state)
+            states[key] = state
+        if condition_active != state.active:
+            state.active = condition_active
+            state.last_transition_at = now
+            state.last_notified_at = None
+            state.updated_at = now
+        if state.last_transition_at is None or state.last_notified_at is not None:
+            return  # nothing pending
+
+        event_type = alert_type if state.active else f"{alert_type}_recovered"
+        text = alert_text if state.active else recovery_text
+        delivered = False
+        if not webhook_url:
+            # Groundwork mode: acknowledge silently; report in response only.
+            state.last_notified_at = now
+        elif deliveries_attempted < settings.alert_max_deliveries_per_run:
+            deliveries_attempted += 1
+            payload = {
+                "type": event_type,
+                "gateway_id": edge_node.gateway_id,
+                "site_id": edge_node.site_id,
+                "hostname": edge_node.hostname,
+                "environment": settings.environment,
+                "occurred_at": (_aware_utc(state.last_transition_at) or now).isoformat(),
+                "text": text,
+            }
+            delivered = _deliver_alert_webhook(webhook_url, payload)
+            if delivered:
+                state.last_notified_at = now
+            else:
+                delivery_failures += 1  # stays pending; retried next evaluation
+        events.append(
+            {
+                "type": event_type,
+                "gateway_id": edge_node.gateway_id,
+                "site_id": edge_node.site_id,
+                "hostname": edge_node.hostname,
+                "text": text,
+                "occurred_at": state.last_transition_at,
+                "delivered": delivered,
+            }
+        )
+
+    backlog_cutoff = now - timedelta(hours=settings.alert_trend_backlog_age_hours)
+    for edge_node in eligible:
+        offline_now = _effective_status(edge_node, now)["effective_status"] == "offline"
+        heartbeat_age = _heartbeat_age_seconds(edge_node, now)
+        process(
+            edge_node,
+            "gateway_offline",
+            offline_now,
+            f"Gateway {edge_node.gateway_id} ({edge_node.site_id}) is OFFLINE - last heartbeat {heartbeat_age}s ago",
+            f"Gateway {edge_node.gateway_id} ({edge_node.site_id}) recovered - heartbeats resumed",
+        )
+        oldest_pending = _aware_utc(edge_node.trend_oldest_pending_at)
+        backlog_now = (not offline_now) and oldest_pending is not None and oldest_pending < backlog_cutoff
+        process(
+            edge_node,
+            "trend_backlog",
+            backlog_now,
+            f"Gateway {edge_node.gateway_id} ({edge_node.site_id}) trend backlog not draining - oldest pending sample {oldest_pending.isoformat() if oldest_pending else '?'}, {edge_node.trend_pending_upload_count} pending",
+            f"Gateway {edge_node.gateway_id} ({edge_node.site_id}) trend backlog cleared",
+        )
+
+    db.commit()
+    return {
+        "environment": settings.environment,
+        "webhook_configured": bool(webhook_url),
+        "evaluated_gateways": len(eligible),
+        "events": events,
+        "delivery_failures": delivery_failures,
+    }
+
+
 @app.get("/api/edge/{gateway_id}/jobs/next", response_model=EdgeJobClaimOut | None)
 def claim_next_job(
     gateway_id: str,
@@ -2934,11 +3271,35 @@ def claim_next_job(
     if auth.gateway_id != gateway_id:
         raise HTTPException(status_code=403, detail="Gateway credential does not match requested gateway_id")
 
+    # Stale-claim recovery: a gateway that dies mid-job leaves the job
+    # 'claimed' forever. Requeue this gateway's stale claims at poll time.
+    # BACnet write jobs are excluded — a partially executed write must never
+    # be re-executed blindly; they stay 'claimed' for manual review (see
+    # docs/disaster-recovery-runbook.md, Job recovery).
+    stale_cutoff = utc_now() - timedelta(seconds=settings.job_claim_timeout_sec)
+    stale_jobs = db.scalars(
+        select(EdgeJob).where(
+            EdgeJob.gateway_id == gateway_id,
+            EdgeJob.status == "claimed",
+            EdgeJob.claimed_at < stale_cutoff,
+            EdgeJob.job_type != "bacnet_write_batch",
+        )
+    ).all()
+    if stale_jobs:
+        for stale_job in stale_jobs:
+            stale_job.status = "queued"
+            stale_job.claimed_at = None
+        db.commit()
+
+    # Row-level lock with SKIP LOCKED prevents two app workers/instances from
+    # claiming the same job during concurrent polls. SQLite (dev/tests)
+    # ignores FOR UPDATE, preserving existing single-process behavior.
     job = db.scalar(
         select(EdgeJob)
         .where(EdgeJob.gateway_id == gateway_id, EdgeJob.status == "queued")
         .order_by(EdgeJob.created_at, EdgeJob.id)
         .limit(1)
+        .with_for_update(skip_locked=True)
     )
     if job is None:
         return None

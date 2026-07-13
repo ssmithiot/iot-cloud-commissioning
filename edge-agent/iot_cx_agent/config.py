@@ -87,6 +87,16 @@ def _parse_port(raw_port: object, source: str) -> int:
     return port
 
 
+def _positive_int(raw_value: object, source: str, *, minimum: int = 1) -> int:
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{source} must be an integer greater than or equal to {minimum}") from exc
+    if value < minimum:
+        raise ValueError(f"{source} must be an integer greater than or equal to {minimum}")
+    return value
+
+
 def normalize_bacnet_router_profile(raw_profile: object | None) -> str:
     profile = str(raw_profile or "contemporary").strip().lower()
     profile = profile.replace("_", "-")
@@ -147,10 +157,10 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         bacnet_lock_timeout_sec=float(bacnet.get("lock_timeout_sec", 30)),
         bacnet_lock_stale_sec=float(bacnet.get("lock_stale_sec", 120)),
         heartbeat_interval_sec=int(raw.get("heartbeat_interval_sec", 30)),
-        trend_upload_batch_size=int(raw.get("trend_upload_batch_size", 100)),
-        trend_queue_max_pending_samples=int(raw.get("trend_queue_max_pending_samples", 10_000)),
-        trend_upload_retry_base_sec=int(raw.get("trend_upload_retry_base_sec", 30)),
-        trend_upload_retry_max_sec=int(raw.get("trend_upload_retry_max_sec", 900)),
+        trend_upload_batch_size=_positive_int(raw.get("trend_upload_batch_size", 100), "trend_upload_batch_size"),
+        trend_queue_max_pending_samples=_positive_int(raw.get("trend_queue_max_pending_samples", 10_000), "trend_queue_max_pending_samples"),
+        trend_upload_retry_base_sec=_positive_int(raw.get("trend_upload_retry_base_sec", 30), "trend_upload_retry_base_sec"),
+        trend_upload_retry_max_sec=_positive_int(raw.get("trend_upload_retry_max_sec", 900), "trend_upload_retry_max_sec"),
         agent_version=__version__,
         ui_version=_configured_ui_version(raw.get("ui_version")),
         sqlite_path=sqlite_path,

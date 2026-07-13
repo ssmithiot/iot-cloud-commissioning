@@ -5,7 +5,7 @@ import shutil
 import socket
 
 from iot_cx_agent.config import AgentConfig
-from iot_cx_agent.db import queued_upload_count
+from iot_cx_agent.db import queued_upload_count, trend_queue_status
 
 
 def utc_timestamp() -> str:
@@ -65,6 +65,12 @@ def resource_metrics(sqlite_path: Path) -> dict[str, int | float | None]:
 
 
 def collect_status(config: AgentConfig, sqlite_db_ok: bool = True) -> dict[str, object]:
+    trend_queue = trend_queue_status(config.sqlite_path) if sqlite_db_ok else {
+        "pending_count": 0,
+        "deferred_count": 0,
+        "oldest_pending_at": None,
+        "max_attempt_count": 0,
+    }
     return {
         "gateway_id": config.gateway_id,
         "site_id": config.site_id,
@@ -76,6 +82,10 @@ def collect_status(config: AgentConfig, sqlite_db_ok: bool = True) -> dict[str, 
         "ui_version": config.ui_version,
         "sqlite_db_ok": sqlite_db_ok,
         "queued_upload_count": queued_upload_count(config.sqlite_path) if sqlite_db_ok else 0,
+        "trend_pending_upload_count": trend_queue["pending_count"],
+        "trend_deferred_upload_count": trend_queue["deferred_count"],
+        "trend_oldest_pending_at": trend_queue["oldest_pending_at"],
+        "trend_max_upload_attempt_count": trend_queue["max_attempt_count"],
         **resource_metrics(config.sqlite_path),
         "timestamp_utc": utc_timestamp(),
     }

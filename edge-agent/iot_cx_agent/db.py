@@ -129,6 +129,30 @@ def queued_upload_count(path: Path) -> int:
         return int(row["count"])
 
 
+def trend_queue_status(path: Path, *, now: str | None = None) -> dict[str, int | str | None]:
+    """Return small, non-sensitive trend backlog diagnostics for the heartbeat."""
+    current_time = now or "9999-12-31T23:59:59+00:00"
+    with connect(path) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS pending_count,
+                SUM(CASE WHEN next_attempt_at IS NOT NULL AND next_attempt_at > ? THEN 1 ELSE 0 END) AS deferred_count,
+                MIN(created_at) AS oldest_pending_at,
+                MAX(attempt_count) AS max_attempt_count
+            FROM sync_queue
+            WHERE status = 'pending' AND item_type = 'trend_sample'
+            """,
+            (current_time,),
+        ).fetchone()
+    return {
+        "pending_count": int(row["pending_count"]),
+        "deferred_count": int(row["deferred_count"] or 0),
+        "oldest_pending_at": None if row["oldest_pending_at"] is None else str(row["oldest_pending_at"]),
+        "max_attempt_count": int(row["max_attempt_count"] or 0),
+    }
+
+
 def record_heartbeat_attempt(
     path: Path,
     attempted_at: str,

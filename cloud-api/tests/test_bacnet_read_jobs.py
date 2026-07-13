@@ -9,6 +9,10 @@ os.environ["DATABASE_URL"] = "sqlite:///./test-cloud-api-bacnet-read.db"
 os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["GATEWAY_AUTH_PEPPER"] = "test-pepper"
 os.environ["IOT_ADMIN_API_TOKEN"] = "test-admin-token"
+# Settings are snapshotted by whichever test module imports the app first;
+# omitting the JWT secret here breaks JWT tests in other modules when this
+# file happens to be imported first (ordering flake).
+os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-jwt-secret"
 
 from app.auth import hash_gateway_token
 from app.database import Base, SessionLocal, engine

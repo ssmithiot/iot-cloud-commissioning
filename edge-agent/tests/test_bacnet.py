@@ -1,9 +1,26 @@
+import os
 import subprocess
+import time
+from dataclasses import replace
 from pathlib import Path
 
 from iot_cx_agent.bacnet import active_priority_from_array_output, parse_bacnet_object_list, parse_bacwi_output, run_bacnet_runtime_check
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.jobs import execute_job
+
+
+def hold_runtime_lock(agent_config: AgentConfig) -> AgentConfig:
+    """Simulate another live process (the local UI) holding the BACnet lock.
+
+    The lock format must carry a running PID: the runtime treats unparseable
+    or dead-PID locks as stale and removes them (bacnet._lock_is_stale).
+    Returns a config with a short lock timeout so tests defer immediately
+    instead of waiting the 30 s production acquire window.
+    """
+    agent_config.bacnet_lock_path.write_text(
+        f"{os.getpid()}\n{time.time():.3f}\nport=47814\n", encoding="utf-8"
+    )
+    return replace(agent_config, bacnet_lock_timeout_sec=0.2)
 
 
 SAMPLE_BACWI_OUTPUT = """
@@ -228,6 +245,7 @@ def test_bacnet_load_points_uses_rpm_batch_when_available(tmp_path: Path, monkey
     calls = []
     bacrpm_path = tmp_path / "bacrpm"
     bacrpm_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    bacrpm_path.chmod(0o755)  # exec bit required on Linux; harmless on Windows
 
     def fake_run(*args, **kwargs):
         calls.append(args[0])
@@ -281,7 +299,7 @@ def test_bacnet_load_points_uses_rpm_batch_when_available(tmp_path: Path, monkey
 
 def test_bacnet_load_points_deferred_when_lock_is_held(tmp_path: Path, monkeypatch) -> None:
     agent_config = config(tmp_path)
-    agent_config.bacnet_lock_path.write_text("ui-active", encoding="utf-8")
+    agent_config = hold_runtime_lock(agent_config)
 
     def fail_run(*args, **kwargs):
         raise AssertionError("subprocess.run should not be called while BACnet runtime lock is held")
@@ -330,7 +348,7 @@ def test_bacnet_discover_timeout_fails_gracefully(tmp_path: Path, monkeypatch) -
 
 def test_bacnet_discover_deferred_when_lock_is_held(tmp_path: Path, monkeypatch) -> None:
     agent_config = config(tmp_path)
-    agent_config.bacnet_lock_path.write_text("ui-active", encoding="utf-8")
+    agent_config = hold_runtime_lock(agent_config)
 
     def fail_run(*args, **kwargs):
         raise AssertionError("subprocess.run should not be called while BACnet runtime lock is held")
@@ -347,7 +365,9 @@ def test_bacnet_discover_deferred_when_lock_is_held(tmp_path: Path, monkeypatch)
     assert result is not None
     assert result["status"] == "deferred"
     assert result["error"] == "bacnet_runtime_busy"
-    assert result["message"] == "Local commissioning UI is using BACnet port 47814. Cloud BACnet job yielded."
+    # Message text tracks bacnet._runtime_busy_message (the older
+    # "Local commissioning UI ..." wording no longer exists in the runtime).
+    assert result["message"] == "BACnet runtime is busy. Another local BACnet command is already using UDP 47814."
     assert result["port"] == 47814
 
 
@@ -356,6 +376,8 @@ def test_bacnet_runtime_check_success(tmp_path: Path) -> None:
     bacrp_path = tmp_path / "bacrp"
     bacwi_path.write_text("#!/bin/sh\n", encoding="utf-8")
     bacrp_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    bacwi_path.chmod(0o755)  # exec bit required on Linux; harmless on Windows
+    bacrp_path.chmod(0o755)
 
     agent_config = config(tmp_path, bacwi_path=str(bacwi_path), bacrp_path=str(bacrp_path))
     result, error = run_bacnet_runtime_check(agent_config, {})
@@ -375,6 +397,8 @@ def test_bacnet_runtime_check_accepts_bacnet_port_request_field(tmp_path: Path) 
     bacrp_path = tmp_path / "bacrp"
     bacwi_path.write_text("#!/bin/sh\n", encoding="utf-8")
     bacrp_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    bacwi_path.chmod(0o755)  # exec bit required on Linux; harmless on Windows
+    bacrp_path.chmod(0o755)
 
     agent_config = config(tmp_path, bacwi_path=str(bacwi_path), bacrp_path=str(bacrp_path))
     result, error = run_bacnet_runtime_check(agent_config, {"bacnet_port": 47814})
@@ -384,9 +408,23 @@ def test_bacnet_runtime_check_accepts_bacnet_port_request_field(tmp_path: Path) 
     assert result["bacnet_port"] == 47814
 
 
-def test_bacnet_runtime_check_failure_when_port_is_47808(tmp_path: Path) -> None:
-    result, error = run_bacnet_runtime_check(config(tmp_path, bacnet_default_port=47808), {})
+def test_bacnet_runtime_check_reports_configured_nondefault_port(tmp_path: Path) -> None:
+    # Ports are configurable (router profiles); the old hard rejection of
+    # UDP 47808 was removed from the runtime. The check must report the
+    # configured port and succeed when the tools are present. Stubs keep the
+    # test hermetic off the dev machine.
+    bacwi_path = tmp_path / "bacwi"
+    bacrp_path = tmp_path / "bacrp"
+    bacwi_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    bacrp_path.write_text("#!/bin/sh\n", encoding="utf-8")
+    bacwi_path.chmod(0o755)
+    bacrp_path.chmod(0o755)
 
-    assert error == "Cloud BACnet jobs must use UDP 47814"
-    assert result["status"] == "error"
+    result, error = run_bacnet_runtime_check(
+        config(tmp_path, bacnet_default_port=47808, bacwi_path=str(bacwi_path), bacrp_path=str(bacrp_path)),
+        {},
+    )
+
+    assert error is None
+    assert result["status"] == "ok"
     assert result["bacnet_port"] == 47808
