@@ -1,8 +1,21 @@
 from datetime import datetime
 import math
 from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+def _uuid_to_str(value: object) -> object:
+    """Coerce uuid.UUID to str for response schemas fed by ORM attributes.
+
+    On PostgreSQL, CloudUUID columns return uuid.UUID objects; Pydantic v2
+    does not coerce UUID -> str, so `str`-typed response fields fail
+    validation (500). SQLite test databases return plain strings, which is
+    why tests cannot catch this without explicit coverage (2026-07-13,
+    GW006/DEV-CLONE-MASTER site endpoint incident).
+    """
+    return str(value) if isinstance(value, UUID) else value
 
 
 BACNET_READ_OBJECT_TYPES = {
@@ -178,6 +191,8 @@ class SiteOut(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    _coerce_organization_id = field_validator("organization_id", mode="before")(_uuid_to_str)
+
 
 class SiteUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
@@ -212,6 +227,8 @@ class OrganizationOut(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+    _coerce_id = field_validator("id", mode="before")(_uuid_to_str)
 
 
 class AccessMembershipUpsertIn(BaseModel):
