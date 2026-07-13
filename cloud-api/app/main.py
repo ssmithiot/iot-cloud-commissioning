@@ -158,6 +158,26 @@ app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lif
 logger = logging.getLogger("iot-cloud-api.tunnel")
 request_logger = logging.getLogger("iot-cloud-api.requests")
 
+
+def _ensure_visible_logging(target: logging.Logger) -> None:
+    """Attach a stdout handler at INFO when nothing else configures logging.
+
+    Uvicorn configures its own loggers only; app loggers otherwise propagate
+    to an unconfigured root at WARNING, which made request-timing logs
+    invisible in production during the 2026-07-13 incident.
+    """
+    if not target.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+        target.addHandler(handler)
+        target.setLevel(logging.INFO)
+        # Keep propagate=True: the unconfigured root has no handler in
+        # production (no double logging), and pytest's caplog relies on
+        # propagation to capture records.
+
+
+_ensure_visible_logging(request_logger)
+
 _REQUEST_LOG_EXCLUDED_PATHS = {"/health", "/health/db", "/health/schema"}
 
 
@@ -3134,6 +3154,7 @@ def admin_disable_retired_trend_configs(
 
 
 alert_logger = logging.getLogger("iot-cloud-api.alerts")
+_ensure_visible_logging(alert_logger)
 
 
 def _deliver_alert_webhook(webhook_url: str, payload: dict[str, object]) -> bool:

@@ -18,6 +18,7 @@ os.environ["IOT_ADMIN_API_TOKEN"] = "test-admin-token"
 os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-jwt-secret"
 
 from app.config import Settings, production_resource_conflicts
+from app.database import connect_args_for
 from app.main import app
 
 client = TestClient(app)
@@ -86,6 +87,13 @@ def test_staging_guard_escape_hatch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SUPABASE_URL", "https://iot-cloud-api-dev.onrender.com")
     monkeypatch.setenv("ALLOW_PRODUCTION_RESOURCES", "true")
     assert production_resource_conflicts(Settings()) == []
+
+
+def test_connect_args_disable_prepared_statements_on_postgres() -> None:
+    # Required for transaction-mode poolers (Supabase port 6543 / PgBouncer):
+    # psycopg auto-prepared statements do not survive backend multiplexing.
+    assert connect_args_for("postgresql+psycopg://u:p@host:5432/db") == {"prepare_threshold": None}
+    assert connect_args_for("sqlite:///./x.db") == {"check_same_thread": False}
 
 
 def test_staging_guard_clean_staging_config_passes(monkeypatch: pytest.MonkeyPatch) -> None:
