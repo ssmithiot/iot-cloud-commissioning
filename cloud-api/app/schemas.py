@@ -332,7 +332,9 @@ class GatewayHeartbeatTrendOut(BaseModel):
     """A single recorded edge heartbeat for the gateway activity trend."""
 
     timestamp_utc: datetime
-    received_at: datetime
+    # Optional: production rows written before received_at existed carry NULL
+    # (2026-07-13 deploy incident). Migration 0018 backfills; tolerance stays.
+    received_at: datetime | None = None
     status: Literal["online", "degraded"]
     sqlite_db_ok: bool
     queued_upload_count: int
@@ -804,7 +806,9 @@ class PointTrendSampleIn(BaseModel):
 class PointTrendSampleOut(PointTrendSampleIn):
     gateway_id: str
     source: str
-    received_at: datetime
+    # Optional for the same reason as GatewayHeartbeatTrendOut.received_at:
+    # pre-existing production rows may be NULL until migration 0018 backfills.
+    received_at: datetime | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
