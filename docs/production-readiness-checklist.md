@@ -70,6 +70,14 @@ Release ref/tag: ______ · Date: ______ · Operator: ______ · Approver: ______
 - [ ] Render/Supabase account access confirmed (not locked out)
 - [ ] Field technician contact for gateway-side issues: ______
 
+## Region (added after 2026-07-13 incident)
+- [ ] App service and database are in the SAME region (us-east-1/Virginia); any new service (staging, workers, tunnel) is created there too
+
+## Connection budget (added after 2026-07-13 incident)
+- [ ] App max connections (`DB_POOL_SIZE + DB_MAX_OVERFLOW`) ≤ 10 against the 15-client session pooler; deploy overlap + migrations fit in the remainder
+- [ ] Pre-deploy migrations use `MIGRATION_DATABASE_URL` (or confirmed headroom exists)
+- [ ] `AUTO_CREATE_TABLES` is `false` (if `true`, a prior emergency rollback was never realigned — schedule the alignment deploy)
+
 ## Known issues (standing)
 - Pre-existing test failure: `test_gateway_workspace_contains_discovery_progress_ui` (UI assertion, tracked in debt register)
 - Tunnel consoles drop on deploy/restart (process-local sessions) — users must reopen; expected

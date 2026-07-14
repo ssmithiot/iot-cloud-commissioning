@@ -2766,8 +2766,12 @@ def edge_list_trend_configs(
     # GW032 incident (docs/gw032-trend-backlog-incident.md): retired points
     # must never reach the edge trend workload. Require the saved point to be
     # enabled, not just the trend config.
+    # joinedload eliminates the per-config lazy load of config.point below:
+    # with N configs that was N+1 statements, which at cross-region latency
+    # (~70ms/statement, 2026-07-13 incident) made this poll take ~50s.
     configs = db.scalars(
         select(PointTrendConfig)
+        .options(joinedload(PointTrendConfig.point))
         .join(SavedBacnetPoint, PointTrendConfig.point_id == SavedBacnetPoint.id)
         .where(
             PointTrendConfig.gateway_id == gateway_id,

@@ -107,4 +107,16 @@ The local SQLite queue still contains stale pending trend samples from this inci
 Required code changes 1–4 are implemented locally with the required tests:
 
 1. `GET /api/edge/{gateway_id}/trend-configs` now joins `SavedBacnetPoint` and requires `enabled.is_(True)` on both the config and the point.
-2. `DELETE /api/ui/points/{point_id}` and
+2. `DELETE /api/ui/points/{point_id}` and `POST /api/ui/points/bulk-remove` disable the related trend configs in the same transaction (`_disable_trend_configs_for_points`).
+3. Device retirement (`DELETE /api/ui/devices/{device_id}`) disables trend configs for all of the device's points in the same transaction.
+4. Idempotent repair endpoint: `POST /api/admin/maintenance/disable-retired-trend-configs[?gateway_id=GW###]` (admin only) reports `disabled_count`; re-running reports zero. This supersedes the raw SQL used during recovery.
+
+Items 5–6 are the Phase 1 trend-hardening work already on this branch (bounded edge backlog, retry backoff, backlog heartbeat telemetry, idempotent bounded ingestion), awaiting staging validation before deploy. The Phase 2/3 alerting groundwork (`trend_backlog` alert on `trend_oldest_pending_at` age) would have flagged this incident within one evaluation cycle.
+
+Tests: `cloud-api/tests/test_trend_config_retirement.py` (6 tests covering every scenario in "Required tests" above, including the exact legacy defect state and tree/edge agreement). Full cloud regression green apart from the one documented pre-existing workspace-UI failure.
+
+Still outstanding from this incident: GW032 edge SQLite pending-row cleanup (operator, per "Remaining GW032 cleanup"), and the GW032 token rotation (security note below) — the new credential list/revoke endpoints on this branch make rotation API-driven once deployed; until then use provision + manual revoke.
+
+## Security note
+
+During diagnosis, a gateway credential file was mistakenly sourced as a shell environment file and the terminal echoed its raw value. Rotate the GW032 gateway API token as part of follow-up recovery, using the normal provisioning/token rotation process. Do not place gateway tokens in tickets, logs, source control, or this document.

@@ -20,6 +20,36 @@ Operator-facing procedures. Extends `cloud-platform-failure-recovery.md` (failur
 - *Data recovery:* Supabase dashboard → Backups → restore per plan capability (PITR if enabled). **Before restoring:** stop the Render service (suspend) so the app doesn't write mid-restore; after restore, verify `alembic_version` matches the deployed release head (restores from before a migration require deploying the matching older ref or re-running `alembic upgrade head`); resume service; verify §1 steps 2–4.
 - *Post-restore reconciliation:* trend samples uploaded after the backup point are gone from the cloud but also purged from edges (edge deletes after successful upload) — that window is lost; note it in the incident record. Jobs in-flight at the restore point may resurrect as `queued`/`claimed`; cancel or let gateways re-execute benign reads.
 
+## 2b. Database connection budget (learned 2026-07-13)
+
+The Supabase **session-mode** pooler (port 5432) allows **15 clients** per
+user/database. Everything must fit inside it simultaneously: app instances ×
+max pool (`DB_POOL_SIZE + DB_MAX_OVERFLOW`) + a second instance during deploy
+rollover + the pre-deploy migration process + any dashboard/psql sessions.
+Rule of thumb with one instance: keep app max ≤ 10.
+
+Symptoms of breach: `FATAL: (EMAXCONNSESSION) max clients reached in session
+mode`; pre-deploy migrations failing; intermittent 500s that worsen with each
+redeploy (lingering sessions from killed instances).
+
+Recovery: stop deploying; let sessions time out (or Suspend/Resume the
+service once); ensure `DB_POOL_SIZE=5`/`DB_MAX_OVERFLOW=5`. Prefer a separate
+`MIGRATION_DATABASE_URL` for pre-deploy so migrations never compete with the
+app. The transaction-mode pooler (port 6543) removes the ceiling and the app
+is compatible with it since `626970e`, but its first production attempt
+showed unexplained request stalls — validate in staging under load before
+retrying (see incident-2026-07-13-production-deploy.md).
+
+## 2c. Rolling back across migrations
+
+The startup schema gate refuses old code against a newer database (by
+design). For an emergency rollback to a pre-migration commit, set
+`AUTO_CREATE_TABLES=true` (documented escape hatch — safe when all newer
+migrations were additive), deploy the old commit, and restore
+`AUTO_CREATE_TABLES=false` on the next forward deploy. Never downgrade
+production migrations to satisfy old code unless the downgrade is verified
+non-destructive.
+
 ## 3. Gateway recovery
 
 Field procedures live in `gateway-field-guide.md` §3 (software), §2 (hardware swap). Operator summary: restart → reinstall-preserving-config → reset local DB (loses unsent samples only) → rotate credential → reimage. Cloud-side data (identity, saved inventory, history) survives all of these.
