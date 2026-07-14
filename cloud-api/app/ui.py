@@ -3393,6 +3393,7 @@ APP_SCRIPT = r"""
 
   function renderTree(tree) {
     currentGatewayTree = tree;
+    renderPointTableTemplateTargets();
     selectedSavedPointIds = new Set([...selectedSavedPointIds].filter((id) => tree.points.some((point) => point.id === id)));
     const target = byId("tree");
     const previousScrollTop = target.scrollTop;
@@ -7339,4 +7340,3 @@ def admin_users_html() -> str:
     </section>
   </main>"""
     return _layout("Users - IOT Cloud Commissioning", body, "admin-users")
-
