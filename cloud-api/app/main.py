@@ -35,7 +35,7 @@ from app.auth import (
 )
 from app.access import is_platform_admin, require_site_access, visible_site_ids
 from app.config import production_resource_conflicts, settings
-from app.database import Base, engine, get_db
+from app.database import Base, SessionLocal, engine, get_db
 from app.models import (
     BacnetWriteBatch,
     BacnetWriteCommand,
@@ -1782,8 +1782,14 @@ async def edge_tunnel(
     gateway_id: str,
     websocket: WebSocket,
     authorization: str | None = Header(default=None),
-    db: Session = Depends(get_db),
 ) -> None:
+    # QueuePool-exhaustion hotfix (2026-07-14): this endpoint previously took
+    # `db: Session = Depends(get_db)`, whose pooled connection stayed checked
+    # out for the WebSocket's entire lifetime — one connection held per
+    # connected gateway tunnel, indefinitely. A fleet of tunnels exhausted the
+    # pool (QueuePool size 10 + overflow 15). Authenticate with a short-lived
+    # session instead, closed before accept() and before the receive loop.
+    db = SessionLocal()
     try:
         auth = require_gateway_auth(authorization=authorization, db=db)
         if auth.gateway_id != gateway_id:
@@ -1792,6 +1798,8 @@ async def edge_tunnel(
     except HTTPException:
         await websocket.close(code=1008)
         return
+    finally:
+        db.close()
 
     await websocket.accept()
     tunnel = tunnel_manager.register(gateway_id, websocket)

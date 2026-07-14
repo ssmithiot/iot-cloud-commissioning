@@ -1016,6 +1016,40 @@ def test_gateway_tunnel_registration_updates_status() -> None:
     assert disconnected.json() == {"connected": False, "status": "not_connected"}
 
 
+def test_gateway_tunnel_does_not_hold_db_session_while_connected() -> None:
+    """Regression, 2026-07-14 QueuePool exhaustion: the tunnel WebSocket must
+    authenticate with a short-lived DB session, released before the receive
+    loop. The killer case is a throttled re-auth (no telemetry write, so no
+    commit): with Depends(get_db) that pinned an idle-in-transaction pooled
+    connection for the socket's entire lifetime, one per connected gateway,
+    exhausting the pool fleet-wide in production."""
+    import inspect
+
+    from app.database import engine as app_engine
+    from app.main import edge_tunnel
+
+    # Structural guard: the endpoint must not take a request-scoped DB
+    # dependency; its session lifetime is managed inside the handler.
+    assert "db" not in inspect.signature(edge_tunnel).parameters
+
+    raw_token = create_gateway_token("GW001")
+
+    # First connect performs the token-telemetry write (commit releases the
+    # connection even on the old broken code); the second, inside the
+    # telemetry throttle window, performs no write and is the case that used
+    # to hold the connection open.
+    with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+        pass
+    assert app_engine.pool.checkedout() == 0
+
+    with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+        connected = client.get("/api/ui/gateways/GW001/tunnel-status", headers=admin_headers())
+        assert connected.json()["connected"] is True
+        # The live tunnel must not retain a checked-out DB connection.
+        assert app_engine.pool.checkedout() == 0
+    assert app_engine.pool.checkedout() == 0
+
+
 def test_tunnel_proxy_relays_for_operator_without_forwarding_browser_auth() -> None:
     from app.tunnel import TunnelResponse, tunnel_manager
 
