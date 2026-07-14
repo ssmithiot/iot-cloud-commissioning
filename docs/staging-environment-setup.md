@@ -12,6 +12,7 @@ Goal: a staging pair (Render service + Supabase project) fully isolated from pro
 ## 2. Render (staging service)
 
 - [ ] Create a **new** Render web service from the same repo/branch you deploy today (production keeps deploying from its own service untouched).
+- [ ] **Region: Virginia (US East)** — must match the Supabase region (us-east-1). Cross-region app↔DB adds ~70ms to every SQL statement (root cause of the 2026-07-13 production incident; see `region-migration-runbook.md`). The staging Supabase project must also be created in us-east-1.
 - [ ] Name it unmistakably, e.g. `iot-cloud-api-staging`. Never attach the production custom domain.
 - [ ] Set environment variables from `.env.example`, all staging-specific (full classified list: `docs/staging-environment-variables.md`):
   - `ENVIRONMENT=staging` (shown on `/health`; activates the production-resource startup guard)
@@ -32,7 +33,7 @@ Use the copy-ready command sequence and record results in `docs/staging-first-de
 
 - [ ] `GET /health` → `{"status":"ok","environment":"staging","version":...}` — the environment field is the identity check.
 - [ ] If the service refuses to start with "configured with known production resources", a fingerprint matched: fix the env vars (do not set `ALLOW_PRODUCTION_RESOURCES=true`).
-- [ ] `GET /health/db` → ok. `GET /health/schema` → expected revisions include `0017_gateway_alert_states` (once this branch is approved and deployed to staging; until then, current head).
+- [ ] `GET /health/db` → ok. `GET /health/schema` → expected revisions include `0019_uuid_schema_alignment` (current head; 0019 is REQUIRED on staging — it aligns migration-built PostgreSQL schemas with the models; see that migration's docstring).
 - [ ] Log in with a staging Supabase user; approve it via the admin users page using the staging admin token.
 - [ ] Confirm the staging admin token does NOT work against production and vice versa (proves the secrets are distinct).
 

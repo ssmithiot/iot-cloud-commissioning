@@ -3,7 +3,7 @@
 Use a new, separate Render service and a separate Supabase project/database. Do not reuse any production service, database URL, gateway credential, or edge configuration.
 
 - [ ] Confirm the staging Render service has its own `CLOUD_DATABASE_URL`, gateway-auth pepper, and admin token, and sets `ENVIRONMENT=staging` (verify via `GET /health`).
-- [ ] Apply Alembic to the current head (`0017_gateway_alert_states` on this branch) on the staging database before starting the API; verify `GET /health/schema` reports `status: "ok"` with matching expected/current revisions.
+- [ ] Apply Alembic to the current head (`0019_uuid_schema_alignment` or later) on the staging database before starting the API; verify `GET /health/schema` reports `status: "ok"` with matching expected/current revisions.
 - [ ] Confirm the staging API has `AUTO_CREATE_TABLES=false` and a deliberate `TREND_RETENTION_DAYS` value (90 days by default).
 - [ ] Provision a non-production test gateway only. Do not connect a production gateway to staging.
 - [ ] Confirm no production tunnel is configured to point at staging, and do not connect a staging tunnel to any production gateway.

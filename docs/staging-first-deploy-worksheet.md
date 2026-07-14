@@ -36,7 +36,7 @@ curl -s $STG/health/db
 curl -s $STG/health/schema
 ```
 - [ ] `/health/db` → `{"status":"ok"}`
-- [ ] `/health/schema` → `status":"ok"` and `expected_revisions` == `current_revisions` == `["0017_gateway_alert_states"]` (the Alembic head of the deployed ref)
+- [ ] `/health/schema` → `status":"ok"` and `expected_revisions` == `current_revisions` == `["0019_uuid_schema_alignment"]` (the Alembic head of the deployed ref; 0019 is REQUIRED on staging — earlier heads leave migration-built PostgreSQL schemas mismatched with the models and `/api/auth/register` fails)
 
 Recorded migration head: ______
 
