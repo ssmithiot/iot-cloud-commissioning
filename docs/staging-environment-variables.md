@@ -43,6 +43,12 @@ No env vars — gateway credentials are rows created via `POST /api/admin/gatewa
 
 Handled entirely by Supabase Auth (no SMTP config in this app). In the **staging Supabase project**: set Auth Site URL to the staging Render URL; add `https://<staging-service>.onrender.com/login` to redirect allow-list; production URLs must NOT be in the staging allow-list.
 
+## Tenant isolation rollout (temporary)
+
+| Variable | Class | Staging value | Notes |
+|---|---|---|---|
+| `REQUIRE_EXPLICIT_MEMBERSHIP` | OPT (default `false`) | `false` until Customer 1 backfill is verified complete | Customer 2 prep, added 2026-07-14 (`docs/technical-debt-register.md` Tier 2 #9). While `false`, `app.access.visible_site_ids` keeps the legacy fallback: an active operator/viewer with zero organization and zero site memberships sees every site (fail open). Flipping to `true` makes that same zero-membership case see nothing (fail closed) — do **not** flip in any environment until every active operator/viewer has an explicit membership row, or existing accounts will be locked out with no visible sites. `role=="admin"` operators and the shared admin token are unaffected either way; they retain global access before this fallback is ever reached. No Customer 1 backfill has been run yet — this flag must stay `false` in staging and production until that backfill is executed and verified. |
+
 ## Trend and heartbeat retention
 
 | Variable | Class | Notes |

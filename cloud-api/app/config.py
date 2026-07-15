@@ -22,6 +22,17 @@ class Settings(BaseSettings):
         default="iot-cloud-api-dev.onrender.com",
         validation_alias="PRODUCTION_RESOURCE_FINGERPRINTS",
     )
+    # Tenant isolation rollout flag (Customer 2 prep). While false (default),
+    # an active operator/viewer with zero organization and zero site
+    # memberships keeps the legacy fallback in app.access.visible_site_ids:
+    # full visibility, for backward compatibility with pre-membership
+    # accounts. Flip to true only after Customer 1's membership backfill is
+    # verified complete (every active operator/viewer has an explicit
+    # membership) -- then the same zero-membership case sees nothing instead
+    # of everything (fail closed, not fail open). Never affects
+    # role=="admin" operators or the admin token, which stay globally scoped
+    # by design either way. See docs/technical-debt-register.md Tier 2 #9.
+    require_explicit_membership: bool = Field(default=False, validation_alias="REQUIRE_EXPLICIT_MEMBERSHIP")
     database_url: str = Field(
         default="sqlite:///./cloud-api-dev.db",
         validation_alias=AliasChoices("DATABASE_URL", "CLOUD_DATABASE_URL"),
