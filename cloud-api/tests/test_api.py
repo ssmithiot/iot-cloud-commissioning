@@ -360,7 +360,10 @@ def test_dashboard_includes_admin_cloud_metrics_and_workspace_links_open_in_new_
     assert "/api/admin/cloud-metrics" in response.text
     assert "Cloud Health" in response.text
     assert "Open Render metrics" in response.text
-    assert 'data-select-gateway="${escapeHtml(gateway.gateway_id)}" target="_blank" rel="noopener noreferrer"' in response.text
+    assert 'class="button table-command secondary workspace-launch"' in response.text
+    assert 'target="_blank" rel="noopener noreferrer">${escapeHtml(gateway.gateway_id)}</a>' in response.text
+    assert 'class="site-link" data-select-gateway="${escapeHtml(gateway.gateway_id)}"' in response.text
+    assert "width: 128px" in response.text
     assert "base pool slot" in response.text
     assert "Point values refreshed in ${elapsedSeconds}s." in response.text
 
