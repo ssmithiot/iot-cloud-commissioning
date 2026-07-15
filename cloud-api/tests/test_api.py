@@ -2692,6 +2692,30 @@ def test_ui_operator_can_import_edge_commissioning_template() -> None:
     assert tree["points"][1]["object_type"] == "binary-output"
 
 
+def test_ui_import_template_deduplicates_large_point_lists() -> None:
+    create_gateway_token("GW001")
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+    points = [
+        {"object_type": "analog-input", "instance": instance, "object_name": f"Point {instance}"}
+        for instance in range(221)
+    ]
+    points.append({"object_type": "analog-input", "instance": 0, "object_name": "Duplicate Point 0"})
+
+    response = client.post(
+        "/api/ui/gateways/GW001/commissioning-template/import",
+        headers=headers,
+        json={"devices": [{"device_id": "1610101", "points": points}]},
+    )
+    tree_response = client.get("/api/ui/gateways/GW001/tree", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["point_count"] == 222
+    assert response.json()["created_points"] == 221
+    assert response.json()["skipped_duplicate_points"] == 1
+    assert len(tree_response.json()["points"]) == 221
+
+
 def test_ui_import_template_rejects_gateway_mismatch() -> None:
     create_gateway_token("GW001")
     user_id = create_operator_user("operator@example.com", role="operator", status="active")

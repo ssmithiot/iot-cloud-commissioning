@@ -242,7 +242,7 @@ APP_SCRIPT = r"""
       <dl>
         <dt>Groups</dt><dd>${escapeHtml(result.created_groups || 0)} created, ${escapeHtml(result.updated_groups || 0)} updated</dd>
         <dt>Devices</dt><dd>${escapeHtml(result.created_devices || 0)} created, ${escapeHtml(result.updated_devices || 0)} updated</dd>
-        <dt>Points</dt><dd>${escapeHtml(result.created_points || 0)} created, ${escapeHtml(result.updated_points || 0)} updated</dd>
+        <dt>Points</dt><dd>${escapeHtml(result.created_points || 0)} created, ${escapeHtml(result.updated_points || 0)} updated, ${escapeHtml(result.skipped_duplicate_points || 0)} duplicate${Number(result.skipped_duplicate_points || 0) === 1 ? "" : "s"} skipped</dd>
       </dl>
     `;
   }
@@ -4036,7 +4036,7 @@ APP_SCRIPT = r"""
         clearTemplateImportPreview();
         await loadGatewayWorkspace();
         renderImportResult(result);
-        setText("status", `Imported template: ${result.created_devices} device(s) created, ${result.updated_devices} updated, ${result.created_points} point(s) created, ${result.updated_points} updated.`);
+        setText("status", `Imported template: ${result.created_devices} device(s) created, ${result.updated_devices} updated, ${result.created_points} point(s) created, ${result.updated_points} updated, ${result.skipped_duplicate_points || 0} duplicate point definition(s) skipped.`);
       } catch (error) {
         setText("status", errorMessage(error), true);
       } finally {

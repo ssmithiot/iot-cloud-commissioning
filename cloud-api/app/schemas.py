@@ -764,6 +764,7 @@ class CommissioningTemplateImportOut(BaseModel):
     updated_devices: int
     created_points: int
     updated_points: int
+    skipped_duplicate_points: int
 
 
 class SavedPointOut(BaseModel):

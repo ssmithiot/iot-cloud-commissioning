@@ -2766,6 +2766,7 @@ def ui_import_commissioning_template(
     updated_devices = 0
     created_points = 0
     updated_points = 0
+    skipped_duplicate_points = 0
 
     for device_payload in payload.devices:
         group = ensure_group(device_payload.group_name)
@@ -2803,7 +2804,17 @@ def ui_import_commissioning_template(
             device.updated_at = now
             updated_devices += 1
 
+        imported_point_keys: set[tuple[str, int, str]] = set()
         for point_payload in device_payload.points:
+            point_key = (
+                point_payload.object_type,
+                int(point_payload.object_instance),
+                point_payload.property,
+            )
+            if point_key in imported_point_keys:
+                skipped_duplicate_points += 1
+                continue
+            imported_point_keys.add(point_key)
             point = db.scalar(
                 select(SavedBacnetPoint).where(
                     SavedBacnetPoint.saved_device_id == device.id,
@@ -2849,6 +2860,7 @@ def ui_import_commissioning_template(
         updated_devices=updated_devices,
         created_points=created_points,
         updated_points=updated_points,
+        skipped_duplicate_points=skipped_duplicate_points,
     )
 
 
