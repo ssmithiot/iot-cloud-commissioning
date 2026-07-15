@@ -323,6 +323,16 @@ def test_admin_users_page_uses_session_api_not_manual_token_paste() -> None:
     assert "Bearer token" not in response.text
 
 
+def test_admin_users_page_contains_pending_user_invitation_workflow() -> None:
+    response = client.get("/admin/users")
+
+    assert response.status_code == 200
+    assert "Invite a New User" in response.text
+    assert "Send an Internet of Team invitation email" in response.text
+    assert 'api("/api/admin/users/invite"' in response.text
+    assert "Send invitation" in response.text
+
+
 def test_signup_email_confirmation_redirects_to_login_origin() -> None:
     response = client.get("/signup")
 
@@ -2204,6 +2214,61 @@ def test_admin_user_management_upserts_and_lists_operator_users() -> None:
     assert response.json()["status"] == "active"
     assert listing.status_code == 200
     assert listing.json()[0]["email"] == "operator@example.com"
+
+
+def test_admin_invitation_sends_supabase_email_and_creates_pending_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    sent: dict[str, object] = {}
+
+    class InviteResponse:
+        is_error = False
+        status_code = 200
+
+    def fake_post(url: str, *, headers: dict[str, str], json: dict[str, object], timeout: float) -> InviteResponse:
+        sent.update({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        return InviteResponse()
+
+    monkeypatch.setattr(main_module.settings, "supabase_url", "https://staging-ref.supabase.co")
+    monkeypatch.setattr(main_module.settings, "supabase_service_role_key", "server-only-test-key")
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    response = client.post(
+        "/api/admin/users/invite",
+        headers=admin_headers(),
+        json={"email": "new.user@example.com", "display_name": "New User"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["email"] == "new.user@example.com"
+    assert response.json()["role"] == "pending"
+    assert response.json()["status"] == "pending"
+    assert sent["url"] == "https://staging-ref.supabase.co/auth/v1/invite"
+    assert sent["headers"] == {"apikey": "server-only-test-key", "Authorization": "Bearer server-only-test-key"}
+    assert sent["json"] == {
+        "email": "new.user@example.com",
+        "redirect_to": "http://testserver/auth/confirm",
+        "data": {"display_name": "New User"},
+    }
+    assert sent["timeout"] == 10.0
+
+
+def test_admin_invitation_rejects_an_already_active_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    create_operator_user("active@example.com", role="operator", status="active")
+    monkeypatch.setattr(main_module.settings, "supabase_url", "https://staging-ref.supabase.co")
+    monkeypatch.setattr(main_module.settings, "supabase_service_role_key", "server-only-test-key")
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: pytest.fail("active users must not be invited"))
+
+    response = client.post(
+        "/api/admin/users/invite",
+        headers=admin_headers(),
+        json={"email": "active@example.com"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "This user is already active"
 
 
 def test_admin_user_management_rejects_non_admin_user() -> None:

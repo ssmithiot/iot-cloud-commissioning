@@ -4257,6 +4257,25 @@ APP_SCRIPT = r"""
     if (!me) {
       return;
     }
+    const inviteForm = byId("invite-user-form");
+    inviteForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const email = byId("invite-email").value.trim().toLowerCase();
+      const displayName = byId("invite-display-name").value.trim();
+      try {
+        await api("/api/admin/users/invite", {
+          method: "POST",
+          body: JSON.stringify({
+            email,
+            display_name: displayName || null
+          })
+        });
+        setText("status", `Invitation sent to ${email}. They must accept it and verify their email before an administrator assigns access.`);
+        await loadUsers();
+      } catch (error) {
+        setText("status", errorMessage(error), true);
+      }
+    });
     const form = byId("user-form");
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -7247,6 +7266,21 @@ def admin_users_html() -> str:
     </div>
   </header>
   <main>
+    <section>
+      <h2>Invite a New User</h2>
+      <p class="muted">Send an Internet of Team invitation email. The user remains pending until they accept the invitation, verify their email, and an administrator assigns their access.</p>
+      <form id="invite-user-form" class="grid">
+        <div class="span-4">
+          <label for="invite-email">Email</label>
+          <input id="invite-email" type="email" autocomplete="email" required>
+        </div>
+        <div class="span-4">
+          <label for="invite-display-name">Name (optional)</label>
+          <input id="invite-display-name" type="text" autocomplete="name" maxlength="200">
+        </div>
+        <div class="span-2"><button type="submit">Send invitation</button></div>
+      </form>
+    </section>
     <section>
       <h2>Assign User</h2>
       <form id="user-form" class="grid">

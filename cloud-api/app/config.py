@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     supabase_jwt_audience: str = Field(default="authenticated", validation_alias="SUPABASE_JWT_AUDIENCE")
     supabase_url: str | None = Field(default=None, validation_alias="SUPABASE_URL")
     supabase_anon_key: str | None = Field(default=None, validation_alias="SUPABASE_ANON_KEY")
+    # Server-only key for Supabase Auth admin actions such as invitations.
+    # Never expose this key in browser code, API responses, or edge agents.
+    supabase_service_role_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_SECRET_KEY"),
+    )
+    # Optional exact allowed redirect URL for Supabase invitation links. When
+    # unset, the invite endpoint uses the current application origin.
+    supabase_invite_redirect_url: str | None = Field(default=None, validation_alias="SUPABASE_INVITE_REDIRECT_URL")
     supabase_jwks_url: str | None = Field(default=None, validation_alias="SUPABASE_JWKS_URL")
     gateway_stale_after_seconds: int = Field(default=300, validation_alias="GATEWAY_STALE_AFTER_SECONDS")
     gateway_offline_after_seconds: int = Field(default=1800, validation_alias="GATEWAY_OFFLINE_AFTER_SECONDS")

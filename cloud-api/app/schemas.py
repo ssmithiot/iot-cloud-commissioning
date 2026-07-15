@@ -516,6 +516,11 @@ class OperatorUserUpsertIn(BaseModel):
     supabase_user_id: str | None = Field(default=None, max_length=120)
 
 
+class OperatorInviteIn(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    display_name: str | None = Field(default=None, max_length=200)
+
+
 class CurrentOperatorOut(BaseModel):
     email: str | None
     role: str

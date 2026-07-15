@@ -43,6 +43,17 @@ No env vars — gateway credentials are rows created via `POST /api/admin/gatewa
 
 Handled entirely by Supabase Auth (no SMTP config in this app). In the **staging Supabase project**: set Auth Site URL to the staging Render URL; add `https://<staging-service>.onrender.com/login` to redirect allow-list; production URLs must NOT be in the staging allow-list.
 
+### Admin invitations
+
+The Admin Users page sends an Internet of Team invitation through Supabase Auth's **Invite user** email template. Supabase delivers it through the project's configured SMTP provider (SendGrid). Configure these server-only variables on the Render service; never expose either in browser code or an edge gateway:
+
+| Variable | Class | Notes |
+|---|---|---|
+| `SUPABASE_SERVICE_ROLE_KEY` | SECRET | Supabase secret/service-role key used only by the cloud API to call Auth's invitation endpoint. |
+| `SUPABASE_INVITE_REDIRECT_URL` | STG | Exact allowed invite redirect, e.g. `https://<staging-service>.onrender.com/auth/confirm`. |
+
+In Supabase, customize **Authentication → Email Templates → Invite user** with the Internet of Team text. Keep Supabase's `{{ .ConfirmationURL }}` invite link in the template.
+
 ## Tenant isolation rollout (temporary)
 
 | Variable | Class | Staging value | Notes |

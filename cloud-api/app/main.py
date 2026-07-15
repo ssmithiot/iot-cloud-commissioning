@@ -92,6 +92,7 @@ from app.schemas import (
     JobOut,
     JobResultIn,
     OperatorUserOut,
+    OperatorInviteIn,
     OperatorUserUpsertIn,
     OrganizationCreateIn,
     OrganizationOut,
@@ -1341,6 +1342,73 @@ def list_operator_users(
     db: Session = Depends(get_db),
 ) -> list[OperatorUser]:
     return list(db.scalars(select(OperatorUser).order_by(OperatorUser.email)).all())
+
+
+def _send_supabase_invitation(*, email: str, display_name: str | None, redirect_to: str) -> None:
+    """Ask Supabase Auth to send its configured Invite user email."""
+    supabase_url = (settings.supabase_url or "").strip().rstrip("/")
+    secret_key = (settings.supabase_service_role_key or "").strip()
+    if not supabase_url or not secret_key:
+        raise HTTPException(status_code=503, detail="Supabase invitations are not configured")
+
+    import httpx
+
+    payload: dict[str, object] = {"email": email, "redirect_to": redirect_to}
+    if display_name:
+        payload["data"] = {"display_name": display_name}
+    try:
+        response = httpx.post(
+            f"{supabase_url}/auth/v1/invite",
+            headers={"apikey": secret_key, "Authorization": f"Bearer {secret_key}"},
+            json=payload,
+            timeout=10.0,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("Supabase invite request failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Could not send the invitation email") from exc
+    if response.is_error:
+        logger.warning("Supabase invite request failed with status %s", response.status_code)
+        raise HTTPException(status_code=502, detail="Could not send the invitation email")
+
+
+@app.post("/api/admin/users/invite", response_model=OperatorUserOut)
+def invite_operator_user(
+    payload: OperatorInviteIn,
+    request: Request,
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> OperatorUser:
+    """Send Supabase's branded invitation while keeping app access pending."""
+    email = payload.email.strip().lower()
+    display_name = (payload.display_name or "").strip() or None
+    operator = db.scalar(select(OperatorUser).where(OperatorUser.email == email))
+    if operator is not None and operator.status == "active":
+        raise HTTPException(status_code=409, detail="This user is already active")
+
+    redirect_to = (settings.supabase_invite_redirect_url or "").strip()
+    if not redirect_to:
+        redirect_to = f"{str(request.base_url).rstrip('/')}/auth/confirm"
+    _send_supabase_invitation(email=email, display_name=display_name, redirect_to=redirect_to)
+
+    now = utc_now()
+    if operator is None:
+        operator = OperatorUser(
+            email=email,
+            display_name=display_name,
+            role="pending",
+            status="pending",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(operator)
+    else:
+        operator.display_name = display_name or operator.display_name
+        operator.role = "pending"
+        operator.status = "pending"
+        operator.updated_at = now
+    db.commit()
+    db.refresh(operator)
+    return operator
 
 
 @app.put("/api/admin/users/{email}", response_model=OperatorUserOut)
