@@ -619,7 +619,9 @@ class SavedPointsBulkRemoveOut(BaseModel):
 
 
 class SavedPointsReadIn(BaseModel):
-    point_ids: list[str] = Field(min_length=1, max_length=100)
+    # A controller refresh is one gateway job. Keep this large enough for a
+    # full saved controller point list (for example, 222 points).
+    point_ids: list[str] = Field(min_length=1, max_length=1000)
 
 
 class SavedPointsReadOut(BaseModel):

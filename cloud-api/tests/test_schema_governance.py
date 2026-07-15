@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from app.schema import expected_revisions, require_current_schema, schema_revision_status
+from app.schemas import SavedPointsReadIn
 
 
 def test_schema_status_reports_development_auto_create_without_alembic_table() -> None:
@@ -32,3 +33,9 @@ def test_require_current_schema_accepts_alembic_head_and_rejects_drift() -> None
 
     with pytest.raises(RuntimeError, match="Database schema revision is not current"):
         require_current_schema(engine)
+
+
+def test_saved_point_read_request_accepts_a_full_controller_point_list() -> None:
+    request = SavedPointsReadIn(point_ids=["saved-point"] * 222)
+
+    assert len(request.point_ids) == 222
