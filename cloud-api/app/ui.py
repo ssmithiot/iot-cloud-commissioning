@@ -2522,7 +2522,10 @@ APP_SCRIPT = r"""
     const waiting = new Set(jobIds);
     const terminalJobs = new Map();
     const startedAt = Date.now();
-    while (waiting.size && Date.now() - startedAt < 120000) {
+    // A gateway may legitimately take several minutes to collect a large
+    // controller point list. Keep this screen attached through the cloud job
+    // claim window; the gateway remains the authority on how it reads BACnet.
+    while (waiting.size && Date.now() - startedAt < 600000) {
       const jobs = await api("/api/edge/jobs?limit=200");
       for (const job of jobs) {
         if (waiting.has(job.job_id) && ["completed", "failed", "deferred"].includes(job.status)) {
@@ -2535,7 +2538,8 @@ APP_SCRIPT = r"""
       const failed = [...terminalJobs.values()].filter((job) => job.status === "failed").length;
       const deferred = [...terminalJobs.values()].filter((job) => job.status === "deferred").length;
       if (waiting.size) {
-        const message = `Bulk reads: ${completed} completed, ${failed} failed, ${deferred} deferred, ${waiting.size} pending.`;
+        const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+        const message = `Gateway is still collecting point values (${elapsedSeconds}s elapsed): ${completed} completed, ${failed} failed, ${deferred} deferred, ${waiting.size} read job(s) still in progress. Results will appear when the gateway finishes and sends its response.`;
         setText("status", message, Boolean(failed || deferred));
         setText("point-read-status", message, Boolean(failed || deferred));
         await new Promise((resolve) => setTimeout(resolve, 2500));
