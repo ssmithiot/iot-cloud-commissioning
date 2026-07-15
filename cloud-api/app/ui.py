@@ -45,6 +45,8 @@ APP_SCRIPT = r"""
     viewBoxHeight: 560
   };
   const themeStorageKey = "iot-cloud-command-theme";
+  const dashboardRegistryStorageKey = "iot-cloud-dashboard-registry-state";
+  const dashboardSortKeys = new Set(["gateway_id", "site", "address", "hostname", "version", "status", "network_status_notes", "direct", "configure"]);
   const trendChartFrame = Object.freeze({ minWidth: 360, height: 230, left: 72, right: 20, top: 14, bottom: 48 });
   const trendChartSizeStorageKey = "iot-cloud-trend-chart-size";
   const trendChartThemeStorageKey = "iot-cloud-trend-chart-theme";
@@ -1350,7 +1352,11 @@ APP_SCRIPT = r"""
       dashboardGateways = await api("/api/ui/gateways");
       await refreshGatewayUpdates();
       dashboardJobs = await api("/api/edge/jobs?limit=10");
-      selectedDashboardGatewayId = dashboardGateways[0]?.gateway_id || null;
+      const savedGatewayId = restoreDashboardRegistryState();
+      selectedDashboardGatewayId = dashboardGateways.some((gateway) => gateway.gateway_id === savedGatewayId)
+        ? savedGatewayId
+        : dashboardGateways[0]?.gateway_id || null;
+      persistDashboardRegistryState();
       const queuedUploads = dashboardGateways.reduce((total, gateway) => total + Number(gateway.queued_upload_count || 0), 0);
       metricCard("metric-total", "Total Gateways", summary.total, "registered");
       metricCard("metric-online", "Online", summary.online, "heartbeat active");
@@ -1626,6 +1632,29 @@ APP_SCRIPT = r"""
     });
   }
 
+  function restoreDashboardRegistryState() {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(dashboardRegistryStorageKey) || "{}");
+      if (dashboardSortKeys.has(saved.sort?.key) && ["asc", "desc"].includes(saved.sort?.direction)) {
+        dashboardSort = { key: saved.sort.key, direction: saved.sort.direction };
+      }
+      return typeof saved.selectedGatewayId === "string" ? saved.selectedGatewayId : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function persistDashboardRegistryState() {
+    try {
+      window.localStorage.setItem(dashboardRegistryStorageKey, JSON.stringify({
+        sort: dashboardSort,
+        selectedGatewayId: selectedDashboardGatewayId
+      }));
+    } catch {
+      // The registry remains usable when browser storage is unavailable.
+    }
+  }
+
   function setupGatewaySortHeaders() {
     document.querySelectorAll("[data-sort]").forEach((button) => {
       if (button.dataset.sortReady === "true") {
@@ -1640,6 +1669,7 @@ APP_SCRIPT = r"""
         } else {
           dashboardSort = { key, direction: "asc" };
         }
+        persistDashboardRegistryState();
         renderGatewayMap(sortedDashboardGateways());
         renderGatewayList();
       });
@@ -1662,6 +1692,7 @@ APP_SCRIPT = r"""
 
   function selectDashboardGateway(gatewayId) {
     selectedDashboardGatewayId = gatewayId;
+    persistDashboardRegistryState();
     renderGatewayMap(sortedDashboardGateways());
     renderGatewayInspector();
     renderGatewayList();
@@ -1763,6 +1794,7 @@ APP_SCRIPT = r"""
       marker.bindTooltip(title, { direction: "top", offset: [0, -10], opacity: 0.94 });
       marker.on("click", () => {
         selectedDashboardGatewayId = gateway.gateway_id;
+        persistDashboardRegistryState();
         if (isCluster) {
           roadMap.setView([cluster.lat, cluster.lng], Math.min(19, roadMap.getZoom() + 3), { animate: true });
           mapZoom = Math.min(30, mapZoom + 5);
@@ -1813,6 +1845,7 @@ APP_SCRIPT = r"""
         button.innerHTML = `<span>${escapeHtml(cluster.gateways.length)}</span><em>${escapeHtml(clusterTitle)}</em>`;
         button.addEventListener("click", (event) => {
           selectedDashboardGatewayId = gateway.gateway_id;
+          persistDashboardRegistryState();
           setMapZoom(mapZoom + 5, {
             viewport: document.querySelector(".usa-map"),
             clientX: event.clientX,
@@ -1944,8 +1977,8 @@ APP_SCRIPT = r"""
       row.className = gateway.gateway_id === selectedDashboardGatewayId ? "selected-row" : "";
       row.innerHTML = `
         <td><input type="checkbox" aria-label="Select ${escapeHtml(gateway.gateway_id)} for application update" data-select-update="${escapeHtml(gateway.gateway_id)}"${selectedGatewayUpdateIds.has(gateway.gateway_id) ? " checked" : ""}${gatewayRequiresUpdate(gateway) ? "" : " disabled"}></td>
-        <td><a class="button table-command secondary workspace-launch" href="/gateways/${encodeURIComponent(gateway.gateway_id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(gateway.gateway_id)}</a></td>
-        <td><button type="button" class="site-link" data-select-gateway="${escapeHtml(gateway.gateway_id)}" aria-label="Show ${escapeHtml(gateway.gateway_id)} details"><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong></button><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
+        <td><a class="button table-command secondary workspace-launch" href="/gateways/${encodeURIComponent(gateway.gateway_id)}">${escapeHtml(gateway.gateway_id)}</a></td>
+        <td><a class="site-link" href="#gateway-inspector" data-select-gateway="${escapeHtml(gateway.gateway_id)}" aria-label="Show ${escapeHtml(gateway.gateway_id)} details"><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong></a><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
         <td>${escapeHtml(gatewayAddress(gateway) || "")}</td>
         <td>${escapeHtml(gateway.hostname)}</td>
         <td>${gatewayVersionCell(gateway)}</td>
@@ -1959,7 +1992,10 @@ APP_SCRIPT = r"""
     table.querySelectorAll("[data-select-gateway]").forEach((siteLink) => {
       siteLink.addEventListener("mouseenter", () => selectDashboardGateway(siteLink.dataset.selectGateway));
       siteLink.addEventListener("focus", () => selectDashboardGateway(siteLink.dataset.selectGateway));
-      siteLink.addEventListener("click", () => selectDashboardGateway(siteLink.dataset.selectGateway));
+      siteLink.addEventListener("click", (event) => {
+        event.preventDefault();
+        selectDashboardGateway(siteLink.dataset.selectGateway);
+      });
     });
     attachDirectConnectHandlers(table);
     attachGatewayUpdateHandlers(table);
@@ -6450,7 +6486,6 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       box-shadow: none;
       font: inherit;
       text-decoration: none;
-      text-align: left;
       cursor: pointer;
     }}
     .site-link:hover,
