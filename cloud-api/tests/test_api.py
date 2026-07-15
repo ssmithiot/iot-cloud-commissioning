@@ -361,7 +361,9 @@ def test_dashboard_includes_admin_cloud_metrics_and_workspace_links_open_in_new_
     assert "Cloud Health" in response.text
     assert "Open Render metrics" in response.text
     assert 'class="button table-command secondary workspace-launch" href="/gateways/${encodeURIComponent(gateway.gateway_id)}">${escapeHtml(gateway.gateway_id)}</a>' in response.text
-    assert 'class="site-link" href="#gateway-inspector" data-select-gateway="${escapeHtml(gateway.gateway_id)}"' in response.text
+    assert 'row.className = `gateway-select-row${gateway.gateway_id === selectedDashboardGatewayId ? " selected-row" : ""}`;' in response.text
+    assert 'event.target.closest("a, button, input, select, textarea, label")' in response.text
+    assert 'class="site-link"' not in response.text
     assert "width: 128px" in response.text
     assert 'const dashboardRegistryStorageKey = "iot-cloud-dashboard-registry-state"' in response.text
     assert "persistDashboardRegistryState();" in response.text

@@ -1974,11 +1974,13 @@ APP_SCRIPT = r"""
     }
     for (const gateway of gateways) {
       const row = document.createElement("tr");
-      row.className = gateway.gateway_id === selectedDashboardGatewayId ? "selected-row" : "";
+      row.className = `gateway-select-row${gateway.gateway_id === selectedDashboardGatewayId ? " selected-row" : ""}`;
+      row.tabIndex = 0;
+      row.setAttribute("aria-label", `Show ${gateway.gateway_id} details`);
       row.innerHTML = `
         <td><input type="checkbox" aria-label="Select ${escapeHtml(gateway.gateway_id)} for application update" data-select-update="${escapeHtml(gateway.gateway_id)}"${selectedGatewayUpdateIds.has(gateway.gateway_id) ? " checked" : ""}${gatewayRequiresUpdate(gateway) ? "" : " disabled"}></td>
         <td><a class="button table-command secondary workspace-launch" href="/gateways/${encodeURIComponent(gateway.gateway_id)}">${escapeHtml(gateway.gateway_id)}</a></td>
-        <td><a class="site-link" href="#gateway-inspector" data-select-gateway="${escapeHtml(gateway.gateway_id)}" aria-label="Show ${escapeHtml(gateway.gateway_id)} details"><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong></a><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
+        <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
         <td>${escapeHtml(gatewayAddress(gateway) || "")}</td>
         <td>${escapeHtml(gateway.hostname)}</td>
         <td>${gatewayVersionCell(gateway)}</td>
@@ -1987,16 +1989,21 @@ APP_SCRIPT = r"""
         <td>${directConnectCell(gateway)}</td>
         <td><a class="button table-command secondary" href="/gateways/${encodeURIComponent(gateway.gateway_id)}/configure">Configure</a></td>
       `;
+      row.addEventListener("click", (event) => {
+        if (event.target.closest("a, button, input, select, textarea, label")) {
+          return;
+        }
+        selectDashboardGateway(gateway.gateway_id);
+      });
+      row.addEventListener("keydown", (event) => {
+        if (event.target !== row || !["Enter", " "].includes(event.key)) {
+          return;
+        }
+        event.preventDefault();
+        selectDashboardGateway(gateway.gateway_id);
+      });
       table.appendChild(row);
     }
-    table.querySelectorAll("[data-select-gateway]").forEach((siteLink) => {
-      siteLink.addEventListener("mouseenter", () => selectDashboardGateway(siteLink.dataset.selectGateway));
-      siteLink.addEventListener("focus", () => selectDashboardGateway(siteLink.dataset.selectGateway));
-      siteLink.addEventListener("click", (event) => {
-        event.preventDefault();
-        selectDashboardGateway(siteLink.dataset.selectGateway);
-      });
-    });
     attachDirectConnectHandlers(table);
     attachGatewayUpdateHandlers(table);
     syncGatewayUpdateControls();
@@ -6477,20 +6484,12 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .gateway-table .selected-row td {{
       background: rgba(34, 211, 197, 0.06);
     }}
-    .site-link {{
-      min-height: 0;
-      border: 0;
-      padding: 0;
-      color: var(--accent);
-      background: transparent;
-      box-shadow: none;
-      font: inherit;
-      text-decoration: none;
+    .gateway-select-row {{
       cursor: pointer;
     }}
-    .site-link:hover,
-    .site-link:focus-visible {{
-      text-decoration: underline;
+    .gateway-select-row:focus-visible td {{
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
     }}
     .table-command {{
       min-height: 30px;
