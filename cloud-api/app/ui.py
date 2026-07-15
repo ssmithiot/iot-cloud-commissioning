@@ -1357,6 +1357,7 @@ APP_SCRIPT = r"""
       metricCard("metric-stale", "Stale", summary.stale, "heartbeat delayed");
       metricCard("metric-offline", "Offline", summary.offline, "no current heartbeat");
       metricCard("metric-jobs", "Recent Jobs", dashboardJobs.length, `${queuedUploads} queued uploads`);
+      await loadCloudMetrics();
       setupGatewaySearch();
       setupGatewaySortHeaders();
       setupGatewayUpdateControls();
@@ -1370,6 +1371,38 @@ APP_SCRIPT = r"""
       }
     } catch (error) {
       setText("status", errorMessage(error), true);
+    }
+  }
+
+  async function loadCloudMetrics() {
+    const panel = byId("cloud-metrics-panel");
+    if (!panel || currentUser?.role !== "admin") {
+      return;
+    }
+    panel.hidden = false;
+    try {
+      const metrics = await api("/api/admin/cloud-metrics");
+      const database = metrics.database || {};
+      const schema = metrics.schema || {};
+      const uptime = Number(metrics.uptime_seconds || 0);
+      const uptimeLabel = uptime < 3600
+        ? `${Math.floor(uptime / 60)}m ${Math.floor(uptime % 60)}s`
+        : `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`;
+      byId("cloud-metrics-details").textContent = [
+        `Environment: ${metrics.environment || "unknown"}`,
+        `Service version: ${metrics.version || "unknown"}`,
+        `Uptime: ${uptimeLabel}`,
+        `Schema: ${schema.status || "unknown"}`,
+        `DB pool: size ${database.pool_size ?? "?"} + overflow ${database.max_overflow ?? "?"}; timeout ${database.timeout_seconds ?? "?"}s; recycle ${database.recycle_seconds ?? "?"}s`,
+        `DB connections: ${database.checked_out ?? "n/a"} checked out, ${database.checked_in ?? "n/a"} idle, overflow ${database.overflow ?? "n/a"}`
+      ].join("\n");
+      const renderLink = byId("render-metrics-link");
+      if (metrics.render_metrics_url) {
+        renderLink.href = metrics.render_metrics_url;
+        renderLink.hidden = false;
+      }
+    } catch (error) {
+      byId("cloud-metrics-details").textContent = `Cloud metrics unavailable: ${errorMessage(error)}`;
     }
   }
 
@@ -1846,7 +1879,7 @@ APP_SCRIPT = r"""
       <dl class="inspector-grid">
         <dt>Address</dt><dd>${escapeHtml(gatewayAddress(gateway) || "No address on file")}</dd>
         <dt>Host</dt><dd>${escapeHtml(gateway.hostname || "")}</dd>
-        <dt>LAN IP</dt><dd>${escapeHtml(gateway.lan_ip || "unknown")}</dd>
+        <dt>Site IP</dt><dd>${escapeHtml(gateway.direct_connect_host || "Not configured")}</dd>
         <dt>Heartbeat</dt><dd>${escapeHtml(heartbeatLabel(gateway))}</dd>
         <dt>Trend</dt><dd id="gateway-heartbeat-trend" class="heartbeat-trend">Loading recent heartbeat trend...</dd>
         <dt>Weather</dt><dd id="gateway-weather">Loading weather...</dd>
@@ -1854,7 +1887,7 @@ APP_SCRIPT = r"""
         <dt>Notes</dt><dd>${escapeHtml(gateway.network_status_notes || "No network notes")}</dd>
       </dl>
       <div class="inspector-actions">
-        <a class="button" href="/gateways/${encoded}">Workspace</a>
+        <a class="button" href="/gateways/${encoded}" target="_blank" rel="noopener noreferrer">Workspace</a>
         <a class="button secondary" href="/gateways/${encoded}">Edit Site</a>
         <a class="button secondary" href="/gateways/${encoded}/tunnel/">Remote Tunnel</a>
         ${gateway.direct_connect_available && currentUser?.role !== "viewer" ? `<a class="button secondary" href="/api/ui/gateways/${encoded}/direct-connect" data-direct-connect="${escapeHtml(gateway.gateway_id)}">Direct Connect</a>` : `<span class="muted">Direct Connect not configured</span>`}
@@ -1905,7 +1938,7 @@ APP_SCRIPT = r"""
       row.className = gateway.gateway_id === selectedDashboardGatewayId ? "selected-row" : "";
       row.innerHTML = `
         <td><input type="checkbox" aria-label="Select ${escapeHtml(gateway.gateway_id)} for application update" data-select-update="${escapeHtml(gateway.gateway_id)}"${selectedGatewayUpdateIds.has(gateway.gateway_id) ? " checked" : ""}${gatewayRequiresUpdate(gateway) ? "" : " disabled"}></td>
-        <td><a class="gateway-link" href="/gateways/${encodeURIComponent(gateway.gateway_id)}" data-select-gateway="${escapeHtml(gateway.gateway_id)}">${escapeHtml(gateway.gateway_id)}</a></td>
+        <td><a class="gateway-link" href="/gateways/${encodeURIComponent(gateway.gateway_id)}" data-select-gateway="${escapeHtml(gateway.gateway_id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(gateway.gateway_id)}</a></td>
         <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
         <td>${escapeHtml(gatewayAddress(gateway) || "")}</td>
         <td>${escapeHtml(gateway.hostname)}</td>
@@ -2471,8 +2504,10 @@ APP_SCRIPT = r"""
       setText("point-read-status", message, true);
       return;
     }
-    setText("status", "Point values refreshed.");
-    setText("point-read-status", "Point values refreshed.");
+    const elapsedSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    const message = `Point values refreshed in ${elapsedSeconds}s.`;
+    setText("status", message);
+    setText("point-read-status", message);
   }
 
   function renderCustomPointTable() {
@@ -3599,7 +3634,7 @@ APP_SCRIPT = r"""
       api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`)
     ]);
     byId("gateway-title").textContent = `${gateway.gateway_id} Workspace`;
-    byId("gateway-status").textContent = `${statusLabel(gateway)} | BACnet ${gateway.bacnet_port} | ${gateway.lan_ip || "no LAN IP"}`;
+    byId("gateway-status").textContent = `${statusLabel(gateway)} | BACnet ${gateway.bacnet_port} | ${gateway.direct_connect_host || "no site IP"}`;
     renderGatewayResourceHealth(gateway);
     renderSiteInfo(site, directConnect, tunnelStatus);
     const details = byId("gateway-details");
@@ -6770,6 +6805,16 @@ def app_html() -> str:
       <div id="metric-stale" class="metric-card warn"><span>Stale</span><strong>0</strong><em>Loading</em></div>
       <div id="metric-offline" class="metric-card bad"><span>Offline</span><strong>0</strong><em>Loading</em></div>
       <div id="metric-jobs" class="metric-card"><span>Recent Jobs</span><strong>0</strong><em>Loading</em></div>
+    </section>
+    <section id="cloud-metrics-panel" class="ticker-panel" hidden>
+      <div class="panel-title">
+        <div>
+          <span class="eyebrow">Platform Administration</span>
+          <h2>Cloud Health</h2>
+        </div>
+        <a id="render-metrics-link" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>Open Render metrics</a>
+      </div>
+      <pre id="cloud-metrics-details">Loading cloud health metrics...</pre>
     </section>
     <section id="dashboard-workspace" class="dashboard-workspace" aria-label="Gateway operations workspace">
       <section class="gateway-panel dashboard-registry-panel">

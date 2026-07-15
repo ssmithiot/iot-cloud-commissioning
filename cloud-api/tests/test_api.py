@@ -285,6 +285,26 @@ def test_database_health() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_admin_cloud_metrics_exposes_safe_pool_health() -> None:
+    response = client.get("/api/admin/cloud-metrics", headers=admin_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["database"]["pool_size"] == main_module.settings.db_pool_size
+    assert body["database"]["max_overflow"] == main_module.settings.db_max_overflow
+    assert body["database"]["timeout_seconds"] == main_module.settings.db_pool_timeout_sec
+    assert "database_url" not in body
+
+
+def test_non_admin_cannot_read_cloud_metrics() -> None:
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    response = client.get("/api/admin/cloud-metrics", headers=user_headers("operator@example.com", user_id))
+
+    assert response.status_code == 403
+
+
 def test_root_redirects_to_login() -> None:
     response = client.get("/", follow_redirects=False)
 
@@ -331,6 +351,17 @@ def test_admin_users_page_contains_pending_user_invitation_workflow() -> None:
     assert "Send an Internet of Team invitation email" in response.text
     assert 'api("/api/admin/users/invite"' in response.text
     assert "Send invitation" in response.text
+
+
+def test_dashboard_includes_admin_cloud_metrics_and_workspace_links_open_in_new_tabs() -> None:
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert "/api/admin/cloud-metrics" in response.text
+    assert "Cloud Health" in response.text
+    assert "Open Render metrics" in response.text
+    assert 'target="_blank" rel="noopener noreferrer"' in response.text
+    assert "Point values refreshed in ${elapsedSeconds}s." in response.text
 
 
 def test_signup_email_confirmation_redirects_to_login_origin() -> None:

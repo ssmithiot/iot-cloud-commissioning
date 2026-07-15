@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=10, ge=0, le=100, validation_alias="DB_MAX_OVERFLOW")
     db_pool_timeout_sec: int = Field(default=30, ge=1, le=600, validation_alias="DB_POOL_TIMEOUT")
     db_pool_recycle_sec: int = Field(default=1800, ge=60, le=86400, validation_alias="DB_POOL_RECYCLE")
+    # Optional admin-only shortcut to this environment's Render metrics page.
+    # The cloud app never receives a Render API key or attempts to proxy its
+    # private metrics; it links operators to the Render dashboard instead.
+    render_metrics_url: str | None = Field(default=None, validation_alias="RENDER_METRICS_URL")
     # Fleet alerting groundwork. With no webhook URL configured, evaluation
     # runs silently: transitions are tracked and reported in the endpoint
     # response but nothing is delivered. Paste a Slack/Teams-compatible

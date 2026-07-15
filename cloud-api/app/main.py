@@ -158,6 +158,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lifespan)
 logger = logging.getLogger("iot-cloud-api.tunnel")
 request_logger = logging.getLogger("iot-cloud-api.requests")
+app_started_monotonic = time.monotonic()
 
 
 def _ensure_visible_logging(target: logging.Logger) -> None:
@@ -1220,6 +1221,48 @@ def health() -> dict[str, str]:
 def database_health(db: Session = Depends(get_db)) -> dict[str, str]:
     db.execute(text("select 1"))
     return {"status": "ok"}
+
+
+@app.get("/api/admin/cloud-metrics")
+def admin_cloud_metrics(
+    _: AdminAuthContext = Depends(require_admin_or_admin_token_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Return safe, live application and database-pool health for admins.
+
+    This deliberately exposes neither database URLs nor credentials. Render's
+    service charts stay in Render; an optional configured dashboard URL is
+    returned only to authenticated platform admins.
+    """
+    db.execute(text("select 1"))
+    pool = engine.pool
+
+    def pool_count(method_name: str) -> int | None:
+        method = getattr(pool, method_name, None)
+        if not callable(method):
+            return None
+        try:
+            return int(method())
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "status": "ok",
+        "environment": settings.environment,
+        "version": app.version,
+        "uptime_seconds": round(time.monotonic() - app_started_monotonic, 1),
+        "database": {
+            "pool_size": settings.db_pool_size,
+            "max_overflow": settings.db_max_overflow,
+            "timeout_seconds": settings.db_pool_timeout_sec,
+            "recycle_seconds": settings.db_pool_recycle_sec,
+            "checked_out": pool_count("checkedout"),
+            "checked_in": pool_count("checkedin"),
+            "overflow": pool_count("overflow"),
+        },
+        "schema": schema_revision_status(engine, auto_create_tables=settings.auto_create_tables).as_dict(),
+        "render_metrics_url": (settings.render_metrics_url or "").strip() or None,
+    }
 
 
 @app.get("/health/schema")
