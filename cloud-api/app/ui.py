@@ -1385,6 +1385,12 @@ APP_SCRIPT = r"""
       const database = metrics.database || {};
       const schema = metrics.schema || {};
       const uptime = Number(metrics.uptime_seconds || 0);
+      const overflow = Number(database.overflow);
+      const poolCapacity = Number.isFinite(overflow)
+        ? (overflow > 0
+          ? `${overflow} overflow connection${overflow === 1 ? "" : "s"} in use`
+          : (overflow === 0 ? "base pool at capacity" : `${Math.abs(overflow)} base pool slot${Math.abs(overflow) === 1 ? "" : "s"} not needed`))
+        : "pool capacity unavailable";
       const uptimeLabel = uptime < 3600
         ? `${Math.floor(uptime / 60)}m ${Math.floor(uptime % 60)}s`
         : `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`;
@@ -1394,7 +1400,7 @@ APP_SCRIPT = r"""
         `Uptime: ${uptimeLabel}`,
         `Schema: ${schema.status || "unknown"}`,
         `DB pool: size ${database.pool_size ?? "?"} + overflow ${database.max_overflow ?? "?"}; timeout ${database.timeout_seconds ?? "?"}s; recycle ${database.recycle_seconds ?? "?"}s`,
-        `DB connections: ${database.checked_out ?? "n/a"} checked out, ${database.checked_in ?? "n/a"} idle, overflow ${database.overflow ?? "n/a"}`
+        `DB connections: ${database.checked_out ?? "n/a"} checked out, ${database.checked_in ?? "n/a"} idle; ${poolCapacity}`
       ].join("\n");
       const renderLink = byId("render-metrics-link");
       if (metrics.render_metrics_url) {
@@ -1938,7 +1944,7 @@ APP_SCRIPT = r"""
       row.className = gateway.gateway_id === selectedDashboardGatewayId ? "selected-row" : "";
       row.innerHTML = `
         <td><input type="checkbox" aria-label="Select ${escapeHtml(gateway.gateway_id)} for application update" data-select-update="${escapeHtml(gateway.gateway_id)}"${selectedGatewayUpdateIds.has(gateway.gateway_id) ? " checked" : ""}${gatewayRequiresUpdate(gateway) ? "" : " disabled"}></td>
-        <td><a class="gateway-link" href="/gateways/${encodeURIComponent(gateway.gateway_id)}" data-select-gateway="${escapeHtml(gateway.gateway_id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(gateway.gateway_id)}</a></td>
+        <td><a class="gateway-link" href="/gateways/${encodeURIComponent(gateway.gateway_id)}" data-select-gateway="${escapeHtml(gateway.gateway_id)}" data-open-workspace="true">${escapeHtml(gateway.gateway_id)}</a></td>
         <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
         <td>${escapeHtml(gatewayAddress(gateway) || "")}</td>
         <td>${escapeHtml(gateway.hostname)}</td>
@@ -1953,6 +1959,19 @@ APP_SCRIPT = r"""
     table.querySelectorAll("[data-select-gateway]").forEach((link) => {
       link.addEventListener("mouseenter", () => selectDashboardGateway(link.dataset.selectGateway));
       link.addEventListener("focus", () => selectDashboardGateway(link.dataset.selectGateway));
+    });
+    table.querySelectorAll("[data-open-workspace]").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        selectDashboardGateway(link.dataset.selectGateway);
+        const workspace = window.open(link.href, "_blank");
+        if (workspace) {
+          workspace.opener = null;
+          setText("status", `Opening ${link.dataset.selectGateway} workspace in a new tab.`);
+        } else {
+          setText("status", "Your browser blocked the workspace tab. Allow popups for this site and try again.", true);
+        }
+      });
     });
     attachDirectConnectHandlers(table);
     attachGatewayUpdateHandlers(table);

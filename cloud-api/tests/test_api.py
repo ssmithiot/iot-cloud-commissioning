@@ -360,7 +360,9 @@ def test_dashboard_includes_admin_cloud_metrics_and_workspace_links_open_in_new_
     assert "/api/admin/cloud-metrics" in response.text
     assert "Cloud Health" in response.text
     assert "Open Render metrics" in response.text
-    assert 'target="_blank" rel="noopener noreferrer"' in response.text
+    assert 'data-open-workspace="true"' in response.text
+    assert 'window.open(link.href, "_blank")' in response.text
+    assert "base pool slot" in response.text
     assert "Point values refreshed in ${elapsedSeconds}s." in response.text
 
 
