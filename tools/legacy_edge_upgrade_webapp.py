@@ -34,6 +34,7 @@ DEFAULT_PORT = 8766
 DEFAULT_CLOUD_URL = "https://iot-cloud-api-dev.onrender.com"
 DEFAULT_REPO_PATH = "/home/swadmin/iot-cloud-commissioning"
 DEFAULT_UI_SOURCE = r"C:\Dev\edge-bacnet-ui-v2"
+DEFAULT_EDGE_UPDATE_REF = "32eaf06"
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
@@ -292,7 +293,7 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
         gateway_host=str(claimed.get("gateway_host") or "192.168.1.200"),
         gateway_user=os.environ.get("GATEWAY_USER", "swadmin"),
         gateway_password=defaults["GATEWAY_PASSWORD"],
-        git_ref=os.environ.get("IOT_EDGE_UPDATE_REF", "main"),
+        git_ref=os.environ.get("IOT_EDGE_UPDATE_REF", DEFAULT_EDGE_UPDATE_REF),
         remote_repo=DEFAULT_REPO_PATH,
         ui_source_folder=DEFAULT_UI_SOURCE,
         ui_username=os.environ.get("EDGE_UI_USERNAME", "admin"),
@@ -492,7 +493,7 @@ def form_page(message: str = "") -> bytes:
     <input type="password" name="gateway_password" value="{gw_password}" autocomplete="off" required>
   </label>
   <label>Git ref
-    <input name="git_ref" value="main" required>
+    <input name="git_ref" value="{DEFAULT_EDGE_UPDATE_REF}" required>
   </label>
   <label class="wide">Repo path on gateway
     <input name="remote_repo" value="{DEFAULT_REPO_PATH}" required>
@@ -658,7 +659,7 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         gateway_host=value(fields, "gateway_host") or "192.168.1.200",
         gateway_user=value(fields, "gateway_user") or "swadmin",
         gateway_password=value(fields, "gateway_password"),
-        git_ref=value(fields, "git_ref") or "main",
+        git_ref=value(fields, "git_ref") or DEFAULT_EDGE_UPDATE_REF,
         remote_repo=value(fields, "remote_repo") or DEFAULT_REPO_PATH,
         ui_source_folder=value(fields, "ui_source_folder") or DEFAULT_UI_SOURCE,
         ui_username=value(fields, "ui_username") or "admin",

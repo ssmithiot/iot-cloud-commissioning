@@ -22,6 +22,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     auth_commands,
     config_commands,
     apply_ui_commands,
+    DEFAULT_EDGE_UPDATE_REF,
     load_env_defaults,
     parse_upgrade_request,
     restart_ui_commands,
@@ -186,6 +187,64 @@ def test_parse_upgrade_request_accepts_reuse_uploaded_zip_checkbox() -> None:
     request = parse_upgrade_request(body)
     assert request.reuse_uploaded_zip is True
     assert request.skip_edge_ui_stop is True
+
+
+def test_parse_upgrade_request_defaults_git_ref_to_release_commit() -> None:
+    body = (
+        "gateway_id=GW010&cloud_url=https%3A%2F%2Fiot-cloud-api-dev.onrender.com"
+        "&admin_api_token=admin-secret-token&cradlepoint_host=10.0.0.10"
+        "&cradlepoint_password=cp-secret&gateway_password=gw-secret"
+        "&ui_password=ui-secret"
+    ).encode("utf-8")
+
+    request = parse_upgrade_request(body)
+
+    assert request.git_ref == DEFAULT_EDGE_UPDATE_REF == "32eaf06"
+
+
+def test_queued_gateway_update_defaults_git_ref_to_release_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    claimed = {
+        "request_id": "request-1",
+        "gateway_id": "GW010",
+        "site_id": "GW010",
+        "cradlepoint_host": "10.0.0.10",
+        "gateway_host": "192.168.1.200",
+    }
+    captured = {}
+
+    def fake_cloud_json_request(_cloud_url, _token, path, *, method="GET", body=None):
+        if path.endswith("/claim"):
+            return claimed
+        if path.endswith("/complete"):
+            return {"ok": True}
+        return {}
+
+    def fake_start_job(request):
+        captured["request"] = request
+        job_id = "queued-default-ref-test"
+        with JOBS_LOCK:
+            JOBS[job_id] = UpgradeJob(request=request, status="complete")
+        return job_id
+
+    monkeypatch.delenv("IOT_EDGE_UPDATE_REF", raising=False)
+    monkeypatch.setattr(legacy_webapp, "cloud_json_request", fake_cloud_json_request)
+    monkeypatch.setattr(legacy_webapp, "start_job", fake_start_job)
+    monkeypatch.setattr(legacy_webapp, "health_gate_enabled", lambda: False)
+
+    outcome = legacy_webapp.run_queued_gateway_update(
+        {"request_id": "request-1"},
+        {
+            "IOT_ADMIN_API_TOKEN": "admin-secret-token",
+            "CRADLEPOINT_PASSWORD": "cp-secret",
+            "GATEWAY_PASSWORD": "gw-secret",
+            "EDGE_UI_PASSWORD": "ui-secret",
+        },
+    )
+
+    assert outcome == "completed"
+    assert captured["request"].git_ref == DEFAULT_EDGE_UPDATE_REF == "32eaf06"
+    with JOBS_LOCK:
+        JOBS.pop("queued-default-ref-test", None)
 
 
 def test_runner_uses_nested_shell_when_direct_gateway_client_is_unavailable(monkeypatch) -> None:
