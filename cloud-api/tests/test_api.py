@@ -398,7 +398,7 @@ def test_dashboard_highlights_online_gateway_status() -> None:
     assert ".status-online" in response.text
     assert 'return \'<span class="status-online">ONLINE</span>\';' in response.text
     assert "return escapeHtml(statusLabel(gateway));" in response.text
-    assert '<td><span class="status-text">${dashboardStatusCell(gateway)}</span></td>' in response.text
+    assert '<td><span class="status-text">${dashboardStatusCell(gateway)}${gateway.duplicate_identity_suspected ?' in response.text
     assert 'id="gateway-heartbeat-trend"' in response.text
     assert "loadGatewayHeartbeatTrend(gateway);" in response.text
     assert "heartbeat-trend-bars" in response.text
@@ -427,6 +427,12 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
     assert 'colspan="10"' in response.text
     assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
+    assert 'const dashboardGatewayCacheKey = "iot-cloud-dashboard-gateway-cache-v1";' in response.text
+    assert "const dashboardGatewayRefreshMs = 30000;" in response.text
+    assert "restoreCachedDashboardGateways" in response.text
+    assert "cacheDashboardGateways(gateways)" in response.text
+    assert "Gateway refresh failed; showing last known list." in response.text
+    assert "window.setInterval(() =>" in response.text
 
 
 def test_gateway_workspace_contains_discovery_progress_ui() -> None:

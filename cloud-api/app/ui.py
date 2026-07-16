@@ -24,6 +24,8 @@ APP_SCRIPT = r"""
   let dashboardJobs = [];
   let dashboardGatewayUpdates = new Map();
   let selectedGatewayUpdateIds = new Set();
+  let dashboardGatewayRefreshInFlight = false;
+  let dashboardGatewayRefreshTimer = null;
   let dashboardWeather = new Map();
   let dashboardHeartbeatTrends = new Map();
   let selectedDashboardGatewayId = null;
@@ -46,6 +48,8 @@ APP_SCRIPT = r"""
   };
   const themeStorageKey = "iot-cloud-command-theme";
   const dashboardRegistryStorageKey = "iot-cloud-dashboard-registry-state";
+  const dashboardGatewayCacheKey = "iot-cloud-dashboard-gateway-cache-v1";
+  const dashboardGatewayRefreshMs = 30000;
   const dashboardSortKeys = new Set(["gateway_id", "site", "address", "hostname", "version", "status", "network_status_notes", "direct", "configure"]);
   const trendChartFrame = Object.freeze({ minWidth: 360, height: 230, left: 72, right: 20, top: 14, bottom: 48 });
   const trendChartSizeStorageKey = "iot-cloud-trend-chart-size";
@@ -1347,12 +1351,51 @@ APP_SCRIPT = r"""
       return;
     }
     currentUser = me;
+    const savedGatewayId = restoreDashboardRegistryState();
+    setupGatewaySearch();
+    setupGatewaySortHeaders();
+    setupGatewayUpdateControls();
+    await initRoadMap();
+    const cachedGateways = restoreCachedDashboardGateways();
+    if (cachedGateways.length) {
+      dashboardGateways = cachedGateways;
+      selectedDashboardGatewayId = dashboardGateways.some((gateway) => gateway.gateway_id === savedGatewayId)
+        ? savedGatewayId
+        : dashboardGateways[0]?.gateway_id || null;
+      renderDashboardFromCurrentState({ jobs: [], fromCache: true });
+      setText("status", `Showing last known gateway list (${cachedGateways.length}); refreshing live data...`);
+    } else {
+      renderGatewayLoadingState("Loading gateways...");
+      setText("status", "Loading gateway list...");
+    }
+    await refreshDashboardGatewayData({ savedGatewayId, initial: true });
+    if (me.role === "admin") {
+      byId("admin-link").hidden = false;
+    }
+    if (!dashboardGatewayRefreshTimer) {
+      dashboardGatewayRefreshTimer = window.setInterval(() => {
+        refreshDashboardGatewayData({ initial: false });
+      }, dashboardGatewayRefreshMs);
+    }
+  }
+
+  async function refreshDashboardGatewayData({ savedGatewayId = selectedDashboardGatewayId, initial = false } = {}) {
+    if (dashboardGatewayRefreshInFlight) {
+      return;
+    }
+    dashboardGatewayRefreshInFlight = true;
+    if (!initial && dashboardGateways.length) {
+      setText("status", `Refreshing gateway list... showing ${dashboardGateways.length} last known gateway${dashboardGateways.length === 1 ? "" : "s"}.`);
+    }
     try {
-      const summary = await api("/api/ui/gateways/summary");
-      dashboardGateways = await api("/api/ui/gateways");
+      const [summary, gateways] = await Promise.all([
+        api("/api/ui/gateways/summary"),
+        api("/api/ui/gateways")
+      ]);
+      dashboardGateways = gateways;
+      cacheDashboardGateways(gateways);
       await refreshGatewayUpdates();
       dashboardJobs = await api("/api/edge/jobs?limit=10");
-      const savedGatewayId = restoreDashboardRegistryState();
       selectedDashboardGatewayId = dashboardGateways.some((gateway) => gateway.gateway_id === savedGatewayId)
         ? savedGatewayId
         : dashboardGateways[0]?.gateway_id || null;
@@ -1364,19 +1407,69 @@ APP_SCRIPT = r"""
       metricCard("metric-offline", "Offline", summary.offline, "no current heartbeat");
       metricCard("metric-jobs", "Recent Jobs", dashboardJobs.length, `${queuedUploads} queued uploads`);
       await loadCloudMetrics();
-      setupGatewaySearch();
-      setupGatewaySortHeaders();
-      setupGatewayUpdateControls();
-      await initRoadMap();
-      renderGatewayMap(sortedDashboardGateways());
-      renderGatewayInspector();
-      renderGatewayList();
-      renderEventTicker(dashboardJobs);
-      if (me.role === "admin") {
-        byId("admin-link").hidden = false;
-      }
+      renderDashboardFromCurrentState({ jobs: dashboardJobs, fromCache: false });
+      setText("status", `Gateway list refreshed: ${dashboardGateways.length} gateway${dashboardGateways.length === 1 ? "" : "s"} at ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}.`);
     } catch (error) {
-      setText("status", errorMessage(error), true);
+      if (dashboardGateways.length) {
+        renderDashboardFromCurrentState({ jobs: dashboardJobs, fromCache: true });
+        setText("status", `Gateway refresh failed; showing last known list. ${errorMessage(error)}`, true);
+      } else {
+        renderGatewayLoadingState(`Gateway list failed to load: ${errorMessage(error)}`);
+        setText("status", `Gateway list failed to load: ${errorMessage(error)}`, true);
+      }
+    } finally {
+      dashboardGatewayRefreshInFlight = false;
+    }
+  }
+
+  function gatewaySummaryFromRows(gateways) {
+    return gateways.reduce((summary, gateway) => {
+      summary.total += 1;
+      const status = gateway.effective_status || gateway.latest_status || "offline";
+      if (status === "online") summary.online += 1;
+      else if (status === "stale") summary.stale += 1;
+      else summary.offline += 1;
+      summary.queuedUploads += Number(gateway.queued_upload_count || 0);
+      return summary;
+    }, { total: 0, online: 0, stale: 0, offline: 0, queuedUploads: 0 });
+  }
+
+  function renderCachedMetricCards() {
+    const summary = gatewaySummaryFromRows(dashboardGateways);
+    metricCard("metric-total", "Total Gateways", summary.total, "last known");
+    metricCard("metric-online", "Online", summary.online, "last known");
+    metricCard("metric-stale", "Stale", summary.stale, "last known");
+    metricCard("metric-offline", "Offline", summary.offline, "last known");
+    metricCard("metric-jobs", "Recent Jobs", dashboardJobs.length || 0, `${summary.queuedUploads} queued uploads, last known`);
+  }
+
+  function renderDashboardFromCurrentState({ jobs = dashboardJobs, fromCache = false } = {}) {
+    if (fromCache) {
+      renderCachedMetricCards();
+    }
+    renderGatewayMap(sortedDashboardGateways());
+    renderGatewayInspector();
+    renderGatewayList();
+    renderEventTicker(jobs || []);
+  }
+
+  function cacheDashboardGateways(gateways) {
+    try {
+      window.localStorage.setItem(dashboardGatewayCacheKey, JSON.stringify({
+        cached_at: new Date().toISOString(),
+        gateways: Array.isArray(gateways) ? gateways : []
+      }));
+    } catch {
+      // Dashboard remains live even if browser storage is unavailable.
+    }
+  }
+
+  function restoreCachedDashboardGateways() {
+    try {
+      const cached = JSON.parse(window.localStorage.getItem(dashboardGatewayCacheKey) || "{}");
+      return Array.isArray(cached.gateways) ? cached.gateways : [];
+    } catch {
+      return [];
     }
   }
 
@@ -1962,6 +2055,22 @@ APP_SCRIPT = r"""
         }
       });
     });
+  }
+
+  function renderGatewayLoadingState(message) {
+    const table = byId("gateway-list");
+    const count = byId("gateway-result-count");
+    if (count) {
+      count.textContent = dashboardGateways.length ? `${dashboardGateways.length} last known gateways` : "Loading gateways";
+    }
+    if (!table) {
+      return;
+    }
+    table.textContent = "";
+    const row = document.createElement("tr");
+    row.innerHTML = `<td colspan="10">${escapeHtml(message || "Loading gateways...")}</td>`;
+    table.appendChild(row);
+    syncGatewayUpdateControls();
   }
 
   function renderGatewayList() {
