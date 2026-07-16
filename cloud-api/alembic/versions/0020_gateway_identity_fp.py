@@ -1,6 +1,6 @@
 """add gateway physical identity fingerprint fields
 
-Revision ID: 0020_gateway_identity_fingerprint
+Revision ID: 0020_gateway_identity_fp
 Revises: 0019_uuid_schema_alignment
 Create Date: 2026-07-16 00:00:00.000000
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0020_gateway_identity_fingerprint"
+revision: str = "0020_gateway_identity_fp"
 down_revision: str | Sequence[str] | None = "0019_uuid_schema_alignment"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
