@@ -220,7 +220,7 @@ def test_load_config_uses_installed_edge_app_version(tmp_path: Path) -> None:
 
     agent_config = load_config(config_path)
 
-    assert agent_config.agent_version == "0.1.5"
+    assert agent_config.agent_version == "0.1.6"
     assert agent_config.ui_version == "0.1.0"
 
 

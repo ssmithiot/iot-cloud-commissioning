@@ -140,6 +140,8 @@ class HeartbeatIn(BaseModel):
     site_id: str = Field(min_length=1, max_length=120)
     hostname: str = Field(min_length=1, max_length=255)
     lan_ip: str | None = Field(default=None, max_length=64)
+    machine_id: str | None = Field(default=None, max_length=128)
+    primary_mac: str | None = Field(default=None, max_length=64)
     bacnet_port: int = Field(ge=1, le=65535)
     agent_version: str = Field(min_length=1, max_length=80)
     ui_version: str = Field(min_length=1, max_length=80)
@@ -302,6 +304,10 @@ class GatewayOut(BaseModel):
     site_id: str
     hostname: str
     lan_ip: str | None
+    machine_id: str | None = None
+    primary_mac: str | None = None
+    duplicate_identity_suspected: bool = False
+    duplicate_identity_detail: str | None = None
     bacnet_port: int
     agent_version: str
     ui_version: str
@@ -355,6 +361,10 @@ class GatewayHeartbeatTrendOut(BaseModel):
     status: Literal["online", "degraded"]
     sqlite_db_ok: bool
     queued_upload_count: int
+    hostname: str | None = None
+    lan_ip: str | None = None
+    machine_id: str | None = None
+    primary_mac: str | None = None
     trend_pending_upload_count: int = 0
     trend_deferred_upload_count: int = 0
     trend_oldest_pending_at: datetime | None = None

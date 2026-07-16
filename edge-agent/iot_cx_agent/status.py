@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import uuid
 
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.db import queued_upload_count, trend_queue_status
@@ -19,6 +20,28 @@ def detect_lan_ip() -> str | None:
             return sock.getsockname()[0]
     except OSError:
         return None
+
+
+def detect_machine_id() -> str | None:
+    for path in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if value:
+            return value
+    return None
+
+
+def detect_primary_mac() -> str | None:
+    try:
+        node = uuid.getnode()
+    except Exception:
+        return None
+    # uuid.getnode() sets the multicast bit for random/generated values.
+    if (node >> 40) & 1:
+        return None
+    return ":".join(f"{(node >> offset) & 0xff:02x}" for offset in range(40, -1, -8))
 
 
 def resource_metrics(sqlite_path: Path) -> dict[str, int | float | None]:
@@ -76,6 +99,8 @@ def collect_status(config: AgentConfig, sqlite_db_ok: bool = True) -> dict[str, 
         "site_id": config.site_id,
         "hostname": socket.gethostname(),
         "lan_ip": detect_lan_ip(),
+        "machine_id": detect_machine_id(),
+        "primary_mac": detect_primary_mac(),
         "bacnet_port": config.bacnet_default_port,
         "bacnet_router_profile": config.bacnet_router_profile,
         "agent_version": config.agent_version,

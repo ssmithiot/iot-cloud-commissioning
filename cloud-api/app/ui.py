@@ -1565,6 +1565,11 @@ APP_SCRIPT = r"""
     return `${gateway.effective_status || gateway.latest_status || "unknown"} | ${heartbeatLabel(gateway)}`;
   }
 
+  function duplicateIdentityWarning(gateway) {
+    if (!gateway.duplicate_identity_suspected) return "";
+    return `⚠ Duplicate identity suspected${gateway.duplicate_identity_detail ? `: ${gateway.duplicate_identity_detail}` : ""}`;
+  }
+
   function dashboardStatusCell(gateway) {
     if (gateway.effective_status === "online") {
       return '<span class="status-online">ONLINE</span>';
@@ -1906,6 +1911,7 @@ APP_SCRIPT = r"""
       return;
     }
     const encoded = encodeURIComponent(gateway.gateway_id);
+    const duplicateWarning = duplicateIdentityWarning(gateway);
     panel.innerHTML = `
       <div class="inspector-head">
         <div>
@@ -1918,8 +1924,10 @@ APP_SCRIPT = r"""
       <dl class="inspector-grid">
         <dt>Address</dt><dd>${escapeHtml(gatewayAddress(gateway) || "No address on file")}</dd>
         <dt>Host</dt><dd>${escapeHtml(gateway.hostname || "")}</dd>
+        <dt>Machine</dt><dd>${escapeHtml(gateway.machine_id || "Unknown")}${gateway.primary_mac ? ` / ${escapeHtml(gateway.primary_mac)}` : ""}</dd>
         <dt>Site IP</dt><dd>${escapeHtml(gateway.direct_connect_host || "Not configured")}</dd>
         <dt>Heartbeat</dt><dd>${escapeHtml(heartbeatLabel(gateway))}</dd>
+        ${duplicateWarning ? `<dt>Identity</dt><dd class="status-warn">${escapeHtml(duplicateWarning)}</dd>` : ""}
         <dt>Trend</dt><dd id="gateway-heartbeat-trend" class="heartbeat-trend">Loading recent heartbeat trend...</dd>
         <dt>Weather</dt><dd id="gateway-weather">Loading weather...</dd>
         <dt>Agent/UI</dt><dd>${escapeHtml(gateway.agent_version || "?")} / ${escapeHtml(gateway.ui_version || "?")}</dd>
@@ -1984,7 +1992,7 @@ APP_SCRIPT = r"""
         <td>${escapeHtml(gatewayAddress(gateway) || "")}</td>
         <td>${escapeHtml(gateway.hostname)}</td>
         <td>${gatewayVersionCell(gateway)}</td>
-        <td><span class="status-text">${dashboardStatusCell(gateway)}</span></td>
+        <td><span class="status-text">${dashboardStatusCell(gateway)}${gateway.duplicate_identity_suspected ? `<br><span class="status-warn">⚠ duplicate identity</span>` : ""}</span></td>
         <td>${escapeHtml(gateway.network_status_notes || "")}</td>
         <td>${directConnectCell(gateway)}</td>
         <td><a class="button table-command secondary" href="/gateways/${encodeURIComponent(gateway.gateway_id)}/configure">Configure</a></td>
@@ -4621,6 +4629,10 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       border-color: rgba(12, 139, 95, 0.34);
       box-shadow: 0 0 0 1px rgba(12, 139, 95, 0.08), 0 0 16px rgba(12, 139, 95, 0.18);
       text-shadow: none;
+    }}
+    .status-warn {{
+      color: var(--warning);
+      font-weight: 800;
     }}
     progress {{
       width: min(420px, 100%);

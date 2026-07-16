@@ -266,17 +266,61 @@ def _effective_status(edge_node: EdgeNode, now: datetime | None = None) -> dict[
     }
 
 
-def _gateway_out(edge_node: EdgeNode, now: datetime | None = None) -> dict[str, object]:
+def _duplicate_identity_status(db: Session, gateway_id: str, now: datetime | None = None) -> dict[str, object]:
+    now = now or utc_now()
+    cutoff = now - timedelta(seconds=max(settings.gateway_offline_after_seconds, 1800))
+    recent = list(
+        db.scalars(
+            select(EdgeHeartbeat)
+            .where(EdgeHeartbeat.gateway_id == gateway_id, EdgeHeartbeat.timestamp_utc >= cutoff)
+            .order_by(EdgeHeartbeat.timestamp_utc.desc())
+            .limit(200)
+        )
+    )
+    if not recent:
+        return {"duplicate_identity_suspected": False, "duplicate_identity_detail": None}
+
+    machine_ids = {heartbeat.machine_id for heartbeat in recent if heartbeat.machine_id}
+    primary_macs = {heartbeat.primary_mac for heartbeat in recent if heartbeat.primary_mac}
+    hostnames = {heartbeat.hostname for heartbeat in recent if heartbeat.hostname}
+    lan_ips = {heartbeat.lan_ip for heartbeat in recent if heartbeat.lan_ip}
+    reasons: list[str] = []
+    if len(machine_ids) > 1:
+        reasons.append(f"{len(machine_ids)} machine IDs")
+    if len(primary_macs) > 1:
+        reasons.append(f"{len(primary_macs)} primary MACs")
+    if not reasons and len(hostnames) > 1 and len(lan_ips) > 1:
+        reasons.append(f"{len(hostnames)} hostnames and {len(lan_ips)} LAN IPs")
+    if not reasons:
+        return {"duplicate_identity_suspected": False, "duplicate_identity_detail": None}
+    return {
+        "duplicate_identity_suspected": True,
+        "duplicate_identity_detail": (
+            f"Duplicate gateway identity suspected in recent heartbeats: {', '.join(reasons)}. "
+            f"hostnames={sorted(hostnames)} lan_ips={sorted(lan_ips)}"
+        ),
+    }
+
+
+def _gateway_out(edge_node: EdgeNode, now: datetime | None = None, db: Session | None = None) -> dict[str, object]:
     site = edge_node.site
     store_hours_mf = (site.store_hours_monday_friday or site.store_hours_mf) if site else None
     store_hours_sat = (site.store_hours_saturday or site.store_hours_sat) if site else None
     store_hours_sun = (site.store_hours_sunday or site.store_hours_sun) if site else None
     direct_connect = _direct_connect_for_site(site) if site else DirectConnectOut(available=False)
+    duplicate_identity = (
+        _duplicate_identity_status(db, edge_node.gateway_id, now)
+        if db is not None
+        else {"duplicate_identity_suspected": False, "duplicate_identity_detail": None}
+    )
     return {
         "gateway_id": edge_node.gateway_id,
         "site_id": edge_node.site_id,
         "hostname": edge_node.hostname,
         "lan_ip": edge_node.lan_ip,
+        "machine_id": edge_node.machine_id,
+        "primary_mac": edge_node.primary_mac,
+        **duplicate_identity,
         "bacnet_port": edge_node.bacnet_port,
         "agent_version": edge_node.agent_version,
         "ui_version": edge_node.ui_version,
@@ -1637,7 +1681,7 @@ def ui_list_gateways(
 ) -> list[dict[str, object]]:
     now = utc_now()
     gateways = [
-        _gateway_out(edge_node, now)
+        _gateway_out(edge_node, now, db)
         for edge_node in db.scalars(_scoped_gateway_statement(db, auth)).all()
     ]
     if status_filter != "all":
@@ -1778,7 +1822,7 @@ def ui_get_gateway(
     auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
-    return _gateway_out(_require_gateway_site_access(db, auth, gateway_id))
+    return _gateway_out(_require_gateway_site_access(db, auth, gateway_id), db=db)
 
 
 @app.get("/api/ui/gateways/{gateway_id}/heartbeat-trend", response_model=list[GatewayHeartbeatTrendOut])
@@ -1805,6 +1849,10 @@ def ui_gateway_heartbeat_trend(
             "status": "online" if heartbeat.sqlite_db_ok else "degraded",
             "sqlite_db_ok": heartbeat.sqlite_db_ok,
             "queued_upload_count": heartbeat.queued_upload_count,
+            "hostname": heartbeat.hostname,
+            "lan_ip": heartbeat.lan_ip,
+            "machine_id": heartbeat.machine_id,
+            "primary_mac": heartbeat.primary_mac,
             "trend_pending_upload_count": heartbeat.trend_pending_upload_count,
             "trend_deferred_upload_count": heartbeat.trend_deferred_upload_count,
             "trend_oldest_pending_at": heartbeat.trend_oldest_pending_at,
@@ -2123,7 +2171,7 @@ def ui_get_gateway_tree(
         for config in db.scalars(select(PointTrendConfig).where(PointTrendConfig.point_id.in_([point.id for point in points]))).all()
     }
     return GatewayTreeOut(
-        gateway=GatewayOut(**_gateway_out(gateway)),
+        gateway=GatewayOut(**_gateway_out(gateway, db=db)),
         groups=[GatewayGroupOut(**_group_out(group)) for group in groups],
         devices=[SavedDeviceOut(**_device_out(device)) for device in devices],
         points=[SavedPointOut(**_point_out(point, trend_configs.get(point.id))) for point in points],
@@ -2980,6 +3028,8 @@ def receive_heartbeat(
     edge_node.site_id = payload.site_id
     edge_node.hostname = payload.hostname
     edge_node.lan_ip = payload.lan_ip
+    edge_node.machine_id = payload.machine_id
+    edge_node.primary_mac = payload.primary_mac
     edge_node.bacnet_port = payload.bacnet_port
     edge_node.agent_version = payload.agent_version
     edge_node.ui_version = payload.ui_version
@@ -3008,6 +3058,8 @@ def receive_heartbeat(
             site_id=payload.site_id,
             hostname=payload.hostname,
             lan_ip=payload.lan_ip,
+            machine_id=payload.machine_id,
+            primary_mac=payload.primary_mac,
             bacnet_port=payload.bacnet_port,
             agent_version=payload.agent_version,
             ui_version=payload.ui_version,
@@ -3054,7 +3106,7 @@ def list_gateways(
     # Same site scoping as /api/ui/gateways: scoped operators must not see
     # gateways belonging to other organizations or sites.
     return [
-        _gateway_out(edge_node, now)
+        _gateway_out(edge_node, now, db)
         for edge_node in db.scalars(_scoped_gateway_statement(db, auth)).all()
     ]
 

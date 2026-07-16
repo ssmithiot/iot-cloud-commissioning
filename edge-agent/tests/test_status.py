@@ -5,6 +5,17 @@ from iot_cx_agent.db import initialize_database, pending_trend_samples, queue_tr
 from iot_cx_agent.status import collect_status
 
 
+def test_collect_status_includes_physical_identity_fingerprint(monkeypatch, tmp_path: Path) -> None:
+    config = AgentConfig(gateway_id="GW082", site_id="site-1", cloud_url="https://cloud.example", sqlite_path=tmp_path / "agent.db")
+    monkeypatch.setattr("iot_cx_agent.status.detect_machine_id", lambda: "machine-gw082")
+    monkeypatch.setattr("iot_cx_agent.status.detect_primary_mac", lambda: "02:00:00:00:00:82")
+
+    status = collect_status(config, sqlite_db_ok=False)
+
+    assert status["machine_id"] == "machine-gw082"
+    assert status["primary_mac"] == "02:00:00:00:00:82"
+
+
 def test_collect_status_includes_lightweight_resource_metrics(tmp_path: Path) -> None:
     config = AgentConfig(gateway_id="GW001", site_id="site-1", cloud_url="https://cloud.example", sqlite_path=tmp_path / "agent.db")
 
