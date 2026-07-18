@@ -1564,7 +1564,7 @@ APP_SCRIPT = r"""
     }
     const actionLabel = update?.status === "failed" ? "Retry UI" : "Update UI";
     if (gatewayNeedsUiRelease(gateway)) {
-      return `${versionSummary}<small class="edge-app-update-notice">Edge UI ${edgeUiReleaseVersion} required (reported ${escapeHtml(uiVersion)})</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+      return `${versionSummary}<small class="edge-app-update-notice">Edge UI ${edgeUiReleaseVersion} required (reported ${escapeHtml(gateway.ui_version || "unknown")})</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
     }
     if (gatewayNeedsResourceHealthUpdate(gateway)) {
       return `${versionSummary}<small class="edge-app-update-notice">Health update required (${edgeResourceHealthMinimumVersion}+)</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
@@ -1687,7 +1687,7 @@ APP_SCRIPT = r"""
       site: `${gateway.site_name || ""} ${gateway.site_id || ""}`,
       address: gatewayAddress(gateway) || "",
       hostname: gateway.hostname,
-      version: edgeAppVersion(gateway),
+      version: edgeReleaseVersion(gateway),
       status: statusLabel(gateway),
       network_status_notes: gateway.network_status_notes || "",
       direct: gateway.direct_connect_available ? "configured" : "not configured",
@@ -1707,7 +1707,7 @@ APP_SCRIPT = r"""
       gateway.site_compact_address,
       gateway.site_address,
       gateway.hostname,
-      edgeAppVersion(gateway),
+      edgeReleaseVersion(gateway),
       statusLabel(gateway),
       gateway.network_status_notes,
       gateway.direct_connect_available ? "configured" : "not configured"

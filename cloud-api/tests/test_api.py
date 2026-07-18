@@ -427,6 +427,7 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
     assert 'function edgeReleaseVersion(gateway)' in response.text
     assert 'const versionSummary = `<strong>${escapeHtml(version)}</strong>`;' in response.text
+    assert "edgeAppVersion(gateway)" not in response.text
     assert 'Edge UI ${edgeUiReleaseVersion} required (reported ${escapeHtml(uiVersion)})' in response.text
     assert 'colspan="10"' in response.text
     assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
