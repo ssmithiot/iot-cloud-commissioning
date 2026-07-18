@@ -415,7 +415,7 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'data-sort="gateway_id"' in response.text
     assert 'data-sort="version"' in response.text
     assert 'data-sort="status"' in response.text
-    assert "edgeAppVersion(gateway)" in response.text
+    assert "edgeReleaseVersion(gateway)" in response.text
     assert 'id="select-all-gateway-updates"' in response.text
     assert 'id="update-selected-gateways"' in response.text
     assert 'data-select-update="${escapeHtml(gateway.gateway_id)}"' in response.text
@@ -423,12 +423,12 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'const edgeResourceHealthMinimumVersion = "0.1.6";' in response.text
     assert "return !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);" in response.text
     assert 'version.toLowerCase() !== "current"' in response.text
-    assert 'data-sort="version">Edge App</button>' in response.text
+    assert 'data-sort="version">Edge Release</button>' in response.text
     assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
     assert 'function edgeReleaseVersion(gateway)' in response.text
     assert 'const versionSummary = `<strong>${escapeHtml(version)}</strong>`;' in response.text
     assert "edgeAppVersion(gateway)" not in response.text
-    assert 'Edge UI ${edgeUiReleaseVersion} required (reported ${escapeHtml(uiVersion)})' in response.text
+    assert 'Edge UI ${edgeUiReleaseVersion} required (reported ${escapeHtml(gateway.ui_version || "unknown")})' in response.text
     assert 'colspan="10"' in response.text
     assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
     assert 'const dashboardGatewayCacheKey = "iot-cloud-dashboard-gateway-cache-v1";' in response.text

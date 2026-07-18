@@ -7027,7 +7027,7 @@ def app_html() -> str:
               <th><button class="sort-header" type="button" data-sort="site">Site</button></th>
               <th><button class="sort-header" type="button" data-sort="address">Address</button></th>
               <th><button class="sort-header" type="button" data-sort="hostname">Hostname</button></th>
-              <th><button class="sort-header" type="button" data-sort="version">Edge App</button></th>
+              <th><button class="sort-header" type="button" data-sort="version">Edge Release</button></th>
               <th><button class="sort-header" type="button" data-sort="status">Status</button></th>
               <th><button class="sort-header" type="button" data-sort="network_status_notes">Network<br>Notes</button></th>
               <th><button class="sort-header" type="button" data-sort="direct">Direct</button></th>
