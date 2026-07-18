@@ -3037,7 +3037,25 @@ def receive_heartbeat(
     edge_node.primary_mac = payload.primary_mac
     edge_node.bacnet_port = payload.bacnet_port
     edge_node.agent_version = payload.agent_version
-    edge_node.ui_version = payload.ui_version
+    # Older agents report the literal placeholder "current" for the local UI.
+    # Do not let that erase the verified UI-only release marker written when an
+    # updater request completes. A real reported version remains authoritative.
+    if payload.ui_version.strip().lower() != "current":
+        edge_node.ui_version = payload.ui_version
+    else:
+        completed_ui_release = db.scalar(
+            select(GatewayUpdateRequest.target_ui_version)
+            .where(
+                GatewayUpdateRequest.gateway_id == payload.gateway_id,
+                GatewayUpdateRequest.status == "completed",
+                GatewayUpdateRequest.update_scope == "ui_only",
+                GatewayUpdateRequest.target_ui_version.is_not(None),
+            )
+            .order_by(GatewayUpdateRequest.completed_at.desc())
+            .limit(1)
+        )
+        if completed_ui_release:
+            edge_node.ui_version = completed_ui_release
     edge_node.sqlite_db_ok = payload.sqlite_db_ok
     edge_node.queued_upload_count = payload.queued_upload_count
     edge_node.trend_pending_upload_count = payload.trend_pending_upload_count

@@ -753,7 +753,7 @@ def test_ui_gateway_heartbeat_trend_returns_ordered_history() -> None:
 
 
 def test_gateway_update_request_queue_claim_and_completion() -> None:
-    create_gateway_token("GW001")
+    raw_token = create_gateway_token("GW001")
 
     queued = client.post(
         "/api/ui/gateway-updates",
@@ -789,6 +789,15 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
         assert edge_node.ui_version == "0.1.7"
         assert edge_node.agent_version == "0.1.0"
         assert edge_node.site_id == "demo-site"
+
+    placeholder_heartbeat = heartbeat_payload("GW001")
+    placeholder_heartbeat["ui_version"] = "current"
+    heartbeat = client.post("/api/edge/heartbeat", headers=auth_headers(raw_token), json=placeholder_heartbeat)
+    assert heartbeat.status_code == 200
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
+        assert edge_node is not None
+        assert edge_node.ui_version == "0.1.7"
 
 
 def test_configure_gateway_redirects_to_cloud_tunnel() -> None:
