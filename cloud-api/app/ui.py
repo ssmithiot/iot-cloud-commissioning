@@ -1556,7 +1556,7 @@ APP_SCRIPT = r"""
   function gatewayVersionCell(gateway) {
     const agentVersion = edgeAppVersion(gateway);
     const uiVersion = String(gateway.ui_version || "unknown").trim() || "unknown";
-    const versionSummary = `<strong>Agent ${escapeHtml(agentVersion)}</strong><small>UI ${escapeHtml(uiVersion)}</small>`;
+    const versionSummary = `<strong>${escapeHtml(agentVersion)} / ${escapeHtml(uiVersion)}</strong>`;
     const update = gatewayUpdateState(gateway.gateway_id);
     if (update?.status === "queued" || update?.status === "running") {
       return `${versionSummary}<small>Update ${escapeHtml(update.status)}</small>`;
