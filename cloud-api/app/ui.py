@@ -1522,8 +1522,10 @@ APP_SCRIPT = r"""
     return `<a class="button table-command secondary" href="/api/ui/gateways/${encodeURIComponent(gateway.gateway_id)}/direct-connect" data-direct-connect="${escapeHtml(gateway.gateway_id)}">Direct Connect</a>`;
   }
 
-  function edgeAppVersion(gateway) {
-    const version = String(gateway.agent_version || "").trim();
+  function edgeReleaseVersion(gateway) {
+    // This is the operator-facing Edge release, advanced for every approved
+    // Edge UI or agent release. Component build values remain diagnostics.
+    const version = String(gateway.ui_version || "").trim();
     return version && version.toLowerCase() !== "current" ? version : "Update required";
   }
 
@@ -1542,7 +1544,7 @@ APP_SCRIPT = r"""
   }
 
   function gatewayRequiresUpdate(gateway) {
-    return gatewayNeedsUiRelease(gateway) || edgeAppVersion(gateway) === "Update required" || gatewayNeedsResourceHealthUpdate(gateway);
+    return gatewayNeedsUiRelease(gateway) || edgeReleaseVersion(gateway) === "Update required" || gatewayNeedsResourceHealthUpdate(gateway);
   }
 
   function gatewayNeedsUiRelease(gateway) {
@@ -1554,9 +1556,8 @@ APP_SCRIPT = r"""
   }
 
   function gatewayVersionCell(gateway) {
-    const agentVersion = edgeAppVersion(gateway);
-    const uiVersion = String(gateway.ui_version || "unknown").trim() || "unknown";
-    const versionSummary = `<strong>${escapeHtml(agentVersion)} / ${escapeHtml(uiVersion)}</strong>`;
+    const version = edgeReleaseVersion(gateway);
+    const versionSummary = `<strong>${escapeHtml(version)}</strong>`;
     const update = gatewayUpdateState(gateway.gateway_id);
     if (update?.status === "queued" || update?.status === "running") {
       return `${versionSummary}<small>Update ${escapeHtml(update.status)}</small>`;
@@ -1568,7 +1569,7 @@ APP_SCRIPT = r"""
     if (gatewayNeedsResourceHealthUpdate(gateway)) {
       return `${versionSummary}<small class="edge-app-update-notice">Health update required (${edgeResourceHealthMinimumVersion}+)</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
     }
-    if (agentVersion !== "Update required") {
+    if (version !== "Update required") {
       return versionSummary;
     }
     return `${versionSummary}<button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;

@@ -10,5 +10,6 @@ Every release note must state:
 - rollback point and rollback method; and
 - explicitly preserved gateway/site data.
 
-Edge UI and edge-agent versions are independent. A UI-only rollout must not
-change the reported agent version.
+The dashboard displays one inclusive **Edge Release** number. It advances for
+every approved Edge UI or edge-agent release. Component build values remain
+available for diagnostics but do not define the fleet release number.
