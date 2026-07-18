@@ -425,6 +425,8 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'version.toLowerCase() !== "current"' in response.text
     assert 'data-sort="version">Edge App</button>' in response.text
     assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
+    assert 'const versionSummary = `<strong>Agent ${escapeHtml(agentVersion)}</strong><small>UI ${escapeHtml(uiVersion)}</small>`;' in response.text
+    assert 'Edge UI ${edgeUiReleaseVersion} required (reported ${escapeHtml(uiVersion)})' in response.text
     assert 'colspan="10"' in response.text
     assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
     assert 'const dashboardGatewayCacheKey = "iot-cloud-dashboard-gateway-cache-v1";' in response.text
