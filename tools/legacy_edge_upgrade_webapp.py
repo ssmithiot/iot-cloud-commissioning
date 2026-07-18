@@ -43,6 +43,7 @@ NESTED_UPLOAD_CHUNK_SIZE = 3000
 # the proven edge UI writer and the agent that delegates queued jobs to it.
 # Nothing polls this list to auto-update a gateway when it reconnects.
 UPDATE_AGENT_PHASES = (0, 1, 2, 3, 4, 5, 7, 9, 10, 11)
+UI_ONLY_PHASES = (0, 1, 2, 3, 4, 5)
 JOBS: dict[str, "UpgradeJob"] = {}
 JOBS_LOCK = threading.Lock()
 WORKER_STATUS: dict[str, object] = {
@@ -299,7 +300,9 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
         ui_username=os.environ.get("EDGE_UI_USERNAME", "admin"),
         ui_password=defaults["EDGE_UI_PASSWORD"],
         cloud_portal_verified=True,
-        selected_phases=UPDATE_AGENT_PHASES,
+        # UI-only release jobs never provision a gateway or change the agent,
+        # gateway/site metadata, address, IP, credentials, or cloud token.
+        selected_phases=UI_ONLY_PHASES if claimed.get("update_scope") == "ui_only" else UPDATE_AGENT_PHASES,
     )
     if not request.cradlepoint_host:
         cloud_json_request(

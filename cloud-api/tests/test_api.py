@@ -765,6 +765,8 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     request = queued.json()[0]
     assert request["gateway_id"] == "GW001"
     assert request["status"] == "queued"
+    assert request["update_scope"] == "ui_only"
+    assert request["target_ui_version"] == "0.1.7"
 
     listed = client.get("/api/admin/gateway-updates", headers=admin_headers())
     assert listed.status_code == 200
@@ -781,6 +783,12 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     )
     assert completed.status_code == 200
     assert completed.json()["status"] == "completed"
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
+        assert edge_node is not None
+        assert edge_node.ui_version == "0.1.7"
+        assert edge_node.agent_version == "0.1.0"
+        assert edge_node.site_id == "demo-site"
 
 
 def test_configure_gateway_redirects_to_cloud_tunnel() -> None:

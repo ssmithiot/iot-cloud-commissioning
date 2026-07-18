@@ -253,6 +253,8 @@ class GatewayUpdateRequest(Base):
         index=True,
     )
     requested_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    update_scope: Mapped[str] = mapped_column(String(20), nullable=False, default="agent")
+    target_ui_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="queued", index=True)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

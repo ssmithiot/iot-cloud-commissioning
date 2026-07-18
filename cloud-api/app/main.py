@@ -422,6 +422,9 @@ def _gateway_update_out(update: GatewayUpdateRequest, edge_node: EdgeNode) -> di
         "gateway_host": edge_node.lan_ip,
         "cradlepoint_host": (site.direct_connect_host or site.cradlepoint_ip or site.external_ip) if site else None,
         "agent_version": edge_node.agent_version,
+        "ui_version": edge_node.ui_version,
+        "update_scope": update.update_scope,
+        "target_ui_version": update.target_ui_version,
         "status": update.status,
         "requested_by": update.requested_by,
         "requested_at": update.requested_at,
@@ -1715,6 +1718,8 @@ def ui_request_gateway_updates(
             existing = GatewayUpdateRequest(
                 gateway_id=gateway_id,
                 requested_by=auth.email or "admin-token",
+                update_scope=payload.update_scope,
+                target_ui_version=payload.target_ui_version if payload.update_scope == "ui_only" else None,
                 status="queued",
                 requested_at=now,
             )
@@ -3192,6 +3197,12 @@ def admin_complete_gateway_update(
     update.status = payload.status
     update.error_message = payload.error_message
     update.completed_at = utc_now()
+    if payload.status == "completed" and update.update_scope == "ui_only" and update.target_ui_version:
+        # A successful UI-only deployment updates only this release marker.
+        # Gateway/site identity, address, IP, tokens, and agent settings are
+        # intentionally outside this workflow.
+        edge_node = _get_gateway_with_site_or_404(db, update.gateway_id)
+        edge_node.ui_version = update.target_ui_version
     db.commit()
     return _gateway_update_out(update, _get_gateway_with_site_or_404(db, update.gateway_id))
 

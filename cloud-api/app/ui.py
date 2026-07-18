@@ -56,6 +56,7 @@ APP_SCRIPT = r"""
   const trendChartThemeStorageKey = "iot-cloud-trend-chart-theme";
   const trendChartRangeStorageKey = "iot-cloud-trend-chart-range";
   const edgeResourceHealthMinimumVersion = "0.1.6";
+  const edgeUiReleaseVersion = "0.1.7";
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
   const pointTableColumns = [
@@ -1541,7 +1542,11 @@ APP_SCRIPT = r"""
   }
 
   function gatewayRequiresUpdate(gateway) {
-    return edgeAppVersion(gateway) === "Update required" || gatewayNeedsResourceHealthUpdate(gateway);
+    return gatewayNeedsUiRelease(gateway) || edgeAppVersion(gateway) === "Update required" || gatewayNeedsResourceHealthUpdate(gateway);
+  }
+
+  function gatewayNeedsUiRelease(gateway) {
+    return !versionAtLeast(gateway.ui_version, edgeUiReleaseVersion);
   }
 
   function gatewayUpdateState(gatewayId) {
@@ -1554,7 +1559,10 @@ APP_SCRIPT = r"""
     if (update?.status === "queued" || update?.status === "running") {
       return `<strong>Update ${escapeHtml(update.status)}</strong>`;
     }
-    const actionLabel = update?.status === "failed" ? "Retry" : "Update";
+    const actionLabel = update?.status === "failed" ? "Retry UI" : "Update UI";
+    if (gatewayNeedsUiRelease(gateway)) {
+      return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Edge UI ${edgeUiReleaseVersion} required (reported ${escapeHtml(gateway.ui_version || "unknown")})</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+    }
     if (gatewayNeedsResourceHealthUpdate(gateway)) {
       return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Health update required (${edgeResourceHealthMinimumVersion}+)</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
     }
@@ -1601,11 +1609,11 @@ APP_SCRIPT = r"""
     try {
       await api("/api/ui/gateway-updates", {
         method: "POST",
-        body: JSON.stringify({ gateway_ids: ids })
+        body: JSON.stringify({ gateway_ids: ids, update_scope: "ui_only", target_ui_version: edgeUiReleaseVersion })
       });
       selectedGatewayUpdateIds.clear();
       await refreshGatewayUpdates();
-      setText("status", `Queued ${ids.length} application update${ids.length === 1 ? "" : "s"}. The local legacy updater will process them.`);
+      setText("status", `Queued ${ids.length} Edge UI ${edgeUiReleaseVersion} update${ids.length === 1 ? "" : "s"}. The legacy updater will run UI-only phases.`);
       renderGatewayList();
     } catch (error) {
       setText("status", errorMessage(error), true);
