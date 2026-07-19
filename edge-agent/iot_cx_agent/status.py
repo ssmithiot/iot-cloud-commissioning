@@ -87,6 +87,20 @@ def resource_metrics(sqlite_path: Path) -> dict[str, int | float | None]:
     }
 
 
+def network_counters() -> dict[str, int | None]:
+    """Read host network byte counters without adding a runtime dependency."""
+    try:
+        rx = tx = 0
+        for line in Path("/proc/net/dev").read_text(encoding="utf-8").splitlines()[2:]:
+            _, values = line.split(":", 1)
+            fields = values.split()
+            rx += int(fields[0])
+            tx += int(fields[8])
+        return {"rx_bytes": rx, "tx_bytes": tx}
+    except (OSError, ValueError, IndexError):
+        return {"rx_bytes": None, "tx_bytes": None}
+
+
 def collect_status(config: AgentConfig, sqlite_db_ok: bool = True) -> dict[str, object]:
     trend_queue = trend_queue_status(config.sqlite_path) if sqlite_db_ok else {
         "pending_count": 0,

@@ -9,6 +9,7 @@ from iot_cx_agent import __version__
 
 DEFAULT_CONFIG_PATH = Path("/etc/iot-cx-agent/agent.yaml")
 DEFAULT_SQLITE_PATH = Path("/var/lib/iot-cx-agent/edge.db")
+DEFAULT_EDGE_TRENDS_DB_PATH = Path("/home/swadmin/edge-bacnet-ui-v2/data/edge-trends.db")
 DEFAULT_UI_VERSION = "0.1.0"
 DEFAULT_BACNET_PORT = 47814
 BAC_RTR_BACNET_PORT = 47809
@@ -50,6 +51,10 @@ class AgentConfig:
     agent_version: str = __version__
     ui_version: str = DEFAULT_UI_VERSION
     sqlite_path: Path = DEFAULT_SQLITE_PATH
+    # The Edge UI owns this separate database.  Disabled by default so an
+    # agent upgrade never starts a new BACnet workload without explicit setup.
+    local_edge_trends_enabled: bool = False
+    edge_trends_db_path: Path = DEFAULT_EDGE_TRENDS_DB_PATH
     gateway_api_token: str | None = None
     edge_agent_write_token: str | None = None
 
@@ -131,6 +136,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
 
     bacnet = raw.get("bacnet") or {}
     sqlite_path = Path(raw.get("sqlite_path", DEFAULT_SQLITE_PATH))
+    edge_trends_db_path = Path(raw.get("edge_trends_db_path", DEFAULT_EDGE_TRENDS_DB_PATH))
     configured_port = raw.get("bacnet_default_port", bacnet.get("default_port", DEFAULT_BACNET_PORT))
     profile, bacnet_port = resolve_bacnet_port(
         profile=os.getenv("BACNET_ROUTER_PROFILE") or bacnet.get("router_profile"),
@@ -164,6 +170,8 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         agent_version=__version__,
         ui_version=_configured_ui_version(raw.get("ui_version")),
         sqlite_path=sqlite_path,
+        local_edge_trends_enabled=bool(raw.get("local_edge_trends_enabled", False)),
+        edge_trends_db_path=edge_trends_db_path,
         gateway_api_token=os.getenv("GATEWAY_API_TOKEN") or raw.get("gateway_api_token"),
         edge_agent_write_token=os.getenv("EDGE_AGENT_WRITE_TOKEN") or raw.get("edge_agent_write_token"),
     )

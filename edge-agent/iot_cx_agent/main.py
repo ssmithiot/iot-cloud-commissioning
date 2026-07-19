@@ -13,6 +13,7 @@ from iot_cx_agent.jobs import process_next_job
 from iot_cx_agent.status import collect_status, utc_timestamp
 from iot_cx_agent.tunnel import run_tunnel_forever
 from iot_cx_agent.trends import sample_configured_trends, upload_pending_trend_samples
+from iot_cx_agent.local_trends import sample_local_edge_trends
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -62,6 +63,7 @@ def run_once(config: AgentConfig) -> bool:
         try:
             sample_configured_trends(config)
             upload_pending_trend_samples(config)
+            sample_local_edge_trends(config)
         except requests.RequestException as exc:
             logger.warning("Trend sync failed: %s", exc)
         except Exception:
