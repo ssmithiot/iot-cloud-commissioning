@@ -28,6 +28,13 @@ def checkpoint_commands(edge_release: str) -> list[str]:
     ]
 
 
+def checkpoint_inventory_commands() -> list[str]:
+    return [
+        f"test -d {RECOVERY_ROOT} || mkdir -p {RECOVERY_ROOT}",
+        f"find {RECOVERY_ROOT} -mindepth 2 -maxdepth 2 -name 'pre-update-code.tar.gz' -printf '%h %s bytes\\n' | sort || true",
+    ]
+
+
 def code_restore_commands(edge_release: str) -> list[str]:
     release = release_name(edge_release)
     folder = f"{RECOVERY_ROOT}/{release}"

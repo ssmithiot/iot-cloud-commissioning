@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools.gateway_recovery import checkpoint_commands, code_restore_commands, release_name
+from tools.gateway_recovery import checkpoint_commands, checkpoint_inventory_commands, code_restore_commands, release_name
 
 
 def test_checkpoint_is_code_only_and_preserves_site_data() -> None:
@@ -23,3 +23,9 @@ def test_restore_requires_checked_code_archive_and_not_full_folder_extract() -> 
 def test_release_name_rejects_paths() -> None:
     with pytest.raises(ValueError):
         release_name("../../bad")
+
+
+def test_inventory_lists_only_code_only_checkpoint_archives() -> None:
+    command = checkpoint_inventory_commands()[1]
+    assert "pre-update-code.tar.gz" in command
+    assert "-maxdepth 2" in command

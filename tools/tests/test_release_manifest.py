@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from tools.release_manifest import load_manifest, sha256_file
+from tools.release_preflight import validate_edge_source
 
 
 def manifest_data() -> dict[str, object]:
@@ -36,3 +37,17 @@ def test_manifest_loads_and_hashes_artifact(tmp_path: Path) -> None:
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest_data()), encoding="utf-8")
     assert load_manifest(path).edge_release == "0.1.8"
+
+
+def test_edge_source_preflight_rejects_dirty_or_wrong_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest_data()), encoding="utf-8")
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git(_root: Path, *args: str) -> str:
+        calls.append(args)
+        return {("status", "--porcelain"): "", ("rev-parse", "HEAD"): "abc", ("rev-parse", "edge-ui-v0.1.8"): "abc"}[args]
+
+    monkeypatch.setattr("tools.release_preflight.git", fake_git)
+    assert validate_edge_source(path, tmp_path) == "abc"
+    assert calls

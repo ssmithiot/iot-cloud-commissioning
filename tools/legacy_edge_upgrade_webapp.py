@@ -24,7 +24,9 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
 
-from tools.gateway_recovery import checkpoint_commands, code_restore_commands, release_name
+from tools.gateway_recovery import checkpoint_commands, checkpoint_inventory_commands, code_restore_commands, release_name
+from tools.release_preflight import validate_edge_source
+from tools.release_manifest import load_manifest
 
 try:
     import paramiko
@@ -38,6 +40,7 @@ DEFAULT_REPO_PATH = "/home/swadmin/iot-cloud-commissioning"
 DEFAULT_UI_SOURCE = r"C:\Dev\edge-bacnet-ui-v2"
 DEFAULT_EDGE_UPDATE_REF = "32eaf06"
 DEFAULT_EDGE_RELEASE = "0.1.7"
+DEFAULT_RELEASE_MANIFEST = str(Path(__file__).resolve().parent / "releases" / "manifests" / "edge-0.1.7.json")
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
@@ -104,6 +107,7 @@ class UpgradeRequest:
     selected_phases: tuple[int, ...] = tuple(range(len(PHASES)))
     edge_agent_write_token: str = ""
     edge_release: str = DEFAULT_EDGE_RELEASE
+    release_manifest_path: str = DEFAULT_RELEASE_MANIFEST
 
 
 @dataclass
@@ -505,6 +509,9 @@ def form_page(message: str = "") -> bytes:
   <label>Edge Release
     <input name="edge_release" value="{DEFAULT_EDGE_RELEASE}" pattern="[0-9]+\\.[0-9]+\\.[0-9]+" required>
   </label>
+  <label class="wide">Release manifest
+    <input name="release_manifest_path" value="{escape(DEFAULT_RELEASE_MANIFEST, quote=True)}" required>
+  </label>
   <label class="wide">Repo path on gateway
     <input name="remote_repo" value="{DEFAULT_REPO_PATH}" required>
   </label>
@@ -548,6 +555,7 @@ def form_page(message: str = "") -> bytes:
       <button id="continue-button" class="secondary" type="button" disabled>Continue</button>
       <button id="rollback-button" class="danger" type="button" disabled>Restore legacy full backup</button>
       <button id="rollback-code-button" class="danger" type="button" disabled>Restore code-only checkpoint</button>
+      <button id="checkpoint-list-button" type="button" disabled>List code-only checkpoints</button>
       <button id="disable-agent-button" class="danger" type="button" disabled>Disable Agent</button>
     </div>
   </section>
@@ -562,6 +570,7 @@ const startButton = document.getElementById("start-button");
 const continueButton = document.getElementById("continue-button");
 const rollbackButton = document.getElementById("rollback-button");
 const rollbackCodeButton = document.getElementById("rollback-code-button");
+const checkpointListButton = document.getElementById("checkpoint-list-button");
 const disableAgentButton = document.getElementById("disable-agent-button");
 const log = document.getElementById("log");
 const phaseChecks = () => [...document.querySelectorAll('input[name="selected_phases"]')];
@@ -590,6 +599,7 @@ async function poll() {{
   continueButton.disabled = body.status !== "waiting";
   rollbackButton.disabled = !body.can_rollback;
   rollbackCodeButton.disabled = !body.can_rollback;
+  checkpointListButton.disabled = !jobId;
   disableAgentButton.disabled = !body.can_disable_agent;
   startButton.disabled = body.status === "running" || body.status === "waiting";
   startButton.textContent = body.status === "complete" || body.status === "failed" ? "Start new run" : "Start inspect";
@@ -642,6 +652,12 @@ rollbackCodeButton.addEventListener("click", async () => {{
   poll();
 }});
 
+checkpointListButton.addEventListener("click", async () => {{
+  checkpointListButton.disabled = true;
+  await post("/api/list-code-checkpoints", new URLSearchParams({{ job_id: jobId }}));
+  poll();
+}});
+
 disableAgentButton.addEventListener("click", async () => {{
   if (!confirm("Stop and disable iot-cx-agent.service on this gateway?")) return;
   disableAgentButton.disabled = true;
@@ -691,6 +707,7 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         cloud_portal_verified=parse_bool(fields, "cloud_portal_verified"),
         selected_phases=selected_phases,
         edge_release=release_name(value(fields, "edge_release") or DEFAULT_EDGE_RELEASE),
+        release_manifest_path=value(fields, "release_manifest_path") or DEFAULT_RELEASE_MANIFEST,
     )
     required = [
         ("Gateway number", request.gateway_id),
@@ -704,6 +721,9 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
     missing = [name for name, field_value in required if not field_value]
     if missing:
         raise ValueError(f"Missing required field(s): {', '.join(missing)}")
+    manifest = load_manifest(Path(request.release_manifest_path))
+    if request.edge_release != manifest.edge_release:
+        raise ValueError(f"Edge Release {request.edge_release} does not match manifest Edge Release {manifest.edge_release}")
     return request
 
 
@@ -1088,8 +1108,9 @@ def disable_agent_commands() -> list[tuple[str, str, bool]]:
     ]
 
 
-def create_update_zip(source_folder: str) -> Path:
+def create_update_zip(source_folder: str, release_manifest_path: str) -> Path:
     source = Path(source_folder)
+    validate_edge_source(Path(release_manifest_path), source)
     required = ["app.py", "edge_program_engine.py", "templates", "README.md", "requirements.txt"]
     missing = [item for item in required if not (source / item).exists()]
     if missing:
@@ -1447,7 +1468,7 @@ class LegacyUpgradeRunner:
             self.log.append(f"[dry-run] Would build ZIP from {self.request.ui_source_folder} and upload to {REMOTE_ZIP_PATH}.\n")
             self.log.append(f"[dry-run] Required contents: app.py, templates/, README.md, requirements.txt, start.sh\n")
             return
-        zip_path = create_update_zip(self.request.ui_source_folder)
+        zip_path = create_update_zip(self.request.ui_source_folder, self.request.release_manifest_path)
         self.log.append(f"Built local UI update ZIP: {zip_path} ({zip_path.stat().st_size} bytes)\n")
         self.upload_file(zip_path, REMOTE_ZIP_PATH)
         output = self.run_commands([("verify uploaded UI zip", f"ls -lh {REMOTE_ZIP_PATH} && test -s {REMOTE_ZIP_PATH}", False)])
@@ -1622,6 +1643,10 @@ class LegacyEdgeUpgradeHandler(BaseHTTPRequestHandler):
                 edge_release = value(fields, "edge_release")
                 threading.Thread(target=run_job_commands, args=(job_id, [(f"code-only checkpoint {index + 1}", command, index in {1, 6, 7}) for index, command in enumerate(code_restore_commands(edge_release))], "Restore Edge UI code-only checkpoint"), daemon=True).start()
                 self.respond_json({"ok": True, "scope": "code-only; data/start.sh/credentials/site settings preserved"})
+                return
+            if parsed.path == "/api/list-code-checkpoints":
+                threading.Thread(target=run_job_commands, args=(job_id, [(f"code-only checkpoint inventory {index + 1}", command, False) for index, command in enumerate(checkpoint_inventory_commands())], "List Edge UI code-only checkpoints"), daemon=True).start()
+                self.respond_json({"ok": True})
                 return
             if parsed.path == "/api/disable-agent":
                 threading.Thread(target=run_job_commands, args=(job_id, disable_agent_commands(), "Disable cloud agent"), daemon=True).start()
