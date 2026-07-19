@@ -24,6 +24,10 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
 
+from tools.gateway_recovery import checkpoint_commands, checkpoint_inventory_commands, code_restore_commands, release_name
+from tools.release_preflight import validate_edge_source
+from tools.release_manifest import load_manifest
+
 try:
     import paramiko
 except ImportError:  # pragma: no cover - shown in browser and terminal at runtime
@@ -35,6 +39,8 @@ DEFAULT_CLOUD_URL = "https://iot-cloud-api-dev.onrender.com"
 DEFAULT_REPO_PATH = "/home/swadmin/iot-cloud-commissioning"
 DEFAULT_UI_SOURCE = r"C:\Dev\edge-bacnet-ui-v2"
 DEFAULT_EDGE_UPDATE_REF = "32eaf06"
+DEFAULT_EDGE_RELEASE = "0.1.7"
+DEFAULT_RELEASE_MANIFEST = str(Path(__file__).resolve().parent / "releases" / "manifests" / "edge-0.1.7.json")
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
@@ -100,6 +106,8 @@ class UpgradeRequest:
     cloud_portal_verified: bool = False
     selected_phases: tuple[int, ...] = tuple(range(len(PHASES)))
     edge_agent_write_token: str = ""
+    edge_release: str = DEFAULT_EDGE_RELEASE
+    release_manifest_path: str = DEFAULT_RELEASE_MANIFEST
 
 
 @dataclass
@@ -498,6 +506,12 @@ def form_page(message: str = "") -> bytes:
   <label>Git ref
     <input name="git_ref" value="{DEFAULT_EDGE_UPDATE_REF}" required>
   </label>
+  <label>Edge Release
+    <input name="edge_release" value="{DEFAULT_EDGE_RELEASE}" pattern="[0-9]+\\.[0-9]+\\.[0-9]+" required>
+  </label>
+  <label class="wide">Release manifest
+    <input name="release_manifest_path" value="{escape(DEFAULT_RELEASE_MANIFEST, quote=True)}" required>
+  </label>
   <label class="wide">Repo path on gateway
     <input name="remote_repo" value="{DEFAULT_REPO_PATH}" required>
   </label>
@@ -539,7 +553,9 @@ def form_page(message: str = "") -> bytes:
     <div id="phases"></div>
     <div class="actions">
       <button id="continue-button" class="secondary" type="button" disabled>Continue</button>
-      <button id="rollback-button" class="danger" type="button" disabled>Rollback UI</button>
+      <button id="rollback-button" class="danger" type="button" disabled>Restore legacy full backup</button>
+      <button id="rollback-code-button" class="danger" type="button" disabled>Restore code-only checkpoint</button>
+      <button id="checkpoint-list-button" type="button" disabled>List code-only checkpoints</button>
       <button id="disable-agent-button" class="danger" type="button" disabled>Disable Agent</button>
     </div>
   </section>
@@ -553,6 +569,8 @@ const form = document.getElementById("upgrade-form");
 const startButton = document.getElementById("start-button");
 const continueButton = document.getElementById("continue-button");
 const rollbackButton = document.getElementById("rollback-button");
+const rollbackCodeButton = document.getElementById("rollback-code-button");
+const checkpointListButton = document.getElementById("checkpoint-list-button");
 const disableAgentButton = document.getElementById("disable-agent-button");
 const log = document.getElementById("log");
 const phaseChecks = () => [...document.querySelectorAll('input[name="selected_phases"]')];
@@ -580,6 +598,8 @@ async function poll() {{
   renderPhases(body.phases || []);
   continueButton.disabled = body.status !== "waiting";
   rollbackButton.disabled = !body.can_rollback;
+  rollbackCodeButton.disabled = !body.can_rollback;
+  checkpointListButton.disabled = !jobId;
   disableAgentButton.disabled = !body.can_disable_agent;
   startButton.disabled = body.status === "running" || body.status === "waiting";
   startButton.textContent = body.status === "complete" || body.status === "failed" ? "Start new run" : "Start inspect";
@@ -621,6 +641,20 @@ rollbackButton.addEventListener("click", async () => {{
   if (!backup) return;
   rollbackButton.disabled = true;
   await post("/api/rollback-ui", new URLSearchParams({{ job_id: jobId, backup }}));
+  poll();
+}});
+
+rollbackCodeButton.addEventListener("click", async () => {{
+  const edgeRelease = prompt("Edge Release checkpoint to restore, for example 0.1.7. This restores code only and preserves data, start.sh, credentials, and site settings.");
+  if (!edgeRelease) return;
+  rollbackCodeButton.disabled = true;
+  await post("/api/rollback-code", new URLSearchParams({{ job_id: jobId, edge_release: edgeRelease }}));
+  poll();
+}});
+
+checkpointListButton.addEventListener("click", async () => {{
+  checkpointListButton.disabled = true;
+  await post("/api/list-code-checkpoints", new URLSearchParams({{ job_id: jobId }}));
   poll();
 }});
 
@@ -672,6 +706,8 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         skip_edge_ui_stop=parse_bool(fields, "skip_edge_ui_stop"),
         cloud_portal_verified=parse_bool(fields, "cloud_portal_verified"),
         selected_phases=selected_phases,
+        edge_release=release_name(value(fields, "edge_release") or DEFAULT_EDGE_RELEASE),
+        release_manifest_path=value(fields, "release_manifest_path") or DEFAULT_RELEASE_MANIFEST,
     )
     required = [
         ("Gateway number", request.gateway_id),
@@ -685,6 +721,9 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
     missing = [name for name, field_value in required if not field_value]
     if missing:
         raise ValueError(f"Missing required field(s): {', '.join(missing)}")
+    manifest = load_manifest(Path(request.release_manifest_path))
+    if request.edge_release != manifest.edge_release:
+        raise ValueError(f"Edge Release {request.edge_release} does not match manifest Edge Release {manifest.edge_release}")
     return request
 
 
@@ -878,13 +917,15 @@ def inspect_commands() -> list[tuple[str, str, bool]]:
     ]
 
 
-def backup_commands() -> list[tuple[str, str, bool]]:
-    return [
+def backup_commands(edge_release: str = DEFAULT_EDGE_RELEASE) -> list[tuple[str, str, bool]]:
+    commands = [
         ("edge UI enabled", "systemctl is-enabled edge-bacnet-ui.service 2>/dev/null || true", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service 2>/dev/null || true", False),
         ("create UI backup", 'cd /home/swadmin && tar -czf "edge-bacnet-ui-v2.backup.$(date +%Y%m%d-%H%M%S).tar.gz" edge-bacnet-ui-v2', False),
         ("list UI backups", "cd /home/swadmin && ls -lh edge-bacnet-ui-v2.backup.*.tar.gz", False),
     ]
+    commands.extend((f"code-only checkpoint {index + 1}", command, False) for index, command in enumerate(checkpoint_commands(edge_release)))
+    return commands
 
 
 def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
@@ -900,7 +941,7 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         ("verify normalized templates", r"""test -d /tmp/edge-bacnet-ui-v2-update/templates && ! find /tmp/edge-bacnet-ui-v2-update -maxdepth 1 -name 'templates\*' | grep -q . && ls -lah /tmp/edge-bacnet-ui-v2-update/templates""", False),
         stop_command,
         ("confirm edge UI stopped", "systemctl is-active edge-bacnet-ui.service || true", False),
-        ("apply UI files", "cp /tmp/edge-bacnet-ui-v2-update/app.py /home/swadmin/edge-bacnet-ui-v2/app.py && cp /tmp/edge-bacnet-ui-v2-update/README.md /home/swadmin/edge-bacnet-ui-v2/README.md && cp /tmp/edge-bacnet-ui-v2-update/requirements.txt /home/swadmin/edge-bacnet-ui-v2/requirements.txt && cp /tmp/edge-bacnet-ui-v2-update/start.sh /home/swadmin/edge-bacnet-ui-v2/start.sh && rm -rf /home/swadmin/edge-bacnet-ui-v2/templates && cp -a /tmp/edge-bacnet-ui-v2-update/templates /home/swadmin/edge-bacnet-ui-v2/templates", False),
+        ("apply code-only UI files", "cp /tmp/edge-bacnet-ui-v2-update/app.py /home/swadmin/edge-bacnet-ui-v2/app.py && cp /tmp/edge-bacnet-ui-v2-update/edge_program_engine.py /home/swadmin/edge-bacnet-ui-v2/edge_program_engine.py && cp /tmp/edge-bacnet-ui-v2-update/README.md /home/swadmin/edge-bacnet-ui-v2/README.md && cp /tmp/edge-bacnet-ui-v2-update/requirements.txt /home/swadmin/edge-bacnet-ui-v2/requirements.txt && rm -rf /home/swadmin/edge-bacnet-ui-v2/templates && cp -a /tmp/edge-bacnet-ui-v2-update/templates /home/swadmin/edge-bacnet-ui-v2/templates", False),
         ("verify UI file ownership", "find /home/swadmin/edge-bacnet-ui-v2 -maxdepth 2 \\( ! -user swadmin -o ! -group swadmin \\) -print | head -20 || true", False),
         ("preserve start.sh executable", "chmod +x /home/swadmin/edge-bacnet-ui-v2/start.sh", False),
         ("verify replaced templates", "ls -lah /home/swadmin/edge-bacnet-ui-v2/templates", False),
@@ -1067,16 +1108,17 @@ def disable_agent_commands() -> list[tuple[str, str, bool]]:
     ]
 
 
-def create_update_zip(source_folder: str) -> Path:
+def create_update_zip(source_folder: str, release_manifest_path: str) -> Path:
     source = Path(source_folder)
-    required = ["app.py", "templates", "README.md", "requirements.txt", "start.sh"]
+    validate_edge_source(Path(release_manifest_path), source)
+    required = ["app.py", "edge_program_engine.py", "templates", "README.md", "requirements.txt"]
     missing = [item for item in required if not (source / item).exists()]
     if missing:
         raise RuntimeError(f"Local BACnet UI source folder is missing: {', '.join(missing)}")
     temp_dir = Path(tempfile.mkdtemp(prefix="legacy-edge-upgrade-"))
     zip_path = temp_dir / "edge-bacnet-ui-v2-update.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file_name in ["app.py", "README.md", "requirements.txt", "start.sh"]:
+        for file_name in ["app.py", "edge_program_engine.py", "README.md", "requirements.txt"]:
             archive.write(source / file_name, arcname=file_name)
         for path in (source / "templates").rglob("*"):
             if path.is_file():
@@ -1331,7 +1373,7 @@ class LegacyUpgradeRunner:
                 output = self.run_commands(inspect_commands(), stop_on_failure=False)
                 self.validate_inspection(output)
             elif index == 1:
-                output = self.run_commands(backup_commands())
+                output = self.run_commands(backup_commands(self.request.edge_release))
                 backup = self.extract_latest_backup(output)
                 with JOBS_LOCK:
                     JOBS[self.job_id].backup_filename = backup
@@ -1426,7 +1468,7 @@ class LegacyUpgradeRunner:
             self.log.append(f"[dry-run] Would build ZIP from {self.request.ui_source_folder} and upload to {REMOTE_ZIP_PATH}.\n")
             self.log.append(f"[dry-run] Required contents: app.py, templates/, README.md, requirements.txt, start.sh\n")
             return
-        zip_path = create_update_zip(self.request.ui_source_folder)
+        zip_path = create_update_zip(self.request.ui_source_folder, self.request.release_manifest_path)
         self.log.append(f"Built local UI update ZIP: {zip_path} ({zip_path.stat().st_size} bytes)\n")
         self.upload_file(zip_path, REMOTE_ZIP_PATH)
         output = self.run_commands([("verify uploaded UI zip", f"ls -lh {REMOTE_ZIP_PATH} && test -s {REMOTE_ZIP_PATH}", False)])
@@ -1595,6 +1637,15 @@ class LegacyEdgeUpgradeHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/rollback-ui":
                 backup = value(fields, "backup")
                 threading.Thread(target=run_job_commands, args=(job_id, rollback_commands(backup), "Rollback local BACnet UI"), daemon=True).start()
+                self.respond_json({"ok": True})
+                return
+            if parsed.path == "/api/rollback-code":
+                edge_release = value(fields, "edge_release")
+                threading.Thread(target=run_job_commands, args=(job_id, [(f"code-only checkpoint {index + 1}", command, index in {1, 6, 7}) for index, command in enumerate(code_restore_commands(edge_release))], "Restore Edge UI code-only checkpoint"), daemon=True).start()
+                self.respond_json({"ok": True, "scope": "code-only; data/start.sh/credentials/site settings preserved"})
+                return
+            if parsed.path == "/api/list-code-checkpoints":
+                threading.Thread(target=run_job_commands, args=(job_id, [(f"code-only checkpoint inventory {index + 1}", command, False) for index, command in enumerate(checkpoint_inventory_commands())], "List Edge UI code-only checkpoints"), daemon=True).start()
                 self.respond_json({"ok": True})
                 return
             if parsed.path == "/api/disable-agent":

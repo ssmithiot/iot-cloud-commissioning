@@ -27,6 +27,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     parse_upgrade_request,
     restart_ui_commands,
     rollback_commands,
+    backup_commands,
     service_commands,
     stop_edge_ui_command,
     sudo_systemctl_timeout,
@@ -111,10 +112,11 @@ def test_auth_commands_include_safe_verification() -> None:
     assert "***SET***" in verify_command
 
 
-def test_apply_ui_commands_replaces_start_script() -> None:
+def test_apply_ui_commands_preserves_start_script_and_installs_engine() -> None:
     commands = apply_ui_commands(make_request())
-    apply_command = next(command for label, command, _sudo in commands if label == "apply UI files")
-    assert "/tmp/edge-bacnet-ui-v2-update/start.sh" in apply_command
+    apply_command = next(command for label, command, _sudo in commands if label == "apply code-only UI files")
+    assert "/tmp/edge-bacnet-ui-v2-update/edge_program_engine.py" in apply_command
+    assert "start.sh" not in apply_command
 
 
 def test_config_commands_write_root_owned_token_env_with_600_mode() -> None:
@@ -200,6 +202,14 @@ def test_parse_upgrade_request_defaults_git_ref_to_release_commit() -> None:
     request = parse_upgrade_request(body)
 
     assert request.git_ref == DEFAULT_EDGE_UPDATE_REF == "32eaf06"
+    assert request.edge_release == "0.1.7"
+    assert request.release_manifest_path.endswith("edge-0.1.7.json")
+
+
+def test_backup_commands_create_named_code_only_checkpoint() -> None:
+    joined = "\n".join(command for _label, command, _sudo in backup_commands("0.1.8"))
+    assert "/home/swadmin/gw-recovery/0.1.8/pre-update-code.tar.gz" in joined
+    assert "preserves=data/.env/start.sh/site-data" in joined
 
 
 def test_queued_gateway_update_defaults_git_ref_to_release_commit(monkeypatch: pytest.MonkeyPatch) -> None:
