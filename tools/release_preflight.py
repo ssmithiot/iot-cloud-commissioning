@@ -21,7 +21,8 @@ def validate_edge_source(manifest_path: Path, source_folder: Path) -> str:
     if git(source_folder, "status", "--porcelain"):
         raise ValueError("Edge UI source is dirty; package a tagged clean release instead")
     head = git(source_folder, "rev-parse", "HEAD")
-    tag = git(source_folder, "rev-parse", manifest.edge_ui_tag)
+    # Peel annotated tags to their commit; raw rev-parse returns the tag object.
+    tag = git(source_folder, "rev-parse", f"{manifest.edge_ui_tag}^{{}}")
     if head != tag:
         raise ValueError(f"Edge UI source HEAD {head[:7]} is not manifest tag {manifest.edge_ui_tag} ({tag[:7]})")
     return head
