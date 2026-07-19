@@ -20,7 +20,10 @@ def upgrade() -> None:
     columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns("gateway_update_requests")}
     if "update_scope" not in columns:
         op.add_column("gateway_update_requests", sa.Column("update_scope", sa.String(length=20), nullable=False, server_default="agent"))
-        op.alter_column("gateway_update_requests", "update_scope", server_default=None)
+        # SQLite cannot ALTER COLUMN.  It retains this harmless default in CI;
+        # PostgreSQL removes the temporary backfill default as intended.
+        if op.get_bind().dialect.name != "sqlite":
+            op.alter_column("gateway_update_requests", "update_scope", server_default=None)
     if "target_ui_version" not in columns:
         op.add_column("gateway_update_requests", sa.Column("target_ui_version", sa.String(length=80), nullable=True))
 
