@@ -921,7 +921,7 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         ("verify normalized templates", r"""test -d /tmp/edge-bacnet-ui-v2-update/templates && ! find /tmp/edge-bacnet-ui-v2-update -maxdepth 1 -name 'templates\*' | grep -q . && ls -lah /tmp/edge-bacnet-ui-v2-update/templates""", False),
         stop_command,
         ("confirm edge UI stopped", "systemctl is-active edge-bacnet-ui.service || true", False),
-        ("apply UI files", "cp /tmp/edge-bacnet-ui-v2-update/app.py /home/swadmin/edge-bacnet-ui-v2/app.py && cp /tmp/edge-bacnet-ui-v2-update/README.md /home/swadmin/edge-bacnet-ui-v2/README.md && cp /tmp/edge-bacnet-ui-v2-update/requirements.txt /home/swadmin/edge-bacnet-ui-v2/requirements.txt && cp /tmp/edge-bacnet-ui-v2-update/start.sh /home/swadmin/edge-bacnet-ui-v2/start.sh && rm -rf /home/swadmin/edge-bacnet-ui-v2/templates && cp -a /tmp/edge-bacnet-ui-v2-update/templates /home/swadmin/edge-bacnet-ui-v2/templates", False),
+        ("apply code-only UI files", "cp /tmp/edge-bacnet-ui-v2-update/app.py /home/swadmin/edge-bacnet-ui-v2/app.py && cp /tmp/edge-bacnet-ui-v2-update/edge_program_engine.py /home/swadmin/edge-bacnet-ui-v2/edge_program_engine.py && cp /tmp/edge-bacnet-ui-v2-update/README.md /home/swadmin/edge-bacnet-ui-v2/README.md && cp /tmp/edge-bacnet-ui-v2-update/requirements.txt /home/swadmin/edge-bacnet-ui-v2/requirements.txt && rm -rf /home/swadmin/edge-bacnet-ui-v2/templates && cp -a /tmp/edge-bacnet-ui-v2-update/templates /home/swadmin/edge-bacnet-ui-v2/templates", False),
         ("verify UI file ownership", "find /home/swadmin/edge-bacnet-ui-v2 -maxdepth 2 \\( ! -user swadmin -o ! -group swadmin \\) -print | head -20 || true", False),
         ("preserve start.sh executable", "chmod +x /home/swadmin/edge-bacnet-ui-v2/start.sh", False),
         ("verify replaced templates", "ls -lah /home/swadmin/edge-bacnet-ui-v2/templates", False),
@@ -1090,14 +1090,14 @@ def disable_agent_commands() -> list[tuple[str, str, bool]]:
 
 def create_update_zip(source_folder: str) -> Path:
     source = Path(source_folder)
-    required = ["app.py", "templates", "README.md", "requirements.txt", "start.sh"]
+    required = ["app.py", "edge_program_engine.py", "templates", "README.md", "requirements.txt"]
     missing = [item for item in required if not (source / item).exists()]
     if missing:
         raise RuntimeError(f"Local BACnet UI source folder is missing: {', '.join(missing)}")
     temp_dir = Path(tempfile.mkdtemp(prefix="legacy-edge-upgrade-"))
     zip_path = temp_dir / "edge-bacnet-ui-v2-update.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file_name in ["app.py", "README.md", "requirements.txt", "start.sh"]:
+        for file_name in ["app.py", "edge_program_engine.py", "README.md", "requirements.txt"]:
             archive.write(source / file_name, arcname=file_name)
         for path in (source / "templates").rglob("*"):
             if path.is_file():

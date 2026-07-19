@@ -112,10 +112,11 @@ def test_auth_commands_include_safe_verification() -> None:
     assert "***SET***" in verify_command
 
 
-def test_apply_ui_commands_replaces_start_script() -> None:
+def test_apply_ui_commands_preserves_start_script_and_installs_engine() -> None:
     commands = apply_ui_commands(make_request())
-    apply_command = next(command for label, command, _sudo in commands if label == "apply UI files")
-    assert "/tmp/edge-bacnet-ui-v2-update/start.sh" in apply_command
+    apply_command = next(command for label, command, _sudo in commands if label == "apply code-only UI files")
+    assert "/tmp/edge-bacnet-ui-v2-update/edge_program_engine.py" in apply_command
+    assert "start.sh" not in apply_command
 
 
 def test_config_commands_write_root_owned_token_env_with_600_mode() -> None:
