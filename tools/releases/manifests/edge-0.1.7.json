@@ -1,0 +1,9 @@
+{
+  "edge_release": "0.1.7",
+  "base_release": "0.1.6",
+  "edge_ui_tag": "edge-ui-v0.1.7",
+  "artifact": "tools/releases/gw006-edge-ui-0.1.7-code.tar.gz",
+  "sha256": "1f29834a3a2021e2e691078a1c1e7721eaead2ef8fa536ae6707df2ad26d98e2",
+  "preserves": ["data/", ".env", "start.sh", "gateway identity", "credentials"],
+  "rollback_release": "0.1.6"
+}
