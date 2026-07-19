@@ -24,7 +24,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
 
-from tools.gateway_recovery import code_restore_commands
+from tools.gateway_recovery import checkpoint_commands, code_restore_commands, release_name
 
 try:
     import paramiko
@@ -37,6 +37,7 @@ DEFAULT_CLOUD_URL = "https://iot-cloud-api-dev.onrender.com"
 DEFAULT_REPO_PATH = "/home/swadmin/iot-cloud-commissioning"
 DEFAULT_UI_SOURCE = r"C:\Dev\edge-bacnet-ui-v2"
 DEFAULT_EDGE_UPDATE_REF = "32eaf06"
+DEFAULT_EDGE_RELEASE = "0.1.7"
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
@@ -102,6 +103,7 @@ class UpgradeRequest:
     cloud_portal_verified: bool = False
     selected_phases: tuple[int, ...] = tuple(range(len(PHASES)))
     edge_agent_write_token: str = ""
+    edge_release: str = DEFAULT_EDGE_RELEASE
 
 
 @dataclass
@@ -500,6 +502,9 @@ def form_page(message: str = "") -> bytes:
   <label>Git ref
     <input name="git_ref" value="{DEFAULT_EDGE_UPDATE_REF}" required>
   </label>
+  <label>Edge Release
+    <input name="edge_release" value="{DEFAULT_EDGE_RELEASE}" pattern="[0-9]+\\.[0-9]+\\.[0-9]+" required>
+  </label>
   <label class="wide">Repo path on gateway
     <input name="remote_repo" value="{DEFAULT_REPO_PATH}" required>
   </label>
@@ -685,6 +690,7 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         skip_edge_ui_stop=parse_bool(fields, "skip_edge_ui_stop"),
         cloud_portal_verified=parse_bool(fields, "cloud_portal_verified"),
         selected_phases=selected_phases,
+        edge_release=release_name(value(fields, "edge_release") or DEFAULT_EDGE_RELEASE),
     )
     required = [
         ("Gateway number", request.gateway_id),
@@ -891,13 +897,15 @@ def inspect_commands() -> list[tuple[str, str, bool]]:
     ]
 
 
-def backup_commands() -> list[tuple[str, str, bool]]:
-    return [
+def backup_commands(edge_release: str = DEFAULT_EDGE_RELEASE) -> list[tuple[str, str, bool]]:
+    commands = [
         ("edge UI enabled", "systemctl is-enabled edge-bacnet-ui.service 2>/dev/null || true", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service 2>/dev/null || true", False),
         ("create UI backup", 'cd /home/swadmin && tar -czf "edge-bacnet-ui-v2.backup.$(date +%Y%m%d-%H%M%S).tar.gz" edge-bacnet-ui-v2', False),
         ("list UI backups", "cd /home/swadmin && ls -lh edge-bacnet-ui-v2.backup.*.tar.gz", False),
     ]
+    commands.extend((f"code-only checkpoint {index + 1}", command, False) for index, command in enumerate(checkpoint_commands(edge_release)))
+    return commands
 
 
 def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
@@ -1344,7 +1352,7 @@ class LegacyUpgradeRunner:
                 output = self.run_commands(inspect_commands(), stop_on_failure=False)
                 self.validate_inspection(output)
             elif index == 1:
-                output = self.run_commands(backup_commands())
+                output = self.run_commands(backup_commands(self.request.edge_release))
                 backup = self.extract_latest_backup(output)
                 with JOBS_LOCK:
                     JOBS[self.job_id].backup_filename = backup
