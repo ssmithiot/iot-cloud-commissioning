@@ -203,6 +203,7 @@ def test_parse_upgrade_request_defaults_git_ref_to_release_commit() -> None:
 
     assert request.git_ref == DEFAULT_EDGE_UPDATE_REF == "32eaf06"
     assert request.edge_release == "0.1.7"
+    assert request.release_manifest_path.endswith("edge-0.1.7.json")
 
 
 def test_backup_commands_create_named_code_only_checkpoint() -> None:

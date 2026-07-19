@@ -15,6 +15,18 @@ def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
 
 
+def validate_edge_source(manifest_path: Path, source_folder: Path) -> str:
+    """Require the updater to package the manifest's exact clean UI tag."""
+    manifest = load_manifest(manifest_path)
+    if git(source_folder, "status", "--porcelain"):
+        raise ValueError("Edge UI source is dirty; package a tagged clean release instead")
+    head = git(source_folder, "rev-parse", "HEAD")
+    tag = git(source_folder, "rev-parse", manifest.edge_ui_tag)
+    if head != tag:
+        raise ValueError(f"Edge UI source HEAD {head[:7]} is not manifest tag {manifest.edge_ui_tag} ({tag[:7]})")
+    return head
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("manifest", type=Path)
