@@ -421,3 +421,33 @@ class PointTrendSample(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     point: Mapped["SavedBacnetPoint"] = relationship(back_populates="trend_samples")
+
+
+class EdgeLocalTrendSample(Base):
+    """Immutable copy of an Edge-owned local trend sample.
+
+    These rows deliberately do not reference SavedBacnetPoint: the Edge UI
+    owns local trend group membership, and cloud inventory may be changed or
+    removed independently.  event_id makes the upload endpoint idempotent.
+    """
+    __tablename__ = "edge_local_trend_samples"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_edge_local_trend_sample_event"),
+        Index("ix_edge_local_trend_samples_gateway_sampled", "gateway_id", "sampled_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    event_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    gateway_id: Mapped[str] = mapped_column(String(120), ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"), nullable=False, index=True)
+    group_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    device_instance: Mapped[int] = mapped_column(Integer, nullable=False)
+    object_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    object_instance: Mapped[int] = mapped_column(Integer, nullable=False)
+    object_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    value_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    read_source: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    error_text: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)

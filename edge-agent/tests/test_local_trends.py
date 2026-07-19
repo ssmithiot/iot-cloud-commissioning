@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 from iot_cx_agent.config import AgentConfig
-from iot_cx_agent.local_trends import sample_local_edge_trends
+from iot_cx_agent.local_trends import sample_local_edge_trends, upload_local_edge_trend_samples
 
 
 def _config(tmp_path: Path, trends_db: Path) -> AgentConfig:
@@ -51,3 +52,33 @@ def test_local_trends_stores_samples_without_cloud_upload(tmp_path: Path, monkey
 def test_local_trends_skips_when_disabled(tmp_path: Path) -> None:
     config = _config(tmp_path, tmp_path / "missing.db")
     assert sample_local_edge_trends(config) == 0
+
+
+def test_local_trend_outbox_uploads_idempotent_batch(tmp_path: Path, monkeypatch) -> None:
+    trends_db = tmp_path / "edge-trends.db"
+    _create_trends_db(trends_db)
+    config = replace(_config(tmp_path, trends_db), local_edge_trend_cloud_sync_enabled=True, local_edge_trend_upload_interval_sec=1)
+    monkeypatch.setattr(
+        "iot_cx_agent.local_trends.run_bacnet_read_bulk",
+        lambda *_args: ({"values": [{"saved_point_id": "11", "status": "ok", "value": "71.2"}, {"saved_point_id": "12", "status": "ok", "value": "72.2"}]}, None),
+    )
+    assert sample_local_edge_trends(config) == 1
+    sent: list[list[dict]] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"accepted_event_ids": [row["event_id"] for row in sent[-1]]}
+
+    def post(*_args, **kwargs):
+        sent.append(kwargs["json"])
+        return Response()
+
+    monkeypatch.setattr("iot_cx_agent.local_trends.requests.post", post)
+    assert upload_local_edge_trend_samples(config) == 2
+    assert len(sent) == 1
+    assert sent[0][0]["group_name"] == "Pilot"
+    with sqlite3.connect(trends_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM trend_upload_outbox WHERE state='uploaded'").fetchone()[0] == 2

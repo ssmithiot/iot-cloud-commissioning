@@ -748,6 +748,26 @@ class PointTrendSampleOut(PointTrendSampleIn):
     model_config = ConfigDict(from_attributes=True)
 
 
+class EdgeLocalTrendSampleIn(BaseModel):
+    """One immutable sample created by an Edge-owned local trend group."""
+
+    event_id: str = Field(min_length=36, max_length=36)
+    group_name: str = Field(min_length=1, max_length=255)
+    device_instance: int = Field(ge=0)
+    object_type: str = Field(min_length=1, max_length=80)
+    object_instance: int = Field(ge=0)
+    object_name: str = Field(default="", max_length=255)
+    sampled_at: datetime
+    value_text: str | None = Field(default=None, max_length=255)
+    status: str = Field(min_length=1, max_length=40)
+    read_source: str | None = Field(default=None, max_length=80)
+    error_text: str | None = Field(default=None, max_length=1000)
+
+
+class EdgeLocalTrendUploadOut(BaseModel):
+    accepted_event_ids: list[str]
+
+
 class GatewayTreeOut(BaseModel):
     gateway: GatewayOut
     groups: list[GatewayGroupOut]
