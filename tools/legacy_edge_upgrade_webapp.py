@@ -24,6 +24,8 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
 
+from tools.gateway_recovery import code_restore_commands
+
 try:
     import paramiko
 except ImportError:  # pragma: no cover - shown in browser and terminal at runtime
@@ -539,7 +541,8 @@ def form_page(message: str = "") -> bytes:
     <div id="phases"></div>
     <div class="actions">
       <button id="continue-button" class="secondary" type="button" disabled>Continue</button>
-      <button id="rollback-button" class="danger" type="button" disabled>Rollback UI</button>
+      <button id="rollback-button" class="danger" type="button" disabled>Restore legacy full backup</button>
+      <button id="rollback-code-button" class="danger" type="button" disabled>Restore code-only checkpoint</button>
       <button id="disable-agent-button" class="danger" type="button" disabled>Disable Agent</button>
     </div>
   </section>
@@ -553,6 +556,7 @@ const form = document.getElementById("upgrade-form");
 const startButton = document.getElementById("start-button");
 const continueButton = document.getElementById("continue-button");
 const rollbackButton = document.getElementById("rollback-button");
+const rollbackCodeButton = document.getElementById("rollback-code-button");
 const disableAgentButton = document.getElementById("disable-agent-button");
 const log = document.getElementById("log");
 const phaseChecks = () => [...document.querySelectorAll('input[name="selected_phases"]')];
@@ -580,6 +584,7 @@ async function poll() {{
   renderPhases(body.phases || []);
   continueButton.disabled = body.status !== "waiting";
   rollbackButton.disabled = !body.can_rollback;
+  rollbackCodeButton.disabled = !body.can_rollback;
   disableAgentButton.disabled = !body.can_disable_agent;
   startButton.disabled = body.status === "running" || body.status === "waiting";
   startButton.textContent = body.status === "complete" || body.status === "failed" ? "Start new run" : "Start inspect";
@@ -621,6 +626,14 @@ rollbackButton.addEventListener("click", async () => {{
   if (!backup) return;
   rollbackButton.disabled = true;
   await post("/api/rollback-ui", new URLSearchParams({{ job_id: jobId, backup }}));
+  poll();
+}});
+
+rollbackCodeButton.addEventListener("click", async () => {{
+  const edgeRelease = prompt("Edge Release checkpoint to restore, for example 0.1.7. This restores code only and preserves data, start.sh, credentials, and site settings.");
+  if (!edgeRelease) return;
+  rollbackCodeButton.disabled = true;
+  await post("/api/rollback-code", new URLSearchParams({{ job_id: jobId, edge_release: edgeRelease }}));
   poll();
 }});
 
@@ -1596,6 +1609,11 @@ class LegacyEdgeUpgradeHandler(BaseHTTPRequestHandler):
                 backup = value(fields, "backup")
                 threading.Thread(target=run_job_commands, args=(job_id, rollback_commands(backup), "Rollback local BACnet UI"), daemon=True).start()
                 self.respond_json({"ok": True})
+                return
+            if parsed.path == "/api/rollback-code":
+                edge_release = value(fields, "edge_release")
+                threading.Thread(target=run_job_commands, args=(job_id, [(f"code-only checkpoint {index + 1}", command, index in {1, 6, 7}) for index, command in enumerate(code_restore_commands(edge_release))], "Restore Edge UI code-only checkpoint"), daemon=True).start()
+                self.respond_json({"ok": True, "scope": "code-only; data/start.sh/credentials/site settings preserved"})
                 return
             if parsed.path == "/api/disable-agent":
                 threading.Thread(target=run_job_commands, args=(job_id, disable_agent_commands(), "Disable cloud agent"), daemon=True).start()
