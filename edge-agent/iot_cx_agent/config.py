@@ -55,6 +55,13 @@ class AgentConfig:
     # agent upgrade never starts a new BACnet workload without explicit setup.
     local_edge_trends_enabled: bool = False
     edge_trends_db_path: Path = DEFAULT_EDGE_TRENDS_DB_PATH
+    # Edge-owned samples have their own durable outbox in edge_trends_db_path.
+    # This stays separate from the legacy cloud-configured trend queue above.
+    local_edge_trend_cloud_sync_enabled: bool = False
+    local_edge_trend_upload_interval_sec: int = 300
+    local_edge_trend_upload_batch_size: int = 250
+    local_edge_trend_upload_retry_base_sec: int = 300
+    local_edge_trend_upload_retry_max_sec: int = 900
     gateway_api_token: str | None = None
     edge_agent_write_token: str | None = None
 
@@ -172,6 +179,11 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         sqlite_path=sqlite_path,
         local_edge_trends_enabled=bool(raw.get("local_edge_trends_enabled", False)),
         edge_trends_db_path=edge_trends_db_path,
+        local_edge_trend_cloud_sync_enabled=bool(raw.get("local_edge_trend_cloud_sync_enabled", False)),
+        local_edge_trend_upload_interval_sec=_positive_int(raw.get("local_edge_trend_upload_interval_sec", 300), "local_edge_trend_upload_interval_sec"),
+        local_edge_trend_upload_batch_size=min(500, _positive_int(raw.get("local_edge_trend_upload_batch_size", 250), "local_edge_trend_upload_batch_size")),
+        local_edge_trend_upload_retry_base_sec=_positive_int(raw.get("local_edge_trend_upload_retry_base_sec", 300), "local_edge_trend_upload_retry_base_sec"),
+        local_edge_trend_upload_retry_max_sec=_positive_int(raw.get("local_edge_trend_upload_retry_max_sec", 900), "local_edge_trend_upload_retry_max_sec"),
         gateway_api_token=os.getenv("GATEWAY_API_TOKEN") or raw.get("gateway_api_token"),
         edge_agent_write_token=os.getenv("EDGE_AGENT_WRITE_TOKEN") or raw.get("edge_agent_write_token"),
     )

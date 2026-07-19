@@ -41,6 +41,7 @@ from app.models import (
     BacnetWriteCommand,
     EdgeHeartbeat,
     EdgeJob,
+    EdgeLocalTrendSample,
     EdgeNode,
     GatewayAlertState,
     GatewayCredential,
@@ -74,6 +75,8 @@ from app.schemas import (
     DirectConnectOut,
     EdgeJobClaimOut,
     EdgeTrendConfigOut,
+    EdgeLocalTrendSampleIn,
+    EdgeLocalTrendUploadOut,
     GatewayCredentialOut,
     GatewayGroupIn,
     GatewayGroupOut,
@@ -3005,6 +3008,55 @@ def edge_upload_trend_samples(
     )
     db.commit()
     return stored
+
+
+@app.post("/api/edge/{gateway_id}/local-trend-samples", response_model=EdgeLocalTrendUploadOut)
+def edge_upload_local_trend_samples(
+    gateway_id: str,
+    payload: list[EdgeLocalTrendSampleIn] = Body(min_length=1, max_length=500),
+    auth: GatewayAuthContext = Depends(require_gateway_auth),
+    db: Session = Depends(get_db),
+) -> EdgeLocalTrendUploadOut:
+    """Append Edge-owned local trend samples without depending on cloud inventory.
+
+    The gateway supplies a UUID event_id created in its local SQLite outbox.
+    Replaying a request after a network failure returns the same acknowledgements
+    without inserting duplicate history.
+    """
+    if auth.gateway_id != gateway_id:
+        raise HTTPException(status_code=403, detail="Gateway credential does not match local trend sample gateway_id")
+    event_ids = [sample.event_id for sample in payload]
+    if len(event_ids) != len(set(event_ids)):
+        raise HTTPException(status_code=422, detail="Local trend sample batch must not contain duplicate event_ids")
+    accepted: list[str] = []
+    for sample in payload:
+        existing = db.scalar(select(EdgeLocalTrendSample).where(EdgeLocalTrendSample.event_id == sample.event_id))
+        if existing is None:
+            db.add(
+                EdgeLocalTrendSample(
+                    event_id=sample.event_id,
+                    gateway_id=gateway_id,
+                    group_name=sample.group_name,
+                    device_instance=sample.device_instance,
+                    object_type=sample.object_type,
+                    object_instance=sample.object_instance,
+                    object_name=sample.object_name,
+                    sampled_at=sample.sampled_at,
+                    value_text=sample.value_text,
+                    status=sample.status,
+                    read_source=sample.read_source,
+                    error_text=sample.error_text,
+                )
+            )
+        accepted.append(sample.event_id)
+    retention_cutoff = utc_now() - timedelta(days=settings.trend_retention_days)
+    db.execute(
+        delete(EdgeLocalTrendSample)
+        .where(EdgeLocalTrendSample.sampled_at < retention_cutoff)
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return EdgeLocalTrendUploadOut(accepted_event_ids=accepted)
 
 
 @app.post("/api/edge/heartbeat", response_model=HeartbeatAccepted)

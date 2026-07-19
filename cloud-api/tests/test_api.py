@@ -2924,6 +2924,32 @@ def test_trend_upload_is_bounded_idempotent_and_returns_operational_metadata() -
     assert len(history.json()) == 1
 
 
+def test_edge_local_trend_upload_is_independent_and_idempotent() -> None:
+    raw_token = create_gateway_token("GW001")
+    sample = {
+        "event_id": "11111111-1111-4111-8111-111111111111",
+        "group_name": "AHU local pilot",
+        "device_instance": 1001,
+        "object_type": "analog-value",
+        "object_instance": 5,
+        "object_name": "Supply Air Temp",
+        "sampled_at": "2026-07-19T16:00:00Z",
+        "value_text": "71.2",
+        "status": "ok",
+        "read_source": "rpm-bulk",
+        "error_text": None,
+    }
+    first = client.post("/api/edge/GW001/local-trend-samples", headers=auth_headers(raw_token), json=[sample])
+    repeat = client.post("/api/edge/GW001/local-trend-samples", headers=auth_headers(raw_token), json=[sample])
+    duplicate = client.post("/api/edge/GW001/local-trend-samples", headers=auth_headers(raw_token), json=[sample, sample])
+
+    assert first.status_code == 200
+    assert first.json()["accepted_event_ids"] == [sample["event_id"]]
+    assert repeat.status_code == 200
+    assert repeat.json()["accepted_event_ids"] == [sample["event_id"]]
+    assert duplicate.status_code == 422
+
+
 def test_trend_retrieval_enforces_its_limit() -> None:
     raw_token = create_gateway_token("GW001")
     user_id = create_operator_user("operator@example.com", role="operator", status="active")
