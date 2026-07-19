@@ -46,7 +46,7 @@ def test_edge_source_preflight_rejects_dirty_or_wrong_tag(tmp_path: Path, monkey
 
     def fake_git(_root: Path, *args: str) -> str:
         calls.append(args)
-        return {("status", "--porcelain"): "", ("rev-parse", "HEAD"): "abc", ("rev-parse", "edge-ui-v0.1.8"): "abc"}[args]
+        return {("status", "--porcelain"): "", ("rev-parse", "HEAD"): "abc", ("rev-parse", "edge-ui-v0.1.8^{}"): "abc"}[args]
 
     monkeypatch.setattr("tools.release_preflight.git", fake_git)
     assert validate_edge_source(path, tmp_path) == "abc"
