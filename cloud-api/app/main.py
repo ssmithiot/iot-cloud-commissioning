@@ -65,6 +65,8 @@ from app.schemas import (
     CurrentOperatorOut,
     DirectConnectOut,
     EdgeJobClaimOut,
+    EdgeInventorySnapshotIn,
+    EdgeInventorySnapshotOut,
     EdgeTrendConfigOut,
     GatewayGroupIn,
     GatewayGroupOut,
@@ -99,6 +101,8 @@ from app.schemas import (
     SavedPointPatchIn,
     SavedPointsReadIn,
     SavedPointsReadOut,
+    SavedPointsWriteIn,
+    SavedPointsWriteOut,
     SavedPointsBulkRemoveIn,
     SavedPointsBulkRemoveOut,
     SiteOut,
@@ -306,6 +310,9 @@ def _gateway_update_out(update: GatewayUpdateRequest, edge_node: EdgeNode) -> di
         "gateway_host": edge_node.lan_ip,
         "cradlepoint_host": (site.direct_connect_host or site.cradlepoint_ip or site.external_ip) if site else None,
         "agent_version": edge_node.agent_version,
+        "ui_version": edge_node.ui_version,
+        "update_scope": update.update_scope,
+        "target_ui_version": update.target_ui_version,
         "status": update.status,
         "requested_by": update.requested_by,
         "requested_at": update.requested_at,
@@ -954,6 +961,10 @@ def _point_out(point: SavedBacnetPoint, trend_config: PointTrendConfig | None = 
         "present_value": point.present_value,
         "units": point.units,
         "writable": point.writable,
+        "active_priority": point.active_priority,
+        "priority_array": point.priority_array,
+        "relinquish_default": point.relinquish_default,
+        "state_text": point.state_text,
         "latest_read_at": point.latest_read_at,
         "first_seen_at": point.first_seen_at,
         "last_seen_at": point.last_seen_at,
@@ -1322,6 +1333,8 @@ def ui_request_gateway_updates(
             existing = GatewayUpdateRequest(
                 gateway_id=gateway_id,
                 requested_by=auth.email or "admin-token",
+                update_scope=payload.update_scope,
+                target_ui_version=payload.target_ui_version if payload.update_scope == "ui_only" else None,
                 status="queued",
                 requested_at=now,
             )
@@ -2051,6 +2064,7 @@ def ui_read_saved_points(
             request_json={
                 "device_instance": device_instance,
                 "property": "present-value",
+                "read_priority_arrays": True,
                 "points": [
                     {
                         "saved_point_id": str(point.id),
@@ -2072,6 +2086,37 @@ def ui_read_saved_points(
         job_ids=job_ids,
         missing_ids=missing_ids,
     )
+
+
+@app.post("/api/ui/gateways/{gateway_id}/points/write", response_model=SavedPointsWriteOut)
+def ui_write_saved_points(
+    gateway_id: str,
+    payload: SavedPointsWriteIn,
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> SavedPointsWriteOut:
+    edge_node = _require_gateway_site_access(db, auth, gateway_id)
+    _require_online_gateway(edge_node)
+    requested = {_tree_id(item.point_id): item for item in payload.writes}
+    points = list(db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.id.in_(requested), SavedBacnetPoint.gateway_id == gateway_id, SavedBacnetPoint.enabled.is_(True))).all())
+    by_device: dict[int, list[dict[str, object]]] = {}
+    allowed_types = {"analog-output", "analog-value", "binary-output", "binary-value", "multi-state-output", "multi-state-value"}
+    for point in points:
+        item = requested[str(point.id)]
+        if point.object_type not in allowed_types:
+            continue
+        by_device.setdefault(point.device_instance, []).append({
+            "saved_point_id": str(point.id), "object_type": point.object_type, "object_instance": point.object_instance,
+            "action": item.action, "value": item.value, "priority": item.priority,
+        })
+    jobs: list[EdgeJob] = []
+    for device_instance, writes in by_device.items():
+        job = EdgeJob(job_id=f"job-{uuid4().hex}", gateway_id=gateway_id, job_type="bacnet_write_batch", status="queued", request_json={"device_instance": device_instance, "writes": writes})
+        db.add(job)
+        jobs.append(job)
+    db.commit()
+    found = {str(point.id) for point in points}
+    return SavedPointsWriteOut(queued_count=sum(len(job.request_json["writes"]) for job in jobs), job_ids=[job.job_id for job in jobs], missing_ids=[item.point_id for item in payload.writes if _tree_id(item.point_id) not in found])
 
 
 @app.patch("/api/ui/points/{point_id}", response_model=SavedPointOut)
@@ -2327,6 +2372,78 @@ def edge_upload_trend_samples(
     return stored
 
 
+@app.put("/api/edge/{gateway_id}/inventory-snapshot", response_model=EdgeInventorySnapshotOut)
+def edge_replace_inventory_snapshot(
+    gateway_id: str,
+    payload: EdgeInventorySnapshotIn,
+    auth: GatewayAuthContext = Depends(require_gateway_auth),
+    db: Session = Depends(get_db),
+) -> EdgeInventorySnapshotOut:
+    """Reconcile gateway-scoped inventory from a complete Edge UI snapshot."""
+    if auth.gateway_id != gateway_id:
+        raise HTTPException(status_code=403, detail="Gateway credential does not match inventory gateway_id")
+    now = utc_now()
+    existing_devices = {
+        device.device_instance: device
+        for device in db.scalars(select(SavedBacnetDevice).where(SavedBacnetDevice.gateway_id == gateway_id)).all()
+    }
+    submitted_devices = {device.device_instance for device in payload.devices}
+    devices_upserted = points_upserted = devices_retired = points_retired = 0
+    for incoming in payload.devices:
+        device = existing_devices.get(incoming.device_instance)
+        if device is None:
+            device = SavedBacnetDevice(gateway_id=gateway_id, device_instance=incoming.device_instance, first_seen_at=now)
+            db.add(device)
+            db.flush()
+        device.device_name = incoming.device_name
+        device.last_seen_at = now
+        device.latest_discovered_at = now
+        device.lifecycle_state = "active"
+        device.retired_at = None
+        device.enabled = True
+        devices_upserted += 1
+        existing_points = {
+            (point.object_type, point.object_instance, point.property_name): point
+            for point in db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id)).all()
+        }
+        submitted_points = {(point.object_type, point.object_instance, "present-value") for point in incoming.points}
+        for incoming_point in incoming.points:
+            key = (incoming_point.object_type, incoming_point.object_instance, "present-value")
+            point = existing_points.get(key)
+            if point is None:
+                point = SavedBacnetPoint(
+                    gateway_id=gateway_id, saved_device_id=device.id, device_instance=device.device_instance,
+                    object_type=incoming_point.object_type, object_instance=incoming_point.object_instance,
+                    property_name="present-value", first_seen_at=now,
+                )
+                db.add(point)
+            point.object_name = incoming_point.object_name
+            point.last_seen_at = now
+            point.lifecycle_state = "active"
+            point.retired_at = None
+            point.enabled = True
+            points_upserted += 1
+        for key, point in existing_points.items():
+            if key not in submitted_points and point.enabled:
+                point.enabled = False
+                point.lifecycle_state = "retired"
+                point.retired_at = now
+                points_retired += 1
+    for device_instance, device in existing_devices.items():
+        if device_instance not in submitted_devices and device.enabled:
+            device.enabled = False
+            device.lifecycle_state = "retired"
+            device.retired_at = now
+            devices_retired += 1
+            for point in db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id, SavedBacnetPoint.enabled.is_(True))).all():
+                point.enabled = False
+                point.lifecycle_state = "retired"
+                point.retired_at = now
+                points_retired += 1
+    db.commit()
+    return EdgeInventorySnapshotOut(gateway_id=gateway_id, devices_upserted=devices_upserted, points_upserted=points_upserted, devices_retired=devices_retired, points_retired=points_retired)
+
+
 @app.post("/api/edge/heartbeat", response_model=HeartbeatAccepted)
 def receive_heartbeat(
     payload: HeartbeatIn,
@@ -2355,7 +2472,25 @@ def receive_heartbeat(
     edge_node.lan_ip = payload.lan_ip
     edge_node.bacnet_port = payload.bacnet_port
     edge_node.agent_version = payload.agent_version
-    edge_node.ui_version = payload.ui_version
+    # Older agents report the literal placeholder "current" for the local UI.
+    # Do not let that erase the verified UI-only release marker written when an
+    # updater request completes. A real reported version remains authoritative.
+    if payload.ui_version.strip().lower() != "current":
+        edge_node.ui_version = payload.ui_version
+    else:
+        completed_ui_release = db.scalar(
+            select(GatewayUpdateRequest.target_ui_version)
+            .where(
+                GatewayUpdateRequest.gateway_id == payload.gateway_id,
+                GatewayUpdateRequest.status == "completed",
+                GatewayUpdateRequest.update_scope == "ui_only",
+                GatewayUpdateRequest.target_ui_version.is_not(None),
+            )
+            .order_by(GatewayUpdateRequest.completed_at.desc())
+            .limit(1)
+        )
+        if completed_ui_release:
+            edge_node.ui_version = completed_ui_release
     edge_node.sqlite_db_ok = payload.sqlite_db_ok
     edge_node.queued_upload_count = payload.queued_upload_count
     edge_node.cpu_count = payload.cpu_count
@@ -2485,6 +2620,12 @@ def admin_complete_gateway_update(
     update.status = payload.status
     update.error_message = payload.error_message
     update.completed_at = utc_now()
+    if payload.status == "completed" and update.update_scope == "ui_only" and update.target_ui_version:
+        # The updater has finished the UI-only deployment and its local HTTP
+        # check.  Record that release without mutating gateway/site identity,
+        # address, network, token, or agent configuration.
+        edge_node = _get_gateway_with_site_or_404(db, update.gateway_id)
+        edge_node.ui_version = update.target_ui_version
     db.commit()
     return _gateway_update_out(update, _get_gateway_with_site_or_404(db, update.gateway_id))
 
@@ -2695,13 +2836,38 @@ def receive_job_result(
                     continue
                 saved_point_id = value_payload.get("saved_point_id")
                 value = value_payload.get("value", value_payload.get("raw_value"))
-                if not isinstance(saved_point_id, str) or value is None:
+                if not isinstance(saved_point_id, str):
                     continue
                 point = db.get(SavedBacnetPoint, _tree_id(saved_point_id))
                 if point is not None and point.gateway_id == job.gateway_id:
-                    point.present_value = str(value)
-                    point.latest_read_at = now
+                    if value is not None:
+                        point.present_value = str(value)
+                        point.latest_read_at = now
+                    priority_array = value_payload.get("priority_array")
+                    if isinstance(priority_array, str):
+                        active_priority = value_payload.get("active_priority")
+                        point.priority_array = priority_array
+                        point.active_priority = active_priority if isinstance(active_priority, int) else None
                     point.updated_at = now
+    if job.job_type == "bacnet_write_batch" and payload.status == "completed" and isinstance(payload.result, dict):
+        results = payload.result.get("results")
+        if isinstance(results, list):
+            now = utc_now()
+            for result in results:
+                if not isinstance(result, dict) or not result.get("ok"):
+                    continue
+                point_id = result.get("saved_point_id")
+                if not isinstance(point_id, str):
+                    continue
+                point = db.get(SavedBacnetPoint, _tree_id(point_id))
+                if point is None or point.gateway_id != job.gateway_id:
+                    continue
+                active_priority = result.get("active_priority")
+                point.active_priority = active_priority if isinstance(active_priority, int) else None
+                priority_array = result.get("priority_array")
+                if isinstance(priority_array, str):
+                    point.priority_array = priority_array
+                point.updated_at = now
     db.commit()
     db.refresh(job)
     return job

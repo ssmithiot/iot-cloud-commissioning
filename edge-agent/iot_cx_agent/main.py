@@ -9,6 +9,7 @@ import requests
 from iot_cx_agent.config import DEFAULT_CONFIG_PATH, AgentConfig, load_config
 from iot_cx_agent.db import initialize_database, record_heartbeat_attempt
 from iot_cx_agent.heartbeat import send_heartbeat
+from iot_cx_agent.inventory import publish_inventory_snapshot
 from iot_cx_agent.jobs import process_next_job
 from iot_cx_agent.status import collect_status, utc_timestamp
 from iot_cx_agent.tunnel import run_tunnel_forever
@@ -59,6 +60,12 @@ def run_once(config: AgentConfig) -> bool:
         logger.warning("Heartbeat upload failed: %s", exc)
 
     if sqlite_db_ok:
+        try:
+            publish_inventory_snapshot(config)
+        except requests.RequestException as exc:
+            logger.warning("Inventory snapshot sync failed: %s", exc)
+        except Exception:
+            logger.exception("Inventory snapshot sync failed")
         try:
             sample_configured_trends(config)
             upload_pending_trend_samples(config)

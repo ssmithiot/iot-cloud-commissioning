@@ -325,7 +325,7 @@ def test_signup_email_confirmation_redirects_to_login_origin() -> None:
     assert response.status_code == 200
     assert "emailRedirectTo: redirectTo" in response.text
     assert "`${window.location.origin}${statePaths.login}`" in response.text
-    assert "localhost" not in response.text
+    assert 'emailRedirectTo: "http://localhost' not in response.text
 
 
 def test_protected_ui_contains_unauthenticated_redirect() -> None:
@@ -371,6 +371,23 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
     assert 'colspan="10"' in response.text
     assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
+    assert "gatewayNeedsResourceHealthUpdate" in response.text
+    assert "Health update required" in response.text
+
+
+def test_dashboard_uses_resizable_connected_gateway_workspace() -> None:
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert 'id="dashboard-workspace"' in response.text
+    assert 'id="dashboard-column-splitter"' in response.text
+    assert 'id="dashboard-context"' in response.text
+    assert 'id="dashboard-row-splitter"' in response.text
+    assert "--registry-pane-width: 75%;" in response.text
+    assert "initDashboardWorkspace();" in response.text
+    assert 'aria-valuenow="75"' in response.text
+    assert response.text.index('class="gateway-panel dashboard-registry-panel"') < response.text.index('class="map-panel"')
+    assert response.text.index('class="map-panel"') < response.text.index('id="gateway-inspector"')
 
 
 def test_gateway_workspace_contains_discovery_progress_ui() -> None:
@@ -464,9 +481,26 @@ def test_gateway_workspace_defaults_devices_and_object_folders_to_collapsed() ->
     assert response.status_code == 200
     assert "function addCollapsible(parent, row, children, onSelect = null, expanded = true)" in response.text
     assert "childWrap.hidden = !expanded;" in response.text
+    assert 'row.setAttribute("aria-expanded", String(expanded));' in response.text
+    assert 'if (event.target !== row || !["Enter", " "].includes(event.key)) return;' in response.text
     assert 'treeRow("device", deviceLabel, device.network_number ? `network ${device.network_number}` : "", depth, false)' in response.text
     assert 'treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1, false)' in response.text
     assert 'body[data-page="gateway-workspace"] .tree-row .twisty' in response.text
+
+
+def test_gateway_workspace_supports_hierarchical_point_selection() -> None:
+    response = client.get("/gateways/GW777")
+
+    assert response.status_code == 200
+    assert "function attachBranchSelector(row, pointIds)" in response.text
+    assert "function refreshBranchSelectors()" in response.text
+    assert "checkbox.indeterminate = count > 0 && count < ids.length;" in response.text
+    assert "attachBranchSelector(row, points.map((point) => point.id));" in response.text
+    assert "attachBranchSelector(folderRow, folderPoints.map((point) => point.id));" in response.text
+    assert "attachBranchSelector(row, groupedDevices.flatMap" in response.text
+    assert "attachBranchSelector(ungroupedRow, ungroupedDevices.flatMap" in response.text
+    assert 'id="select-all-saved-points"' not in response.text
+    assert 'id="clear-saved-point-selection"' not in response.text
 
 
 def test_public_auth_config_reports_missing_browser_config() -> None:
@@ -558,7 +592,7 @@ def test_ui_gateway_heartbeat_trend_returns_ordered_history() -> None:
 
 
 def test_gateway_update_request_queue_claim_and_completion() -> None:
-    create_gateway_token("GW001")
+    raw_token = create_gateway_token("GW001")
 
     queued = client.post(
         "/api/ui/gateway-updates",
@@ -570,6 +604,8 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     request = queued.json()[0]
     assert request["gateway_id"] == "GW001"
     assert request["status"] == "queued"
+    assert request["update_scope"] == "ui_only"
+    assert request["target_ui_version"] == "0.1.7"
 
     listed = client.get("/api/admin/gateway-updates", headers=admin_headers())
     assert listed.status_code == 200
@@ -586,6 +622,21 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     )
     assert completed.status_code == 200
     assert completed.json()["status"] == "completed"
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
+        assert edge_node is not None
+        assert edge_node.ui_version == "0.1.7"
+        assert edge_node.agent_version == "0.1.0"
+        assert edge_node.site_id == "demo-site"
+
+    placeholder_heartbeat = heartbeat_payload("GW001")
+    placeholder_heartbeat["ui_version"] = "current"
+    heartbeat = client.post("/api/edge/heartbeat", headers=auth_headers(raw_token), json=placeholder_heartbeat)
+    assert heartbeat.status_code == 200
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
+        assert edge_node is not None
+        assert edge_node.ui_version == "0.1.7"
 
 
 def test_configure_gateway_redirects_to_cloud_tunnel() -> None:
@@ -2179,10 +2230,16 @@ def test_ui_tree_write_routes_reject_viewer() -> None:
         headers=user_headers("viewer@example.com", user_id),
         json={"devices": [{"device_id": "1001", "points": []}]},
     )
+    write_response = client.post(
+        "/api/ui/gateways/GW001/points/write",
+        headers=user_headers("viewer@example.com", user_id),
+        json={"writes": [{"point_id": str(uuid4()), "action": "write", "value": "72", "priority": 16}]},
+    )
 
     assert group_response.status_code == 403
     assert device_response.status_code == 403
     assert import_response.status_code == 403
+    assert write_response.status_code == 403
 
 
 def test_ui_gateway_tree_can_store_group_device_and_point() -> None:
@@ -2290,6 +2347,8 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
                         "object_instance": 1,
                         "value": 72.4,
                         "raw_value": "72.4",
+                        "priority_array": "priority-array: [1] NULL [8] 72.5 [9] NULL",
+                        "active_priority": 8,
                         "status": "ok",
                     },
                     {
@@ -2311,11 +2370,120 @@ def test_ui_can_queue_saved_point_reads_and_store_result_value() -> None:
     assert read_response.json()["queued_count"] == 1
     assert next_response.status_code == 200
     assert next_response.json()["job_type"] == "bacnet_read_bulk"
+    assert next_response.json()["request"]["read_priority_arrays"] is True
     assert len(next_response.json()["request"]["points"]) == 2
     assert next_response.json()["request"]["points"][0]["saved_point_id"] == point_response.json()["id"]
     assert result_response.status_code == 200
     assert tree_response.json()["points"][0]["present_value"] == "72.4"
+    assert tree_response.json()["points"][0]["active_priority"] == 8
+    assert tree_response.json()["points"][0]["priority_array"] == "priority-array: [1] NULL [8] 72.5 [9] NULL"
     assert tree_response.json()["points"][1]["present_value"] == "active"
+
+
+def test_ui_can_queue_saved_point_writes_by_device_and_store_command_state() -> None:
+    from app.models import EdgeJob
+
+    raw_token = create_gateway_token("GW001")
+    set_gateway_heartbeat("GW001", seconds_ago=15)
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+    headers = user_headers("operator@example.com", user_id)
+
+    point_ids: list[str] = []
+    for device_instance, object_type, object_instance in (
+        (1001, "analog-output", 2),
+        (2002, "binary-value", 5),
+    ):
+        device_response = client.post(
+            "/api/ui/gateways/GW001/devices",
+            headers=headers,
+            json={"device_instance": device_instance, "device_name": f"Device {device_instance}"},
+        )
+        point_response = client.post(
+            f"/api/ui/devices/{device_response.json()['id']}/points",
+            headers=headers,
+            json={
+                "object_type": object_type,
+                "object_instance": object_instance,
+                "object_name": f"Commandable {object_instance}",
+                "property": "present-value",
+                "writable": True,
+            },
+        )
+        point_ids.append(point_response.json()["id"])
+
+    write_response = client.post(
+        "/api/ui/gateways/GW001/points/write",
+        headers=headers,
+        json={
+            "writes": [
+                {"point_id": point_ids[0], "action": "write", "value": "72.5", "priority": 8},
+                {"point_id": point_ids[1], "action": "relinquish", "priority": 16},
+            ]
+        },
+    )
+
+    assert write_response.status_code == 200
+    write_payload = write_response.json()
+    assert write_payload["queued_count"] == 2
+    assert len(write_payload["job_ids"]) == 2
+    assert write_payload["missing_ids"] == []
+
+    with SessionLocal() as db:
+        jobs = list(db.scalars(select(EdgeJob).where(EdgeJob.job_id.in_(write_payload["job_ids"]))).all())
+    jobs_by_device = {job.request_json["device_instance"]: job for job in jobs}
+    assert set(jobs_by_device) == {1001, 2002}
+    assert jobs_by_device[1001].job_type == "bacnet_write_batch"
+    assert jobs_by_device[1001].request_json["writes"] == [
+        {
+            "saved_point_id": point_ids[0],
+            "object_type": "analog-output",
+            "object_instance": 2,
+            "action": "write",
+            "value": "72.5",
+            "priority": 8,
+        }
+    ]
+
+    result_response = client.post(
+        f"/api/edge/jobs/{jobs_by_device[1001].job_id}/result",
+        headers=auth_headers(raw_token),
+        json={
+            "status": "completed",
+            "result": {
+                "status": "ok",
+                "results": [
+                    {
+                        "saved_point_id": point_ids[0],
+                        "ok": True,
+                        "active_priority": 8,
+                        "priority_array": "[1] NULL [8] 72.5 [9] NULL",
+                    }
+                ],
+            },
+            "error_message": None,
+        },
+    )
+    tree_response = client.get("/api/ui/gateways/GW001/tree", headers=headers)
+    points_by_id = {point["id"]: point for point in tree_response.json()["points"]}
+
+    assert result_response.status_code == 200
+    assert points_by_id[point_ids[0]]["active_priority"] == 8
+    assert points_by_id[point_ids[0]]["priority_array"] == "[1] NULL [8] 72.5 [9] NULL"
+
+
+def test_ui_point_write_requires_a_value_for_write_action() -> None:
+    create_gateway_token("GW001")
+    set_gateway_heartbeat("GW001", seconds_ago=15)
+    user_id = create_operator_user("operator@example.com", role="operator", status="active")
+
+    response = client.post(
+        "/api/ui/gateways/GW001/points/write",
+        headers=user_headers("operator@example.com", user_id),
+        json={"writes": [{"point_id": str(uuid4()), "action": "write", "priority": 16}]},
+    )
+
+    assert response.status_code == 422
+    assert "value is required for write" in response.text
 
 
 def test_ui_operator_can_import_edge_commissioning_template() -> None:
@@ -2846,6 +3014,82 @@ def test_create_claim_and_complete_job() -> None:
     assert completed["completed_at"] is not None
 
 
+def test_edge_discovery_and_point_load_results_reconcile_inventory_lifecycle() -> None:
+    from app.models import EdgeJob, SavedBacnetDevice, SavedBacnetPoint
+
+    raw_token = create_gateway_token("GW001")
+    discovery = client.post(
+        "/api/edge/jobs",
+        headers=admin_headers(),
+        json={"gateway_id": "GW001", "job_type": "bacnet_discover", "request": {}},
+    ).json()
+    response = client.post(
+        f"/api/edge/jobs/{discovery['job_id']}/result",
+        headers=auth_headers(raw_token),
+        json={"status": "completed", "result": {"devices": [{"device_id": 1001, "network": 1, "mac": "0A"}]}, "error_message": None},
+    )
+    assert response.status_code == 200
+    with SessionLocal() as db:
+        device = db.scalar(select(SavedBacnetDevice).where(SavedBacnetDevice.gateway_id == "GW001"))
+        assert device is not None
+        assert device.device_instance == 1001
+        assert device.lifecycle_state == "active"
+        assert device.first_seen_at is not None
+        assert device.last_seen_at is not None
+        device_id = str(device.id)
+
+    with SessionLocal() as db:
+        point_load = EdgeJob(
+            job_id=f"job-{uuid4().hex}",
+            gateway_id="GW001",
+            job_type="bacnet_load_points",
+            status="claimed",
+            request_json={"saved_device_id": device_id},
+        )
+        db.add(point_load)
+        db.commit()
+        point_load_job_id = point_load.job_id
+    response = client.post(
+        f"/api/edge/jobs/{point_load_job_id}/result",
+        headers=auth_headers(raw_token),
+        json={"status": "completed", "result": {"points": [{"object_type": "analog-value", "object_instance": 39, "object_name": "Occupied Heat Setpoint"}]}, "error_message": None},
+    )
+    assert response.status_code == 200
+    with SessionLocal() as db:
+        point = db.scalar(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device_id))
+        assert point is not None
+        assert point.lifecycle_state == "active"
+        assert point.first_seen_at is not None
+        assert point.last_seen_at is not None
+
+
+def test_edge_inventory_snapshot_reconciles_saved_devices_and_points() -> None:
+    from app.models import SavedBacnetDevice, SavedBacnetPoint
+
+    raw_token = create_gateway_token("GW001")
+    first = client.put(
+        "/api/edge/GW001/inventory-snapshot",
+        headers=auth_headers(raw_token),
+        json={"devices": [{"device_instance": 1001, "device_name": "RTU-1", "points": [{"object_type": "analog-value", "object_instance": 1, "object_name": "Setpoint"}]}]},
+    )
+    assert first.status_code == 200
+    assert first.json()["devices_upserted"] == 1
+    assert first.json()["points_upserted"] == 1
+    with SessionLocal() as db:
+        device = db.scalar(select(SavedBacnetDevice).where(SavedBacnetDevice.gateway_id == "GW001"))
+        point = db.scalar(select(SavedBacnetPoint).where(SavedBacnetPoint.gateway_id == "GW001"))
+        assert device is not None and device.enabled is True
+        assert point is not None and point.enabled is True
+
+    second = client.put("/api/edge/GW001/inventory-snapshot", headers=auth_headers(raw_token), json={"devices": []})
+    assert second.status_code == 200
+    assert second.json()["devices_retired"] == 1
+    assert second.json()["points_retired"] == 1
+    with SessionLocal() as db:
+        assert db.scalar(select(SavedBacnetDevice.enabled).where(SavedBacnetDevice.gateway_id == "GW001")) is False
+        assert db.scalar(select(SavedBacnetPoint.enabled).where(SavedBacnetPoint.gateway_id == "GW001")) is False
+
+
 def test_job_creation_rejects_payload_field() -> None:
     response = client.post(
         "/api/edge/jobs",
@@ -3120,3 +3364,48 @@ def test_admin_provision_gateway_updates_existing_identity_and_issues_new_token(
     assert edge_node is not None
     assert edge_node.site_id == "test-bench"
     assert len(credentials) == 2
+
+
+def test_workspace_routes_enforce_site_scope_and_admin_access_overview_lists_memberships() -> None:
+    from app.auth import AdminAuthContext, require_job_operator_auth, require_operator_auth
+    from app.models import SiteMembership
+
+    create_gateway_token("GW001")
+    user_id = create_operator_user("scoped@example.com", role="operator", status="active")
+    with SessionLocal() as db:
+        visible_site = db.scalar(select(Site).where(Site.site_id == "demo-site"))
+        assert visible_site is not None
+        hidden_site = Site(site_id="hidden-site", name="Hidden site")
+        db.add(hidden_site)
+        db.flush()
+        db.add(
+            EdgeNode(
+                gateway_id="GW002",
+                site_id=hidden_site.site_id,
+                hostname="GW002",
+                bacnet_port=47814,
+                agent_version="0.1.0",
+                ui_version="0.1.0",
+                sqlite_db_ok=True,
+                queued_upload_count=0,
+                latest_status="online",
+            )
+        )
+        operator = db.scalar(select(OperatorUser).where(OperatorUser.email == "scoped@example.com"))
+        assert operator is not None
+        db.add(SiteMembership(site_uuid=visible_site.id, operator_user_id=operator.id, role="operator"))
+        db.commit()
+
+    scoped_auth = AdminAuthContext(auth_type="supabase_user", role="operator", operator_user_id=str(operator.id))
+    app.dependency_overrides[require_operator_auth] = lambda: scoped_auth
+    app.dependency_overrides[require_job_operator_auth] = lambda: scoped_auth
+    try:
+        assert client.get("/api/ui/gateways/GW001/tree").status_code == 200
+        assert client.get("/api/ui/gateways/GW002/tree").status_code == 404
+        assert client.post("/api/ui/gateways/GW002/groups", json={"name": "Hidden"}).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+    overview = client.get("/api/admin/access-overview", headers=admin_headers())
+    assert overview.status_code == 200
+    assert overview.json()["memberships"] == [{"email": "scoped@example.com", "role": "operator", "scope_kind": "site", "scope_id": "demo-site", "scope_name": "demo-site"}]

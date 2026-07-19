@@ -139,6 +139,36 @@ class HeartbeatAccepted(BaseModel):
     latest_heartbeat_at: datetime
 
 
+class EdgeInventoryPointIn(BaseModel):
+    object_type: str = Field(min_length=1, max_length=80)
+    object_instance: int = Field(ge=0)
+    object_name: str | None = Field(default=None, max_length=255)
+
+
+class EdgeInventoryDeviceIn(BaseModel):
+    device_instance: int = Field(ge=0)
+    device_name: str | None = Field(default=None, max_length=255)
+    points: list[EdgeInventoryPointIn] = Field(default_factory=list, max_length=1000)
+
+
+class EdgeInventorySnapshotIn(BaseModel):
+    """Complete, bounded Edge UI inventory for one gateway.
+
+    A successful upload is authoritative for this gateway: omitted devices and
+    points are retired, never deleted, so their cloud history remains intact.
+    """
+
+    devices: list[EdgeInventoryDeviceIn] = Field(default_factory=list, max_length=250)
+
+
+class EdgeInventorySnapshotOut(BaseModel):
+    gateway_id: str
+    devices_upserted: int
+    points_upserted: int
+    devices_retired: int
+    points_retired: int
+
+
 class SiteOut(BaseModel):
     site_id: str
     name: str
@@ -328,6 +358,8 @@ class GatewayHeartbeatTrendOut(BaseModel):
 
 class GatewayUpdateRequestIn(BaseModel):
     gateway_ids: list[str] = Field(min_length=1, max_length=100)
+    update_scope: Literal["ui_only", "agent"] = "ui_only"
+    target_ui_version: str | None = Field(default="0.1.7", min_length=1, max_length=80)
 
 
 class GatewayUpdateCompleteIn(BaseModel):
@@ -343,6 +375,9 @@ class GatewayUpdateRequestOut(BaseModel):
     gateway_host: str | None
     cradlepoint_host: str | None
     agent_version: str
+    ui_version: str
+    update_scope: str
+    target_ui_version: str | None
     status: str
     requested_by: str | None
     requested_at: datetime
@@ -547,6 +582,29 @@ class SavedPointsReadOut(BaseModel):
     missing_ids: list[str]
 
 
+class SavedPointWriteItemIn(BaseModel):
+    point_id: str
+    action: Literal["write", "relinquish", "relinquish-default"] = "write"
+    value: str | None = Field(default=None, max_length=255)
+    priority: int = Field(default=16, ge=1, le=16)
+
+    @model_validator(mode="after")
+    def validate_value_for_action(self) -> "SavedPointWriteItemIn":
+        if self.action != "relinquish" and (self.value is None or not self.value.strip()):
+            raise ValueError(f"value is required for {self.action}")
+        return self
+
+
+class SavedPointsWriteIn(BaseModel):
+    writes: list[SavedPointWriteItemIn] = Field(min_length=1, max_length=100)
+
+
+class SavedPointsWriteOut(BaseModel):
+    queued_count: int
+    job_ids: list[str]
+    missing_ids: list[str]
+
+
 class CommissioningTemplateGroupIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
@@ -632,6 +690,10 @@ class SavedPointOut(BaseModel):
     present_value: str | None
     units: str | None
     writable: bool | None
+    active_priority: int | None = None
+    priority_array: str | None = None
+    relinquish_default: str | None = None
+    state_text: str | None = None
     latest_read_at: datetime | None
     first_seen_at: datetime | None
     last_seen_at: datetime | None
