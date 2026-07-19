@@ -1,6 +1,7 @@
 """Bounded publisher for the gateway-local Edge UI saved-device inventory."""
 
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from iot_cx_agent.db import connect
 from iot_cx_agent.heartbeat import auth_headers
 
 
-def _snapshot(data_dir: Path) -> dict[str, object]:
+def _snapshot(data_dir: Path, edge_trends_db_path: Path | None = None) -> dict[str, object]:
     devices: list[dict[str, object]] = []
     for path in sorted((data_dir / "devices").glob("*.json")):
         try:
@@ -25,7 +26,28 @@ def _snapshot(data_dir: Path) -> dict[str, object]:
             devices.append({"device_instance": device_instance, "device_name": str(raw.get("device_name") or "").strip() or None, "points": points[:1000]})
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             continue
-    return {"devices": devices[:250]}
+    payload: dict[str, object] = {"devices": devices[:250], "trend_snapshot_complete": False, "trend_points": []}
+    if edge_trends_db_path is None or not edge_trends_db_path.exists():
+        return payload
+    try:
+        with sqlite3.connect(edge_trends_db_path, timeout=5) as conn:
+            rows = conn.execute(
+                """SELECT p.device_instance, p.object_type, p.object_instance,
+                          MIN(g.interval_sec) AS interval_sec
+                   FROM trend_points p JOIN trend_groups g ON g.id=p.group_id
+                   WHERE g.enabled=1 GROUP BY p.device_instance, p.object_type, p.object_instance"""
+            ).fetchall()
+        payload["trend_snapshot_complete"] = True
+        payload["trend_points"] = [
+            {"device_instance": int(device), "object_type": str(kind).strip().lower(),
+             "object_instance": int(instance), "interval_sec": int(interval)}
+            for device, kind, instance, interval in rows
+        ][:1000]
+    except sqlite3.Error:
+        # Leave the prior cloud display config alone until the Edge trend DB is
+        # readable again; a transient SQLite lock is not an authoritative clear.
+        pass
+    return payload
 
 
 def publish_inventory_snapshot(config: AgentConfig) -> bool:
@@ -43,7 +65,7 @@ def publish_inventory_snapshot(config: AgentConfig) -> bool:
             pass
     response = requests.put(
         f"{config.cloud_url}/api/edge/{config.gateway_id}/inventory-snapshot",
-        headers=auth_headers(config), json=_snapshot(config.edge_ui_data_dir), timeout=30,
+        headers=auth_headers(config), json=_snapshot(config.edge_ui_data_dir, config.edge_trends_db_path), timeout=30,
     )
     response.raise_for_status()
     with connect(config.sqlite_path) as conn:

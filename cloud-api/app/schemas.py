@@ -145,6 +145,13 @@ class EdgeInventoryPointIn(BaseModel):
     object_name: str | None = Field(default=None, max_length=255)
 
 
+class EdgeTrendPointIn(BaseModel):
+    device_instance: int = Field(ge=0)
+    object_type: str = Field(min_length=1, max_length=80)
+    object_instance: int = Field(ge=0)
+    interval_sec: int = Field(ge=30, le=86_400)
+
+
 class EdgeInventoryDeviceIn(BaseModel):
     device_instance: int = Field(ge=0)
     device_name: str | None = Field(default=None, max_length=255)
@@ -159,6 +166,10 @@ class EdgeInventorySnapshotIn(BaseModel):
     """
 
     devices: list[EdgeInventoryDeviceIn] = Field(default_factory=list, max_length=250)
+    # True only when the gateway successfully read its Edge UI trend store.
+    # A failed local read must never clear cloud display state.
+    trend_snapshot_complete: bool = False
+    trend_points: list[EdgeTrendPointIn] = Field(default_factory=list, max_length=1000)
 
 
 class EdgeInventorySnapshotOut(BaseModel):

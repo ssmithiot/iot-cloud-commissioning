@@ -2429,6 +2429,37 @@ def edge_replace_inventory_snapshot(
                 point.lifecycle_state = "retired"
                 point.retired_at = now
                 points_retired += 1
+    if payload.trend_snapshot_complete:
+        points_by_identity = {
+            (point.device_instance, point.object_type, point.object_instance): point
+            for point in db.scalars(
+                select(SavedBacnetPoint).where(
+                    SavedBacnetPoint.gateway_id == gateway_id,
+                    SavedBacnetPoint.enabled.is_(True),
+                )
+            ).all()
+        }
+        mirrored: dict[str, int] = {}
+        for trend in payload.trend_points:
+            point = points_by_identity.get((trend.device_instance, trend.object_type, trend.object_instance))
+            if point is not None:
+                # A point in multiple Edge groups is sampled at its smallest
+                # enabled interval; the cloud has one display config per point.
+                mirrored[point.id] = min(mirrored.get(point.id, trend.interval_sec), trend.interval_sec)
+        for config in db.scalars(
+            select(PointTrendConfig).where(PointTrendConfig.gateway_id == gateway_id)
+        ).all():
+            if config.point_id not in mirrored:
+                config.enabled = False
+                config.updated_at = now
+        for point_id, interval_sec in mirrored.items():
+            config = db.get(PointTrendConfig, point_id)
+            if config is None:
+                config = PointTrendConfig(point_id=point_id, gateway_id=gateway_id)
+                db.add(config)
+            config.enabled = True
+            config.interval_sec = interval_sec
+            config.updated_at = now
     for device_instance, device in existing_devices.items():
         if device_instance not in submitted_devices and device.enabled:
             device.enabled = False

@@ -3090,6 +3090,23 @@ def test_edge_inventory_snapshot_reconciles_saved_devices_and_points() -> None:
         assert db.scalar(select(SavedBacnetPoint.enabled).where(SavedBacnetPoint.gateway_id == "GW001")) is False
 
 
+def test_edge_inventory_snapshot_mirrors_edge_trend_definitions() -> None:
+    from app.models import PointTrendConfig, SavedBacnetPoint
+
+    raw_token = create_gateway_token("GW001")
+    response = client.put(
+        "/api/edge/GW001/inventory-snapshot",
+        headers=auth_headers(raw_token),
+        json={"devices": [{"device_instance": 2001, "points": [{"object_type": "analog-input", "object_instance": 1}]}], "trend_snapshot_complete": True, "trend_points": [{"device_instance": 2001, "object_type": "analog-input", "object_instance": 1, "interval_sec": 60}]},
+    )
+    assert response.status_code == 200
+    with SessionLocal() as db:
+        point = db.scalar(select(SavedBacnetPoint).where(SavedBacnetPoint.device_instance == 2001))
+        assert point is not None
+        config = db.get(PointTrendConfig, point.id)
+        assert config is not None and config.enabled is True and config.interval_sec == 60
+
+
 def test_job_creation_rejects_payload_field() -> None:
     response = client.post(
         "/api/edge/jobs",
