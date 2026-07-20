@@ -425,6 +425,8 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'version.toLowerCase() !== "current"' in response.text
     assert 'data-sort="version">Edge App</button>' in response.text
     assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
+    assert 'update_scope: "agent"' in response.text
+    assert 'gateway provisioning and config/token replacement' in response.text
     assert 'colspan="10"' in response.text
     assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
     assert 'const dashboardGatewayCacheKey = "iot-cloud-dashboard-gateway-cache-v1";' in response.text
