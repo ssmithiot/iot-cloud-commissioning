@@ -1562,7 +1562,7 @@ APP_SCRIPT = r"""
     if (update?.status === "queued" || update?.status === "running") {
       return `${versionSummary}<small>Update ${escapeHtml(update.status)}</small>`;
     }
-    const actionLabel = update?.status === "failed" ? "Retry UI" : "Update UI";
+    const actionLabel = update?.status === "failed" ? "Retry Edge" : "Update Edge";
     if (gatewayNeedsUiRelease(gateway)) {
       return `${versionSummary}<small class="edge-app-update-notice">Edge UI ${edgeUiReleaseVersion} required (reported ${escapeHtml(gateway.ui_version || "unknown")})</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
     }
@@ -1612,7 +1612,11 @@ APP_SCRIPT = r"""
     try {
       await api("/api/ui/gateway-updates", {
         method: "POST",
-        body: JSON.stringify({ gateway_ids: ids, update_scope: "ui_only", target_ui_version: edgeUiReleaseVersion })
+      // The field maintenance release updates the approved Edge UI and agent
+      // together.  The legacy worker's agent scope deliberately excludes
+      // gateway provisioning and config/token replacement, preserving the
+      // gateway's local Edge setup (including trends) and identity.
+      body: JSON.stringify({ gateway_ids: ids, update_scope: "agent" })
       });
       selectedGatewayUpdateIds.clear();
       await refreshGatewayUpdates();
