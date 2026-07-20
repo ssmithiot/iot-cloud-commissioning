@@ -36,6 +36,7 @@ from app.access import require_site_access, visible_site_ids
 from app.config import settings
 from app.database import Base, engine, get_db
 from app.models import (
+    EdgeLocalTrendSample,
     EdgeHeartbeat,
     EdgeJob,
     EdgeNode,
@@ -67,6 +68,8 @@ from app.schemas import (
     EdgeJobClaimOut,
     EdgeInventorySnapshotIn,
     EdgeInventorySnapshotOut,
+    EdgeLocalTrendSampleIn,
+    EdgeLocalTrendUploadOut,
     EdgeTrendConfigOut,
     GatewayGroupIn,
     GatewayGroupOut,
@@ -2370,6 +2373,48 @@ def edge_upload_trend_samples(
         stored.append(existing)
     db.commit()
     return stored
+
+
+@app.post("/api/edge/{gateway_id}/local-trend-samples", response_model=EdgeLocalTrendUploadOut)
+def edge_upload_local_trend_samples(
+    gateway_id: str,
+    payload: list[EdgeLocalTrendSampleIn] = Body(min_length=1, max_length=500),
+    auth: GatewayAuthContext = Depends(require_gateway_auth),
+    db: Session = Depends(get_db),
+) -> EdgeLocalTrendUploadOut:
+    """Idempotently copy Edge-owned samples into raw and point history."""
+    if auth.gateway_id != gateway_id:
+        raise HTTPException(status_code=403, detail="Gateway credential does not match local trend sample gateway_id")
+    event_ids = [sample.event_id for sample in payload]
+    if len(event_ids) != len(set(event_ids)):
+        raise HTTPException(status_code=422, detail="Local trend sample batch must not contain duplicate event_ids")
+    accepted: list[str] = []
+    for sample in payload:
+        existing = db.scalar(select(EdgeLocalTrendSample).where(EdgeLocalTrendSample.event_id == sample.event_id))
+        if existing is None:
+            db.add(EdgeLocalTrendSample(
+                event_id=sample.event_id, gateway_id=gateway_id, group_name=sample.group_name,
+                device_instance=sample.device_instance, object_type=sample.object_type,
+                object_instance=sample.object_instance, object_name=sample.object_name,
+                sampled_at=sample.sampled_at, value_text=sample.value_text, status=sample.status,
+                read_source=sample.read_source, error_text=sample.error_text,
+            ))
+            point = db.scalar(select(SavedBacnetPoint).where(
+                SavedBacnetPoint.gateway_id == gateway_id,
+                SavedBacnetPoint.device_instance == sample.device_instance,
+                SavedBacnetPoint.object_type == sample.object_type,
+                SavedBacnetPoint.object_instance == sample.object_instance,
+            ))
+            if point is not None and sample.status == "ok":
+                history = db.scalar(select(PointTrendSample).where(
+                    PointTrendSample.point_id == point.id,
+                    PointTrendSample.sampled_at == sample.sampled_at,
+                ))
+                if history is None:
+                    db.add(PointTrendSample(point_id=point.id, gateway_id=gateway_id, sampled_at=sample.sampled_at, value=sample.value_text))
+        accepted.append(sample.event_id)
+    db.commit()
+    return EdgeLocalTrendUploadOut(accepted_event_ids=accepted)
 
 
 @app.put("/api/edge/{gateway_id}/inventory-snapshot", response_model=EdgeInventorySnapshotOut)
