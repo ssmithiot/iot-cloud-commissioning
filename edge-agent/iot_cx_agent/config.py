@@ -104,6 +104,16 @@ def _parse_port(raw_port: object, source: str) -> int:
     return port
 
 
+def _positive_int(raw_value: object, source: str, *, minimum: int = 1) -> int:
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{source} must be an integer greater than or equal to {minimum}") from exc
+    if value < minimum:
+        raise ValueError(f"{source} must be an integer greater than or equal to {minimum}")
+    return value
+
+
 def normalize_bacnet_router_profile(raw_profile: object | None) -> str:
     profile = str(raw_profile or "contemporary").strip().lower()
     profile = profile.replace("_", "-")
