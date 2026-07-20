@@ -44,6 +44,9 @@ class AgentConfig:
     bacnet_lock_timeout_sec: float = 30.0
     bacnet_lock_stale_sec: float = 120.0
     heartbeat_interval_sec: int = 30
+    # Legacy cloud-configured trend polling. Keep off for edge-authoritative
+    # deployments so the same point is never sampled by two owners.
+    cloud_trend_sync_enabled: bool = False
     inventory_sync_interval_sec: int = 300
     edge_ui_data_dir: Path | None = None
     trend_outbox_max_pending: int = 10_000
@@ -162,6 +165,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         bacnet_lock_timeout_sec=float(bacnet.get("lock_timeout_sec", 30)),
         bacnet_lock_stale_sec=float(bacnet.get("lock_stale_sec", 120)),
         heartbeat_interval_sec=int(raw.get("heartbeat_interval_sec", 30)),
+        cloud_trend_sync_enabled=bool(raw.get("cloud_trend_sync_enabled", False)),
         inventory_sync_interval_sec=int(raw.get("inventory_sync_interval_sec", 300)),
         edge_ui_data_dir=Path(raw["edge_ui_data_dir"]) if raw.get("edge_ui_data_dir") else None,
         trend_outbox_max_pending=int(raw.get("trend_outbox_max_pending", 10_000)),

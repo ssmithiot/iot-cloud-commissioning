@@ -67,13 +67,14 @@ def run_once(config: AgentConfig) -> bool:
             logger.warning("Inventory snapshot sync failed: %s", exc)
         except Exception:
             logger.exception("Inventory snapshot sync failed")
-        try:
-            sample_configured_trends(config)
-            upload_pending_trend_samples(config)
-        except requests.RequestException as exc:
-            logger.warning("Legacy cloud trend sync failed: %s", exc)
-        except Exception:
-            logger.exception("Legacy cloud trend sampling failed")
+        if config.cloud_trend_sync_enabled:
+            try:
+                sample_configured_trends(config)
+                upload_pending_trend_samples(config)
+            except requests.RequestException as exc:
+                logger.warning("Legacy cloud trend sync failed: %s", exc)
+            except Exception:
+                logger.exception("Legacy cloud trend sampling failed")
         try:
             sample_local_edge_trends(config)
             upload_local_edge_trend_samples(config)
