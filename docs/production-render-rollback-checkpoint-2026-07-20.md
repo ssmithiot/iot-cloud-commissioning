@@ -73,3 +73,35 @@ keep the new table (it holds Edge-owned history).
 - Deployment ID / checkpoint / rollback-button confirmation: **BLOCKED on
   Render dashboard access** — operator steps above.
 - No production change of any kind was made.
+
+## Confirmed production checkpoint values (operator-supplied 2026-07-20)
+
+| Field | Value |
+|---|---|
+| Production Render service ID | `srv-d8tual7lk1mc73c3mgkg` |
+| Current live deployment ID (ROLLBACK TARGET) | `dep-d9drpvf41pts73dpt5cg` |
+| Current live production commit | `7128730` (Update Edge release version assertions) |
+| Production migration head | `0021_gateway_ui_only_updates` (matches `/health/schema`) |
+| Candidate commit to deploy | `e970d2e` (branch `codex/gw006-edge-mirror-staging`) |
+| Migration head after deploy | `0022_edge_local_trend_samples` |
+
+### Branch-line reconciliation (verified this session)
+Production commit `7128730` is on a different branch line
+(`codex/release-governance` / `codex/ui-version-heartbeat-fix`) than the
+candidate; the deploy is therefore **not a fast-forward**. Verified safe:
+
+- The candidate contains **every** migration present in production
+  (`0001`–`0021`) **plus** `0022`. Zero migrations exist in production that
+  the candidate lacks (no divergent revision that Alembic would not know).
+- The only shared-file difference is `0021_gateway_ui_only_updates.py`:
+  the candidate guards a `server_default=None` drop to skip on SQLite
+  (which cannot `ALTER COLUMN`). **On PostgreSQL both versions emit
+  identical DDL.** Production already has `0021` applied and Alembic keys
+  off the revision ID in `alembic_version`, so `0021` will **not** re-run —
+  the deploy applies **only `0022`** (additive). The difference is
+  CI/SQLite-only and cannot affect production.
+
+**Rollback = Render deploy rollback to `dep-d9drpvf41pts73dpt5cg` (commit
+`7128730`).** `0022` is additive with a working downgrade, so rolling the
+deploy back to `7128730` leaves the new Edge-sample table in place and the
+older code simply ignores it — no destructive DB downgrade required.
