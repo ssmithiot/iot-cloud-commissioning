@@ -2475,6 +2475,13 @@ def edge_replace_inventory_snapshot(
                 point.retired_at = now
                 points_retired += 1
     if payload.trend_snapshot_complete:
+        # SessionLocal has autoflush disabled, so devices/points created above
+        # are still pending in the session. Flush them before the identity
+        # query so trend definitions can mirror onto points added in THIS same
+        # snapshot — the first-snapshot-to-fresh-inventory case (e.g. the
+        # production GW006 pilot), where trends would otherwise silently fail
+        # to mirror until a second snapshot arrived.
+        db.flush()
         points_by_identity = {
             (point.device_instance, point.object_type, point.object_instance): point
             for point in db.scalars(
