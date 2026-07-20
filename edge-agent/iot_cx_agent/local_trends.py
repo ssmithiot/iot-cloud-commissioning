@@ -62,6 +62,24 @@ def _ensure_outbox_schema(path: Path) -> None:
         conn.executescript(OUTBOX_SCHEMA)
 
 
+def _backfill_unqueued_samples(path: Path) -> None:
+    """Seed one durable event for samples captured before the outbox upgrade."""
+    now = _now()
+    with _connect(path) as conn:
+        rows = conn.execute(
+            """SELECT s.id FROM trend_samples s
+               LEFT JOIN trend_upload_outbox o ON o.trend_sample_id=s.id
+               WHERE o.id IS NULL ORDER BY s.id"""
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                """INSERT INTO trend_upload_outbox
+                (event_id, trend_sample_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?)""",
+                (str(uuid4()), int(row["id"]), now, now),
+            )
+
+
 def _due_groups(path: Path, now: str) -> list[dict[str, Any]]:
     with _connect(path) as conn:
         rows = conn.execute(
@@ -202,6 +220,7 @@ def upload_local_edge_trend_samples(config: AgentConfig) -> int:
     if not config.local_edge_trends_enabled or not config.local_edge_trend_cloud_sync_enabled or not config.edge_trends_db_path.exists():
         return 0
     _ensure_outbox_schema(config.edge_trends_db_path)
+    _backfill_unqueued_samples(config.edge_trends_db_path)
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat(timespec="seconds")
     if not _upload_interval_elapsed(config.edge_trends_db_path, now_dt, config.local_edge_trend_upload_interval_sec):
