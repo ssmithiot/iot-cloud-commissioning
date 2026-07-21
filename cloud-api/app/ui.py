@@ -1807,7 +1807,7 @@ APP_SCRIPT = r"""
       <dl class="inspector-grid">
         <dt>Address</dt><dd>${escapeHtml(gatewayAddress(gateway) || "No address on file")}</dd>
         <dt>Host</dt><dd>${escapeHtml(gateway.hostname || "")}</dd>
-        <dt>LAN IP</dt><dd>${escapeHtml(gateway.lan_ip || "unknown")}</dd>
+        <dt>WAN / Router IP</dt><dd>${escapeHtml(gateway.wan_ip || "not configured")}</dd>
         <dt>Heartbeat</dt><dd>${escapeHtml(heartbeatLabel(gateway))}</dd>
         <dt>Trend</dt><dd id="gateway-heartbeat-trend" class="heartbeat-trend">Loading recent heartbeat trend...</dd>
         <dt>Weather</dt><dd id="gateway-weather">Loading weather...</dd>
@@ -3355,6 +3355,20 @@ APP_SCRIPT = r"""
 
     const directLink = byId("direct-connect-link");
     const directStatus = byId("direct-connect-status");
+    const remoteTunnelLink = byId("remote-tunnel-link");
+    const tunnelStatusLabel = byId("tunnel-status");
+    if (tunnelStatusLabel) {
+      tunnelStatusLabel.textContent = tunnelStatus.connected ? "connected" : "not connected";
+    }
+    if (remoteTunnelLink) {
+      if (tunnelStatus.connected && currentUser && currentUser.role !== "viewer") {
+        remoteTunnelLink.href = `/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/tunnel/`;
+        remoteTunnelLink.hidden = false;
+      } else {
+        remoteTunnelLink.hidden = true;
+        remoteTunnelLink.removeAttribute("href");
+      }
+    }
     if (directConnect.available && directConnect.url && currentUser && currentUser.role !== "viewer") {
       directStatus.textContent = `${directConnect.host}:${directConnect.port}`;
       directLink.hidden = false;
@@ -4701,6 +4715,11 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       min-height: 28px;
       padding: 4px 8px;
       font-size: 11px;
+    }}
+    .gateway-access-actions {{
+      display: grid;
+      justify-items: start;
+      gap: 8px;
     }}
     .tree-scroll {{
       min-height: 420px;
@@ -6329,7 +6348,8 @@ def gateway_workspace_html(gateway_id: str) -> str:
           <div class="grid">
             <div class="span-4"><label>Tunnel Status</label><pre id="tunnel-status">Loading...</pre></div>
             <div class="span-4"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
-            <div class="span-4"><label>Action</label><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div>
+          <div class="span-4"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
+          <div class="span-4"><label>Action</label><div class="gateway-access-actions"><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a><a id="remote-tunnel-link" class="button secondary" href="#" hidden>Remote Tunnel</a></div></div>
           </div>
         </article>
         <article class="workspace-tile site-summary">

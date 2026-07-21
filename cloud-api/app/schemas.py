@@ -313,6 +313,7 @@ class GatewayOut(BaseModel):
     site_id: str
     hostname: str
     lan_ip: str | None
+    wan_ip: str | None = None
     bacnet_port: int
     agent_version: str
     ui_version: str

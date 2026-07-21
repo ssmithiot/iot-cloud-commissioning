@@ -410,6 +410,7 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'id="site-address-state"' in response.text
     assert 'id="site-address-postal-code"' in response.text
     assert 'id="direct-connect-link"' in response.text
+    assert 'id="remote-tunnel-link"' in response.text
     assert 'id="tunnel-status"' in response.text
     assert "Direct Connect" in response.text
     assert "GATEWAY_API_TOKEN" not in response.text
@@ -755,6 +756,7 @@ def test_gateway_list_includes_site_info_and_direct_connect_availability() -> No
     assert gateway["direct_connect_available"] is True
     assert gateway["direct_connect_host"] == "10.20.30.40"
     assert gateway["direct_connect_port"] == 5002
+    assert gateway["wan_ip"] == "10.20.30.40"
     assert gateway["network_status_notes"] == "The rest of the boxes on these two networks are online as well."
 
 

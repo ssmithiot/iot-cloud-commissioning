@@ -211,11 +211,13 @@ def _gateway_out(edge_node: EdgeNode, now: datetime | None = None) -> dict[str, 
     store_hours_sat = (site.store_hours_saturday or site.store_hours_sat) if site else None
     store_hours_sun = (site.store_hours_sunday or site.store_hours_sun) if site else None
     direct_connect = _direct_connect_for_site(site) if site else DirectConnectOut(available=False)
+    wan_ip = (site.direct_connect_host or site.cradlepoint_ip or site.external_ip) if site else None
     return {
         "gateway_id": edge_node.gateway_id,
         "site_id": edge_node.site_id,
         "hostname": edge_node.hostname,
         "lan_ip": edge_node.lan_ip,
+        "wan_ip": wan_ip,
         "bacnet_port": edge_node.bacnet_port,
         "agent_version": edge_node.agent_version,
         "ui_version": edge_node.ui_version,
