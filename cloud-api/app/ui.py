@@ -20,11 +20,12 @@ APP_SCRIPT = r"""
   let dashboardJobs = [];
   let dashboardGatewayUpdates = new Map();
   let selectedGatewayUpdateIds = new Set();
+  let dashboardGatewayRefreshInFlight = false;
+  let dashboardGatewayRefreshTimer = null;
   let dashboardWeather = new Map();
   let dashboardHeartbeatTrends = new Map();
   let selectedDashboardGatewayId = null;
   let dashboardSort = { key: "gateway_id", direction: "desc" };
-  let dashboardSortLoaded = false;
   let dashboardSearch = "";
   let mapZoom = 1;
   let mapProjection = null;
@@ -42,7 +43,10 @@ APP_SCRIPT = r"""
     viewBoxHeight: 560
   };
   const themeStorageKey = "iot-cloud-command-theme";
-  const dashboardSortStorageKey = "iot-cloud-dashboard-sort";
+  const dashboardRegistryStorageKey = "iot-cloud-dashboard-registry-state";
+  const dashboardGatewayCacheKey = "iot-cloud-dashboard-gateway-cache-v1";
+  const dashboardGatewayRefreshMs = 30000;
+  const dashboardSortKeys = new Set(["gateway_id", "site", "address", "hostname", "version", "status", "network_status_notes", "direct", "configure"]);
   const trendChartFrame = Object.freeze({ minWidth: 360, height: 230, left: 72, right: 20, top: 14, bottom: 48 });
   const trendChartSizeStorageKey = "iot-cloud-trend-chart-size";
   const trendChartThemeStorageKey = "iot-cloud-trend-chart-theme";
@@ -1189,31 +1193,119 @@ APP_SCRIPT = r"""
       return;
     }
     currentUser = me;
+    const savedGatewayId = restoreDashboardRegistryState();
+    setupGatewaySearch();
+    setupGatewaySortHeaders();
+    setupGatewayUpdateControls();
+    await initRoadMap();
+    const cachedGateways = restoreCachedDashboardGateways();
+    if (cachedGateways.length) {
+      dashboardGateways = cachedGateways;
+      selectedDashboardGatewayId = dashboardGateways.some((gateway) => gateway.gateway_id === savedGatewayId)
+        ? savedGatewayId
+        : dashboardGateways[0]?.gateway_id || null;
+      renderDashboardFromCurrentState({ jobs: [], fromCache: true });
+      setText("status", `Showing last known gateway list (${cachedGateways.length}); refreshing live data...`);
+    } else {
+      renderGatewayLoadingState("Loading gateways...");
+      setText("status", "Loading gateway list...");
+    }
+    await refreshDashboardGatewayData({ savedGatewayId, initial: true });
+    if (me.role === "admin") {
+      byId("admin-link").hidden = false;
+    }
+    if (!dashboardGatewayRefreshTimer) {
+      dashboardGatewayRefreshTimer = window.setInterval(() => {
+        refreshDashboardGatewayData({ initial: false });
+      }, dashboardGatewayRefreshMs);
+    }
+  }
+
+  async function refreshDashboardGatewayData({ savedGatewayId = selectedDashboardGatewayId, initial = false } = {}) {
+    if (dashboardGatewayRefreshInFlight) {
+      return;
+    }
+    dashboardGatewayRefreshInFlight = true;
+    if (!initial && dashboardGateways.length) {
+      setText("status", `Refreshing gateway list... showing ${dashboardGateways.length} last known gateway${dashboardGateways.length === 1 ? "" : "s"}.`);
+    }
     try {
-      const summary = await api("/api/ui/gateways/summary");
-      dashboardGateways = await api("/api/ui/gateways");
+      const [summary, gateways] = await Promise.all([
+        api("/api/ui/gateways/summary"),
+        api("/api/ui/gateways")
+      ]);
+      dashboardGateways = gateways;
+      cacheDashboardGateways(gateways);
       await refreshGatewayUpdates();
       dashboardJobs = await api("/api/edge/jobs?limit=10");
-      selectedDashboardGatewayId = dashboardGateways[0]?.gateway_id || null;
+      selectedDashboardGatewayId = dashboardGateways.some((gateway) => gateway.gateway_id === savedGatewayId)
+        ? savedGatewayId
+        : dashboardGateways[0]?.gateway_id || null;
+      persistDashboardRegistryState();
       const queuedUploads = dashboardGateways.reduce((total, gateway) => total + Number(gateway.queued_upload_count || 0), 0);
       metricCard("metric-total", "Total Gateways", summary.total, "registered");
       metricCard("metric-online", "Online", summary.online, "heartbeat active");
       metricCard("metric-stale", "Stale", summary.stale, "heartbeat delayed");
       metricCard("metric-offline", "Offline", summary.offline, "no current heartbeat");
       metricCard("metric-jobs", "Recent Jobs", dashboardJobs.length, `${queuedUploads} queued uploads`);
-      setupGatewaySearch();
-      setupGatewaySortHeaders();
-      setupGatewayUpdateControls();
-      await initRoadMap();
-      renderGatewayMap(sortedDashboardGateways());
-      renderGatewayInspector();
-      renderGatewayList();
-      renderEventTicker(dashboardJobs);
-      if (me.role === "admin") {
-        byId("admin-link").hidden = false;
-      }
+      renderDashboardFromCurrentState({ jobs: dashboardJobs, fromCache: false });
+      setText("status", `Gateway list refreshed: ${dashboardGateways.length} gateway${dashboardGateways.length === 1 ? "" : "s"} at ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}.`);
     } catch (error) {
-      setText("status", errorMessage(error), true);
+      if (dashboardGateways.length) {
+        renderDashboardFromCurrentState({ jobs: dashboardJobs, fromCache: true });
+        setText("status", `Gateway refresh failed; showing last known list. ${errorMessage(error)}`, true);
+      } else {
+        renderGatewayLoadingState(`Gateway list failed to load: ${errorMessage(error)}`);
+        setText("status", `Gateway list failed to load: ${errorMessage(error)}`, true);
+      }
+    } finally {
+      dashboardGatewayRefreshInFlight = false;
+    }
+  }
+
+  function gatewaySummaryFromRows(gateways) {
+    return gateways.reduce((summary, gateway) => {
+      summary.total += 1;
+      const status = gateway.effective_status || gateway.latest_status || "offline";
+      if (status === "online") summary.online += 1;
+      else if (status === "stale") summary.stale += 1;
+      else summary.offline += 1;
+      summary.queuedUploads += Number(gateway.queued_upload_count || 0);
+      return summary;
+    }, { total: 0, online: 0, stale: 0, offline: 0, queuedUploads: 0 });
+  }
+
+  function renderCachedMetricCards() {
+    const summary = gatewaySummaryFromRows(dashboardGateways);
+    metricCard("metric-total", "Total Gateways", summary.total, "last known");
+    metricCard("metric-online", "Online", summary.online, "last known");
+    metricCard("metric-stale", "Stale", summary.stale, "last known");
+    metricCard("metric-offline", "Offline", summary.offline, "last known");
+    metricCard("metric-jobs", "Recent Jobs", dashboardJobs.length || 0, `${summary.queuedUploads} queued uploads, last known`);
+  }
+
+  function renderDashboardFromCurrentState({ jobs = dashboardJobs, fromCache = false } = {}) {
+    if (fromCache) renderCachedMetricCards();
+    renderGatewayMap(sortedDashboardGateways());
+    renderGatewayInspector();
+    renderGatewayList();
+    renderEventTicker(jobs || []);
+  }
+
+  function cacheDashboardGateways(gateways) {
+    try {
+      window.localStorage.setItem(dashboardGatewayCacheKey, JSON.stringify({ cached_at: new Date().toISOString(), gateways: Array.isArray(gateways) ? gateways : [] }));
+    } catch {
+      // Dashboard remains live even if browser storage is unavailable.
+    }
+  }
+
+  function restoreCachedDashboardGateways() {
+    try {
+      const cached = JSON.parse(window.localStorage.getItem(dashboardGatewayCacheKey) || "{}");
+      return Array.isArray(cached.gateways) ? cached.gateways : [];
+    } catch {
+      return [];
     }
   }
 
@@ -1431,18 +1523,30 @@ APP_SCRIPT = r"""
     });
   }
 
-  function setupGatewaySortHeaders() {
-    if (!dashboardSortLoaded) {
-      dashboardSortLoaded = true;
-      try {
-        const stored = JSON.parse(localStorage.getItem(dashboardSortStorageKey) || "null");
-        if (stored && typeof stored.key === "string" && ["asc", "desc"].includes(stored.direction)) {
-          dashboardSort = { key: stored.key, direction: stored.direction };
-        }
-      } catch (_) {
-        // Ignore malformed browser-local preferences.
+  function restoreDashboardRegistryState() {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(dashboardRegistryStorageKey) || "{}");
+      if (dashboardSortKeys.has(saved.sort?.key) && ["asc", "desc"].includes(saved.sort?.direction)) {
+        dashboardSort = { key: saved.sort.key, direction: saved.sort.direction };
       }
+      return typeof saved.selectedGatewayId === "string" ? saved.selectedGatewayId : null;
+    } catch {
+      return null;
     }
+  }
+
+  function persistDashboardRegistryState() {
+    try {
+      window.localStorage.setItem(dashboardRegistryStorageKey, JSON.stringify({
+        sort: dashboardSort,
+        selectedGatewayId: selectedDashboardGatewayId
+      }));
+    } catch {
+      // The registry remains usable when browser storage is unavailable.
+    }
+  }
+
+  function setupGatewaySortHeaders() {
     document.querySelectorAll("[data-sort]").forEach((button) => {
       if (button.dataset.sortReady === "true") {
         return;
@@ -1456,7 +1560,7 @@ APP_SCRIPT = r"""
         } else {
           dashboardSort = { key, direction: "asc" };
         }
-        localStorage.setItem(dashboardSortStorageKey, JSON.stringify(dashboardSort));
+        persistDashboardRegistryState();
         renderGatewayMap(sortedDashboardGateways());
         renderGatewayList();
       });
@@ -1479,6 +1583,7 @@ APP_SCRIPT = r"""
 
   function selectDashboardGateway(gatewayId) {
     selectedDashboardGatewayId = gatewayId;
+    persistDashboardRegistryState();
     renderGatewayMap(sortedDashboardGateways());
     renderGatewayInspector();
     renderGatewayList();
@@ -1758,10 +1863,12 @@ APP_SCRIPT = r"""
     }
     for (const gateway of gateways) {
       const row = document.createElement("tr");
-      row.className = gateway.gateway_id === selectedDashboardGatewayId ? "selected-row" : "";
+      row.className = `gateway-select-row${gateway.gateway_id === selectedDashboardGatewayId ? " selected-row" : ""}`;
+      row.tabIndex = 0;
+      row.setAttribute("aria-label", `Show ${gateway.gateway_id} details`);
       row.innerHTML = `
         <td><input type="checkbox" aria-label="Select ${escapeHtml(gateway.gateway_id)} for application update" data-select-update="${escapeHtml(gateway.gateway_id)}"${selectedGatewayUpdateIds.has(gateway.gateway_id) ? " checked" : ""}${gatewayRequiresUpdate(gateway) ? "" : " disabled"}></td>
-        <td><a class="gateway-link" href="/gateways/${encodeURIComponent(gateway.gateway_id)}" data-select-gateway="${escapeHtml(gateway.gateway_id)}">${escapeHtml(gateway.gateway_id)}</a></td>
+        <td><a class="gateway-link" href="/gateways/${encodeURIComponent(gateway.gateway_id)}">${escapeHtml(gateway.gateway_id)}</a></td>
         <td><strong>${escapeHtml(gateway.site_name || gateway.site_id)}</strong><br><span class="muted">${escapeHtml(gateway.site_id)}</span></td>
         <td>${escapeHtml(gatewayAddress(gateway) || "")}</td>
         <td>${escapeHtml(gateway.hostname)}</td>
@@ -1771,18 +1878,39 @@ APP_SCRIPT = r"""
         <td>${directConnectCell(gateway)}</td>
         <td><a class="button table-command secondary" href="/gateways/${encodeURIComponent(gateway.gateway_id)}/configure">Configure</a></td>
       `;
+      row.addEventListener("click", (event) => {
+        if (event.target.closest("a, button, input, select, textarea, label")) {
+          return;
+        }
+        selectDashboardGateway(gateway.gateway_id);
+      });
+      row.addEventListener("keydown", (event) => {
+        if (event.target !== row || !["Enter", " "].includes(event.key)) {
+          return;
+        }
+        event.preventDefault();
+        selectDashboardGateway(gateway.gateway_id);
+      });
       table.appendChild(row);
     }
-    table.querySelectorAll("[data-select-gateway]").forEach((link) => {
-      link.addEventListener("mouseenter", () => selectDashboardGateway(link.dataset.selectGateway));
-      link.addEventListener("focus", () => selectDashboardGateway(link.dataset.selectGateway));
-      link.addEventListener("click", (event) => {
-        event.preventDefault();
-        selectDashboardGateway(link.dataset.selectGateway);
-      });
-    });
     attachDirectConnectHandlers(table);
     attachGatewayUpdateHandlers(table);
+    syncGatewayUpdateControls();
+  }
+
+  function renderGatewayLoadingState(message) {
+    const table = byId("gateway-list");
+    const count = byId("gateway-result-count");
+    if (count) {
+      count.textContent = dashboardGateways.length ? `${dashboardGateways.length} last known gateways` : "Loading gateways";
+    }
+    if (!table) {
+      return;
+    }
+    table.textContent = "";
+    const row = document.createElement("tr");
+    row.innerHTML = `<td colspan="10">${escapeHtml(message || "Loading gateways...")}</td>`;
+    table.appendChild(row);
     syncGatewayUpdateControls();
   }
 
@@ -5621,6 +5749,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .gateway-link:hover {{
       text-decoration: underline;
+    }}
+    .gateway-select-row {{
+      cursor: pointer;
+    }}
+    .gateway-select-row:focus-visible td {{
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
     }}
     .table-command {{
       min-height: 30px;
