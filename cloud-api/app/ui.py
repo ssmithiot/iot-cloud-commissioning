@@ -3356,17 +3356,44 @@ APP_SCRIPT = r"""
     const directLink = byId("direct-connect-link");
     const directStatus = byId("direct-connect-status");
     const remoteTunnelLink = byId("remote-tunnel-link");
+    const tunnelTtl = byId("workspace-tunnel-ttl-minutes");
     const tunnelStatusLabel = byId("tunnel-status");
     if (tunnelStatusLabel) {
       tunnelStatusLabel.textContent = tunnelStatus.connected ? "connected" : "not connected";
     }
     if (remoteTunnelLink) {
       if (tunnelStatus.connected && currentUser && currentUser.role !== "viewer") {
-        remoteTunnelLink.href = `/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/tunnel/`;
+        remoteTunnelLink.onclick = async (event) => {
+          event.preventDefault();
+          remoteTunnelLink.setAttribute("aria-busy", "true");
+          const tunnelWindow = window.open("about:blank", "_blank");
+          setText("status", "Creating short-lived tunnel session...");
+          try {
+            const session = await api(`/api/ui/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/tunnel-session`, {
+              method: "POST",
+              body: JSON.stringify({ ttl_minutes: Number(tunnelTtl?.value || 5) })
+            });
+            if (!tunnelWindow) {
+              throw new Error("Popup blocked. Allow popups for this site and try again.");
+            }
+            try {
+              tunnelWindow.opener = null;
+            } catch (_) {}
+            tunnelWindow.location.assign(session.url);
+            setText("status", "Tunnel opened in a new tab.");
+          } catch (error) {
+            if (tunnelWindow) tunnelWindow.close();
+            setText("status", errorMessage(error), true);
+          } finally {
+            remoteTunnelLink.removeAttribute("aria-busy");
+          }
+        };
+        remoteTunnelLink.href = "#";
         remoteTunnelLink.hidden = false;
       } else {
         remoteTunnelLink.hidden = true;
         remoteTunnelLink.removeAttribute("href");
+        remoteTunnelLink.onclick = null;
       }
     }
     if (directConnect.available && directConnect.url && currentUser && currentUser.role !== "viewer") {
@@ -4717,9 +4744,19 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       font-size: 11px;
     }}
     .gateway-access-actions {{
-      display: grid;
-      justify-items: start;
+      display: flex;
+      align-items: end;
+      flex-wrap: wrap;
       gap: 8px;
+    }}
+    .gateway-access-actions label {{
+      display: grid;
+      gap: 4px;
+      margin: 0;
+    }}
+    .gateway-access-actions select {{
+      min-height: 30px;
+      width: auto;
     }}
     .tree-scroll {{
       min-height: 420px;
@@ -6348,9 +6385,8 @@ def gateway_workspace_html(gateway_id: str) -> str:
           <div class="grid">
             <div class="span-4"><label>Tunnel Status</label><pre id="tunnel-status">Loading...</pre></div>
             <div class="span-4"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
-          <div class="span-4"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
-          <div class="span-4"><label>Action</label><div class="gateway-access-actions"><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a><a id="remote-tunnel-link" class="button secondary" href="#" hidden>Remote Tunnel</a></div></div>
           </div>
+          <div class="gateway-access-actions"><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a><a id="remote-tunnel-link" class="button" href="#" hidden>Remote Tunnel</a><label for="workspace-tunnel-ttl-minutes">Tunnel timer<select id="workspace-tunnel-ttl-minutes" aria-label="Tunnel session time"><option value="5" selected>5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select></label></div>
         </article>
         <article class="workspace-tile site-summary">
           <div class="workspace-tile-header">

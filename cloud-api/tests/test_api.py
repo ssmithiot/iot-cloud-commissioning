@@ -412,6 +412,9 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'id="direct-connect-link"' in response.text
     assert 'id="remote-tunnel-link"' in response.text
     assert 'id="tunnel-status"' in response.text
+    assert 'id="workspace-tunnel-ttl-minutes"' in response.text
+    assert response.text.count('id="direct-connect-status"') == 1
+    assert 'body: JSON.stringify({ ttl_minutes: Number(tunnelTtl?.value || 5) })' in response.text
     assert "Direct Connect" in response.text
     assert "GATEWAY_API_TOKEN" not in response.text
     assert "IOT_ADMIN_API_TOKEN" not in response.text
