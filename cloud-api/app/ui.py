@@ -24,6 +24,7 @@ APP_SCRIPT = r"""
   let dashboardHeartbeatTrends = new Map();
   let selectedDashboardGatewayId = null;
   let dashboardSort = { key: "gateway_id", direction: "desc" };
+  let dashboardSortLoaded = false;
   let dashboardSearch = "";
   let mapZoom = 1;
   let mapProjection = null;
@@ -41,6 +42,7 @@ APP_SCRIPT = r"""
     viewBoxHeight: 560
   };
   const themeStorageKey = "iot-cloud-command-theme";
+  const dashboardSortStorageKey = "iot-cloud-dashboard-sort";
   const trendChartFrame = Object.freeze({ minWidth: 360, height: 230, left: 72, right: 20, top: 14, bottom: 48 });
   const trendChartSizeStorageKey = "iot-cloud-trend-chart-size";
   const trendChartThemeStorageKey = "iot-cloud-trend-chart-theme";
@@ -1430,6 +1432,17 @@ APP_SCRIPT = r"""
   }
 
   function setupGatewaySortHeaders() {
+    if (!dashboardSortLoaded) {
+      dashboardSortLoaded = true;
+      try {
+        const stored = JSON.parse(localStorage.getItem(dashboardSortStorageKey) || "null");
+        if (stored && typeof stored.key === "string" && ["asc", "desc"].includes(stored.direction)) {
+          dashboardSort = { key: stored.key, direction: stored.direction };
+        }
+      } catch (_) {
+        // Ignore malformed browser-local preferences.
+      }
+    }
     document.querySelectorAll("[data-sort]").forEach((button) => {
       if (button.dataset.sortReady === "true") {
         return;
@@ -1443,6 +1456,7 @@ APP_SCRIPT = r"""
         } else {
           dashboardSort = { key, direction: "asc" };
         }
+        localStorage.setItem(dashboardSortStorageKey, JSON.stringify(dashboardSort));
         renderGatewayMap(sortedDashboardGateways());
         renderGatewayList();
       });
@@ -1762,6 +1776,10 @@ APP_SCRIPT = r"""
     table.querySelectorAll("[data-select-gateway]").forEach((link) => {
       link.addEventListener("mouseenter", () => selectDashboardGateway(link.dataset.selectGateway));
       link.addEventListener("focus", () => selectDashboardGateway(link.dataset.selectGateway));
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        selectDashboardGateway(link.dataset.selectGateway);
+      });
     });
     attachDirectConnectHandlers(table);
     attachGatewayUpdateHandlers(table);
