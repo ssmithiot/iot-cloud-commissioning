@@ -271,6 +271,27 @@ def _require_gateway_site_access(db: Session, auth: AdminAuthContext, gateway_id
     return edge_node
 
 
+def _gateway_site_out_or_404(db: Session, auth: AdminAuthContext, gateway_id: str) -> dict[str, object]:
+    """Return browser-facing site data without hydrating a legacy site UUID.
+
+    Some long-lived production sites retain their original integer primary key.
+    The current ORM model treats that internal key as a UUID, so serializing a
+    Site instance fails even though its stable ``site_id`` relationship is valid.
+    """
+    edge_node = _get_gateway_or_404(db, gateway_id)
+    site_table = Site.__table__
+    row = db.execute(
+        select(*_site_out_columns(), cast(site_table.c.id, String).label("_access_site_id"))
+        .where(site_table.c.site_id == edge_node.site_id)
+    ).mappings().one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Site not found")
+    allowed_site_ids = visible_site_ids(db, auth)
+    if allowed_site_ids is not None and str(row["_access_site_id"]) not in allowed_site_ids:
+        raise HTTPException(status_code=404, detail="Site not found")
+    return {key: value for key, value in row.items() if key != "_access_site_id"}
+
+
 def _require_group_site_access(db: Session, auth: AdminAuthContext, group_id: str) -> GatewayGroup:
     group = db.get(GatewayGroup, _tree_id(group_id))
     if group is None:
@@ -1487,8 +1508,8 @@ def ui_get_gateway_site(
     gateway_id: str,
     auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
-) -> Site:
-    return _require_gateway_site_access(db, auth, gateway_id).site
+) -> dict[str, object]:
+    return _gateway_site_out_or_404(db, auth, gateway_id)
 
 
 @app.get("/api/ui/gateways/{gateway_id}/weather", response_model=SiteWeatherOut)

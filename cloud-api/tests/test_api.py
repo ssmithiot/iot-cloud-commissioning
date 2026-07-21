@@ -789,6 +789,17 @@ def test_gateway_detail_site_endpoint_includes_site_info() -> None:
     assert response.json()["longitude"] == -89.6501
 
 
+def test_gateway_detail_site_endpoint_supports_legacy_non_uuid_site_primary_key() -> None:
+    create_gateway_token("GW001")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("UPDATE sites SET id = '1' WHERE site_id = 'demo-site'")
+
+    response = client.get("/api/ui/gateways/GW001/site", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json()["site_id"] == "demo-site"
+
+
 def test_gateway_weather_fetches_and_caches_open_meteo(monkeypatch: pytest.MonkeyPatch) -> None:
     create_gateway_token("GW001")
     client.patch(
