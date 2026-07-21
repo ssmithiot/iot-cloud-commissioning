@@ -1967,8 +1967,9 @@ APP_SCRIPT = r"""
   }
 
   function treeRow(kind, label, meta = "", depth = 0, expanded = true) {
-    const row = document.createElement("button");
-    row.type = "button";
+    const row = document.createElement("div");
+    row.setAttribute("role", "treeitem");
+    row.tabIndex = 0;
     row.className = "tree-row";
     row.dataset.kind = kind;
     row.style.setProperty("--depth", String(depth));
@@ -1983,6 +1984,7 @@ APP_SCRIPT = r"""
 
   function leafRow(kind, label, meta = "", depth = 0) {
     const row = treeRow(kind, label, meta, depth, false);
+    row.tabIndex = -1;
     row.querySelector(".twisty").textContent = "";
     return row;
   }
@@ -2679,16 +2681,56 @@ APP_SCRIPT = r"""
       selectedSavedPointIds.delete(point.id);
     }
     renderSelectedSavedPoints();
+    syncSavedTreeSelection();
   }
 
   function setAllSavedPointCheckboxes(checked) {
     selectedSavedPointIds = checked
       ? new Set((currentGatewayTree?.points || []).map((point) => point.id))
       : new Set();
-    document.querySelectorAll('[data-role="saved-point-select"]').forEach((checkbox) => {
-      checkbox.checked = checked;
-    });
+    syncSavedTreeSelection();
     renderSelectedSavedPoints();
+  }
+
+  function setSavedBranchSelected(pointIds, checked) {
+    for (const pointId of pointIds) {
+      if (checked) {
+        selectedSavedPointIds.add(pointId);
+      } else {
+        selectedSavedPointIds.delete(pointId);
+      }
+    }
+    syncSavedTreeSelection();
+    renderSelectedSavedPoints();
+  }
+
+  function syncSavedTreeSelection() {
+    document.querySelectorAll('[data-role="saved-point-select"]').forEach((checkbox) => {
+      checkbox.checked = selectedSavedPointIds.has(checkbox.closest(".point-select-row")?.dataset.pointId);
+    });
+    document.querySelectorAll('[data-role="saved-branch-select"]').forEach((checkbox) => {
+      const pointIds = JSON.parse(checkbox.dataset.pointIds || "[]");
+      const selectedCount = pointIds.filter((pointId) => selectedSavedPointIds.has(pointId)).length;
+      checkbox.checked = pointIds.length > 0 && selectedCount === pointIds.length;
+      checkbox.indeterminate = selectedCount > 0 && selectedCount < pointIds.length;
+      checkbox.disabled = pointIds.length === 0;
+      checkbox.setAttribute("aria-checked", checkbox.indeterminate ? "mixed" : String(checkbox.checked));
+    });
+  }
+
+  function attachSavedBranchSelector(row, pointIds, label) {
+    const descendants = [...new Set(pointIds)];
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.role = "saved-branch-select";
+    checkbox.dataset.pointIds = JSON.stringify(descendants);
+    checkbox.className = "branch-point-select";
+    checkbox.title = `Select all points in ${label}`;
+    checkbox.setAttribute("aria-label", `Select all points in ${label}`);
+    checkbox.addEventListener("click", (event) => event.stopPropagation());
+    checkbox.addEventListener("keydown", (event) => event.stopPropagation());
+    checkbox.addEventListener("change", () => setSavedBranchSelected(descendants, checkbox.checked));
+    row.prepend(checkbox);
   }
 
   async function removeSelectedSavedPoints() {
@@ -2895,19 +2937,28 @@ APP_SCRIPT = r"""
     parent.appendChild(row);
     const childWrap = document.createElement("div");
     childWrap.className = "tree-children";
+    childWrap.setAttribute("role", "group");
     childWrap.hidden = !expanded;
+    row.setAttribute("aria-expanded", String(expanded));
     row.querySelector(".twisty").textContent = expanded ? "[-]" : "[+]";
     for (const child of children) {
       childWrap.appendChild(child);
     }
     parent.appendChild(childWrap);
-    row.addEventListener("click", () => {
+    const toggle = () => {
       const hidden = childWrap.hidden;
       childWrap.hidden = !hidden;
+      row.setAttribute("aria-expanded", String(hidden));
       row.querySelector(".twisty").textContent = hidden ? "[-]" : "[+]";
       if (onSelect) {
         onSelect();
       }
+    };
+    row.addEventListener("click", toggle);
+    row.addEventListener("keydown", (event) => {
+      if (event.target !== row || !["Enter", " "].includes(event.key)) return;
+      event.preventDefault();
+      toggle();
     });
   }
 
@@ -2934,6 +2985,7 @@ APP_SCRIPT = r"""
       }
       const deviceLabel = `[${device.device_instance}] ${device.device_name || "Device " + device.device_instance}`;
       const row = treeRow("device", deviceLabel, device.network_number ? `network ${device.network_number}` : "", depth, false);
+      attachSavedBranchSelector(row, points.map((point) => point.id), deviceLabel);
       const showDeviceDetails = () => setTreeDetails(deviceLabel, {
         gateway_id: device.gateway_id,
         device_instance: device.device_instance,
@@ -2955,7 +3007,9 @@ APP_SCRIPT = r"""
           const pointLabel = savedPointLabel(point);
           return pointSelectionRow(point, pointLabel, point.present_value ?? "", depth + 2);
         });
-        addCollapsible(container.querySelector(".tree-children"), treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1, false), pointRows, null, false);
+        const folderRow = treeRow("folder", folderLabel, `${folderPoints.length}`, depth + 1, false);
+        attachSavedBranchSelector(folderRow, folderPoints.map((point) => point.id), `${deviceLabel} ${folderLabel}`);
+        addCollapsible(container.querySelector(".tree-children"), folderRow, pointRows, null, false);
       }
       if (!points.length) {
         container.querySelector(".tree-children").appendChild(leafRow("empty", "No imported points", "import edge template", depth + 1));
@@ -2969,6 +3023,10 @@ APP_SCRIPT = r"""
         ? groupedDevices.map((device) => deviceNode(device, 1))
         : [leafRow("empty", "No devices saved", "", 1)];
       const row = treeRow("folder", group.name, `${groupedDevices.length}`, 0);
+      const groupedDeviceIds = new Set(groupedDevices.map((device) => device.id));
+      const groupedPointIds = tree.points.filter((point) => groupedDeviceIds.has(point.saved_device_id)).map((point) => point.id);
+      row.dataset.kind = "group";
+      attachSavedBranchSelector(row, groupedPointIds, group.name);
       const showGroupDetails = () => setTreeDetails(group.name, {
         gateway_id: group.gateway_id,
         devices: groupedDevices.length
@@ -2977,9 +3035,14 @@ APP_SCRIPT = r"""
     }
     const ungroupedDevices = tree.devices.filter((item) => !item.group_id || !groupNames.has(item.group_id));
     if (ungroupedDevices.length) {
-      addCollapsible(root, treeRow("folder", "Ungrouped", `${ungroupedDevices.length}`, 0), ungroupedDevices.map((device) => deviceNode(device, 1)));
+      const row = treeRow("group", "Ungrouped", `${ungroupedDevices.length}`, 0);
+      const ungroupedDeviceIds = new Set(ungroupedDevices.map((device) => device.id));
+      const ungroupedPointIds = tree.points.filter((point) => ungroupedDeviceIds.has(point.saved_device_id)).map((point) => point.id);
+      attachSavedBranchSelector(row, ungroupedPointIds, "Ungrouped");
+      addCollapsible(root, row, ungroupedDevices.map((device) => deviceNode(device, 1)));
     }
     target.appendChild(root);
+    syncSavedTreeSelection();
     renderSelectedSavedPoints();
     renderCustomPointTable();
   }
@@ -4669,6 +4732,12 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .tree-row[data-kind="folder"] {{
       font-weight: 700;
+    }}
+    .branch-point-select {{
+      width: 14px;
+      min-height: 14px;
+      margin: 0;
+      accent-color: var(--accent);
     }}
     .tree-row[data-kind="folder"] .node-label,
     .tree-row[data-kind="device"] .node-label {{

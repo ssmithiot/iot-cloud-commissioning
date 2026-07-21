@@ -492,15 +492,14 @@ def test_gateway_workspace_supports_hierarchical_point_selection() -> None:
     response = client.get("/gateways/GW777")
 
     assert response.status_code == 200
-    assert "function attachBranchSelector(row, pointIds)" in response.text
-    assert "function refreshBranchSelectors()" in response.text
-    assert "checkbox.indeterminate = count > 0 && count < ids.length;" in response.text
-    assert "attachBranchSelector(row, points.map((point) => point.id));" in response.text
-    assert "attachBranchSelector(folderRow, folderPoints.map((point) => point.id));" in response.text
-    assert "attachBranchSelector(row, groupedDevices.flatMap" in response.text
-    assert "attachBranchSelector(ungroupedRow, ungroupedDevices.flatMap" in response.text
-    assert 'id="select-all-saved-points"' not in response.text
-    assert 'id="clear-saved-point-selection"' not in response.text
+    assert "function attachSavedBranchSelector(row, pointIds, label)" in response.text
+    assert "function syncSavedTreeSelection()" in response.text
+    assert "checkbox.indeterminate = selectedCount > 0 && selectedCount < pointIds.length;" in response.text
+    assert "attachSavedBranchSelector(row, points.map((point) => point.id), deviceLabel);" in response.text
+    assert "attachSavedBranchSelector(folderRow, folderPoints.map((point) => point.id)" in response.text
+    assert "attachSavedBranchSelector(row, groupedPointIds, group.name);" in response.text
+    assert 'id="select-all-saved-points"' in response.text
+    assert 'id="clear-saved-point-selection"' in response.text
 
 
 def test_public_auth_config_reports_missing_browser_config() -> None:
