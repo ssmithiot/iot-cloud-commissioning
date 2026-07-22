@@ -1,0 +1,2 @@
+swadmin ALL=(root) NOPASSWD: /usr/local/sbin/iot-cx-configure-mstp-router apply, /usr/local/sbin/iot-cx-configure-mstp-router status, /usr/local/sbin/iot-cx-configure-mstp-router disable
+

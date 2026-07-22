@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Apply the fixed Edge UI BACnet/IP-to-MS/TP router configuration.
+
+This program is intentionally not a general-purpose service manager.  It reads
+only the UI-owned JSON file, validates fixed fields, and writes one fixed
+systemd unit.
+"""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+CONFIG = Path("/home/swadmin/edge-bacnet-ui-v2/data/bacnet_router.json")
+UNIT = Path("/etc/systemd/system/iot-cx-mstp-router.service")
+ROUTER_BIN = Path("/home/swadmin/bacnet-stack/bin/router-mstp")
+SERIAL_RE = re.compile(r"/dev/(?:tty(?:USB|ACM|S)\d+|serial/by-id/[A-Za-z0-9_.:-]+)$")
+IFACE_RE = re.compile(r"[A-Za-z0-9_.:-]+$")
+BAUDS = {9600, 19200, 38400, 57600, 76800, 115200}
+
+
+def integer(raw: object, label: str, minimum: int, maximum: int) -> int:
+    try:
+        value = int(str(raw))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a whole number") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{label} must be between {minimum} and {maximum}")
+    return value
+
+
+def config() -> dict[str, object]:
+    raw = json.loads(CONFIG.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("router configuration must be an object")
+    iface = str(raw.get("interface", "")).strip()
+    serial_device = str(raw.get("serial_device", "")).strip()
+    if not IFACE_RE.fullmatch(iface):
+        raise ValueError("invalid gateway interface")
+    if not SERIAL_RE.fullmatch(serial_device):
+        raise ValueError("invalid serial device")
+    baud = integer(raw.get("baud"), "MS/TP baud", 1200, 115200)
+    if baud not in BAUDS:
+        raise ValueError("unsupported MS/TP baud")
+    return {
+        "enabled": bool(raw.get("enabled", False)),
+        "interface": iface,
+        "ip_port": integer(raw.get("ip_port"), "BACnet/IP router port", 1, 65535),
+        "wan_fdr_port": integer(raw.get("wan_fdr_port", raw.get("fdr_port", 47814)), "WAN FDR port", 1, 65535),
+        "ip_network": integer(raw.get("ip_network"), "BACnet/IP network", 1, 65534),
+        "serial_device": serial_device,
+        "baud": baud,
+        "mstp_mac": integer(raw.get("mstp_mac"), "MS/TP MAC", 0, 127),
+        "mstp_network": integer(raw.get("mstp_network"), "MS/TP network", 1, 65534),
+        "max_master": integer(raw.get("max_master"), "max master", 1, 127),
+        "max_info_frames": integer(raw.get("max_info_frames"), "max info frames", 1, 255),
+    }
+
+
+def systemctl(*args: str) -> None:
+    subprocess.run(["/bin/systemctl", *args], check=True)
+
+
+def unit_text(values: dict[str, object]) -> str:
+    return f"""[Unit]
+Description=IOT CX BACnet IP to MS/TP Router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/swadmin/bacnet-stack
+Environment=BACNET_IFACE={values['interface']}
+Environment=BACNET_IP_PORT={values['ip_port']}
+Environment=BACNET_MSTP_IFACE={values['serial_device']}
+Environment=BACNET_MSTP_BAUD={values['baud']}
+Environment=BACNET_MSTP_MAC={values['mstp_mac']}
+Environment=BACNET_MAX_INFO_FRAMES={values['max_info_frames']}
+Environment=BACNET_MAX_MASTER={values['max_master']}
+Environment=BACNET_IP_NET={values['ip_network']}
+Environment=BACNET_MSTP_NET={values['mstp_network']}
+Environment=BACNET_ROUTER_DEBUG=1
+ExecStart={ROUTER_BIN}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def apply() -> None:
+    values = config()
+    if not values["enabled"]:
+        systemctl("disable", "--now", "iot-cx-mstp-router.service")
+        print("router disabled by saved configuration")
+        return
+    if not ROUTER_BIN.is_file():
+        raise FileNotFoundError(f"router binary is missing: {ROUTER_BIN}")
+    if not Path(str(values["serial_device"])).exists():
+        raise FileNotFoundError(f"serial adapter is missing: {values['serial_device']}")
+    temporary = UNIT.with_suffix(".service.tmp")
+    temporary.write_text(unit_text(values), encoding="utf-8")
+    temporary.chmod(0o644)
+    temporary.replace(UNIT)
+    systemctl("daemon-reload")
+    systemctl("enable", "--now", "iot-cx-mstp-router.service")
+    subprocess.run(["/bin/systemctl", "is-active", "--quiet", "iot-cx-mstp-router.service"], check=True)
+    print(f"router active: MS/TP MAC {values['mstp_mac']}; serial {values['serial_device']}; BACnet/IP {values['ip_port']}")
+
+
+def status() -> None:
+    active = subprocess.run(["/bin/systemctl", "is-active", "--quiet", "iot-cx-mstp-router.service"]).returncode == 0
+    print("active" if active else "inactive")
+    if not active:
+        raise SystemExit(1)
+
+
+def disable() -> None:
+    systemctl("disable", "--now", "iot-cx-mstp-router.service")
+    print("router disabled")
+
+
+def main() -> None:
+    if len(sys.argv) != 2 or sys.argv[1] not in {"apply", "status", "disable"}:
+        raise SystemExit("usage: iot-cx-configure-mstp-router {apply|status|disable}")
+    {"apply": apply, "status": status, "disable": disable}[sys.argv[1]]()
+
+
+if __name__ == "__main__":
+    main()
+
