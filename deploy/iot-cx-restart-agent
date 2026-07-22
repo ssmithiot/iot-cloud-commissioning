@@ -1,0 +1,13 @@
+#!/bin/sh
+# Fixed privileged helper for the local Edge UI. It accepts no arguments.
+set -eu
+
+if [ "$#" -ne 0 ]; then
+  echo "This helper accepts no arguments." >&2
+  exit 64
+fi
+
+/usr/bin/logger -t iot-cx-edge-ui "operator requested iot-cx-agent.service restart"
+/usr/bin/systemctl restart iot-cx-agent.service
+/usr/bin/systemctl is-active --quiet iot-cx-agent.service
+/usr/bin/logger -t iot-cx-edge-ui "iot-cx-agent.service restart completed"

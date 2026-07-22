@@ -338,6 +338,7 @@ def _gateway_update_out(update: GatewayUpdateRequest, edge_node: EdgeNode) -> di
         "agent_version": edge_node.agent_version,
         "ui_version": edge_node.ui_version,
         "update_scope": update.update_scope,
+        "target_agent_version": update.target_agent_version,
         "target_ui_version": update.target_ui_version,
         "status": update.status,
         "requested_by": update.requested_by,
@@ -1360,7 +1361,12 @@ def ui_request_gateway_updates(
                 gateway_id=gateway_id,
                 requested_by=auth.email or "admin-token",
                 update_scope=payload.update_scope,
-                target_ui_version=payload.target_ui_version if payload.update_scope == "ui_only" else None,
+                target_agent_version=(
+                    payload.target_agent_version if payload.update_scope in {"agent", "edge_release"} else None
+                ),
+                target_ui_version=(
+                    payload.target_ui_version if payload.update_scope in {"ui_only", "edge_release"} else None
+                ),
                 status="queued",
                 requested_at=now,
             )
@@ -2589,7 +2595,6 @@ def receive_heartbeat(
             .where(
                 GatewayUpdateRequest.gateway_id == payload.gateway_id,
                 GatewayUpdateRequest.status == "completed",
-                GatewayUpdateRequest.update_scope == "ui_only",
                 GatewayUpdateRequest.target_ui_version.is_not(None),
             )
             .order_by(GatewayUpdateRequest.completed_at.desc())
@@ -2726,10 +2731,10 @@ def admin_complete_gateway_update(
     update.status = payload.status
     update.error_message = payload.error_message
     update.completed_at = utc_now()
-    if payload.status == "completed" and update.update_scope == "ui_only" and update.target_ui_version:
-        # The updater has finished the UI-only deployment and its local HTTP
-        # check.  Record that release without mutating gateway/site identity,
-        # address, network, token, or agent configuration.
+    if payload.status == "completed" and update.update_scope in {"ui_only", "edge_release"} and update.target_ui_version:
+        # The updater has finished the local UI deployment and HTTP check.
+        # Record only its verified UI marker; the agent version remains
+        # heartbeat-authoritative after the restarted service comes online.
         edge_node = _get_gateway_with_site_or_404(db, update.gateway_id)
         edge_node.ui_version = update.target_ui_version
     db.commit()

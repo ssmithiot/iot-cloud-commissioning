@@ -30,6 +30,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     stop_edge_ui_command,
     sudo_systemctl_timeout,
     update_start_sh_command,
+    verify_local_ui_release,
 )
 
 
@@ -218,6 +219,44 @@ def test_service_control_commands_use_timeout_wrapper() -> None:
     assert apply_stop.startswith("timeout -k 5s 30s sudo -S -p")
     assert "systemctl start --no-block edge-bacnet-ui.service" in restart_start
     assert agent_restart.startswith("sh -c ")
+    assert "iot-cx-restart-agent" in "\n".join(command for _label, command, _sudo in service_commands(make_request()))
+
+
+def test_ui_apply_and_zip_include_runtime_support_modules(tmp_path: Path) -> None:
+    source = tmp_path / "edge-ui"
+    templates = source / "templates"
+    templates.mkdir(parents=True)
+    for name in ["app.py", "edge_program_engine.py", "edge_trend_store.py", "README.md", "requirements.txt"]:
+        (source / name).write_text(name, encoding="utf-8")
+    (templates / "index.html").write_text("ok", encoding="utf-8")
+
+    zip_path = legacy_webapp.create_update_zip(str(source))
+    with legacy_webapp.zipfile.ZipFile(zip_path) as archive:
+        assert {"edge_program_engine.py", "edge_trend_store.py"}.issubset(archive.namelist())
+
+    applied = "\n".join(command for _label, command, _sudo in apply_ui_commands(make_request()))
+    assert "edge_program_engine.py" in applied
+    assert "edge_trend_store.py" in applied
+
+
+def test_verify_local_ui_release_requires_checked_out_tag(tmp_path: Path) -> None:
+    source = tmp_path / "edge-ui"
+    source.mkdir()
+    subprocess = pytest.importorskip("subprocess")
+    subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(source), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(source), "config", "user.name", "Test"], check=True)
+    (source / "app.py").write_text("ok", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "app.py"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-m", "release"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(source), "tag", "edge-ui-v0.1.8"], check=True)
+
+    verify_local_ui_release(source, "edge-ui-v0.1.8")
+
+    (source / "app.py").write_text("changed", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "commit", "-am", "after release"], check=True, capture_output=True)
+    with pytest.raises(RuntimeError, match="HEAD must equal"):
+        verify_local_ui_release(source, "edge-ui-v0.1.8")
 
 
 def test_stop_edge_ui_command_is_direct_and_bounded() -> None:

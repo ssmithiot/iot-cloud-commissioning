@@ -370,8 +370,9 @@ class GatewayHeartbeatTrendOut(BaseModel):
 
 class GatewayUpdateRequestIn(BaseModel):
     gateway_ids: list[str] = Field(min_length=1, max_length=100)
-    update_scope: Literal["ui_only", "agent"] = "ui_only"
-    target_ui_version: str | None = Field(default="0.1.7", min_length=1, max_length=80)
+    update_scope: Literal["ui_only", "agent", "edge_release"] = "edge_release"
+    target_agent_version: str | None = Field(default="0.1.8", min_length=1, max_length=80)
+    target_ui_version: str | None = Field(default="0.1.8", min_length=1, max_length=80)
 
 
 class GatewayUpdateCompleteIn(BaseModel):
@@ -389,6 +390,7 @@ class GatewayUpdateRequestOut(BaseModel):
     agent_version: str
     ui_version: str
     update_scope: str
+    target_agent_version: str | None
     target_ui_version: str | None
     status: str
     requested_by: str | None

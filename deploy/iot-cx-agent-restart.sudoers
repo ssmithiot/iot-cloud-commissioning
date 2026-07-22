@@ -1,0 +1,2 @@
+# Allow the Edge UI service account to invoke only the fixed restart helper.
+swadmin ALL=(root) NOPASSWD: /usr/local/sbin/iot-cx-restart-agent

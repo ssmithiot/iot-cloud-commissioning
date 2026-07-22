@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import socket
+import subprocess
 import tempfile
 import threading
 import time
@@ -38,6 +39,10 @@ REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
 NESTED_UPLOAD_CHUNK_SIZE = 3000
 UPDATE_AGENT_PHASES = (0, 7, 9, 10, 11)
+# A release update deliberately omits phase 4 (rewriting start.sh auth), phase
+# 6 (cloud provisioning), and phase 8 (cloud token/config). Existing gateways
+# keep their identity and local settings.
+UPDATE_EDGE_RELEASE_PHASES = (0, 1, 2, 3, 5, 7, 9, 10, 11)
 JOBS: dict[str, "UpgradeJob"] = {}
 JOBS_LOCK = threading.Lock()
 WORKER_STATUS: dict[str, object] = {
@@ -197,6 +202,29 @@ def cloud_json_request(
         return json.loads(response.read().decode("utf-8"))
 
 
+def verify_local_ui_release(source: Path, release_ref: str) -> None:
+    """Require the uploaded UI source to be exactly the requested Git release."""
+    if not source.is_dir():
+        raise RuntimeError(f"IOT_EDGE_UI_SOURCE does not exist: {source}")
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        release = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", f"{release_ref}^{{commit}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"Edge UI source must be a Git checkout containing {release_ref}.") from exc
+    if head != release:
+        raise RuntimeError(f"Edge UI source HEAD must equal {release_ref}; checkout the tagged release before queueing updates.")
+
+
 def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str]) -> None:
     cloud_url = os.environ.get("IOT_CLOUD_API_URL", DEFAULT_CLOUD_URL).rstrip("/")
     admin_api_token = defaults["IOT_ADMIN_API_TOKEN"]
@@ -213,6 +241,34 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
 
     if not isinstance(claimed, dict):
         return
+    try:
+        update_scope = str(claimed.get("update_scope") or "")
+        if update_scope != "edge_release":
+            raise RuntimeError(f"Unsupported queued update scope: {update_scope or 'missing'}")
+        agent_version = str(claimed.get("target_agent_version") or "").strip()
+        ui_version = str(claimed.get("target_ui_version") or "").strip()
+        if not re.fullmatch(r"\d+\.\d+\.\d+", agent_version) or agent_version != ui_version:
+            raise RuntimeError("Queued Edge release must specify matching semantic agent and UI versions.")
+        expected_agent_ref = f"edge-agent-v{agent_version}"
+        configured_agent_ref = os.environ.get("IOT_EDGE_UPDATE_REF", expected_agent_ref).strip()
+        if configured_agent_ref != expected_agent_ref:
+            raise RuntimeError(f"IOT_EDGE_UPDATE_REF must be {expected_agent_ref} for this queued release.")
+        ui_source = os.environ.get("IOT_EDGE_UI_SOURCE", "").strip()
+        ui_ref = os.environ.get("IOT_EDGE_UI_RELEASE_REF", f"edge-ui-v{ui_version}").strip()
+        if not ui_source:
+            raise RuntimeError("IOT_EDGE_UI_SOURCE must point to the checked-out Edge UI release source.")
+        if ui_ref != f"edge-ui-v{ui_version}":
+            raise RuntimeError(f"IOT_EDGE_UI_RELEASE_REF must be edge-ui-v{ui_version} for this queued release.")
+        verify_local_ui_release(Path(ui_source), ui_ref)
+    except RuntimeError as exc:
+        cloud_json_request(
+            cloud_url,
+            admin_api_token,
+            f"/api/admin/gateway-updates/{request_id}/complete",
+            method="POST",
+            body={"status": "failed", "error_message": str(exc)},
+        )
+        return
     request = UpgradeRequest(
         gateway_id=str(claimed["gateway_id"]),
         site_id=str(claimed["site_id"]),
@@ -224,13 +280,13 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
         gateway_host=str(claimed.get("gateway_host") or "192.168.1.200"),
         gateway_user=os.environ.get("GATEWAY_USER", "swadmin"),
         gateway_password=defaults["GATEWAY_PASSWORD"],
-        git_ref=os.environ.get("IOT_EDGE_UPDATE_REF", "main"),
+        git_ref=configured_agent_ref,
         remote_repo=DEFAULT_REPO_PATH,
-        ui_source_folder=DEFAULT_UI_SOURCE,
+        ui_source_folder=ui_source,
         ui_username=os.environ.get("EDGE_UI_USERNAME", "admin"),
         ui_password=defaults["EDGE_UI_PASSWORD"],
         cloud_portal_verified=True,
-        selected_phases=UPDATE_AGENT_PHASES,
+        selected_phases=UPDATE_EDGE_RELEASE_PHASES,
     )
     if not request.cradlepoint_host:
         cloud_json_request(
@@ -788,7 +844,7 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         ("verify normalized templates", r"""test -d /tmp/edge-bacnet-ui-v2-update/templates && ! find /tmp/edge-bacnet-ui-v2-update -maxdepth 1 -name 'templates\*' | grep -q . && ls -lah /tmp/edge-bacnet-ui-v2-update/templates""", False),
         stop_command,
         ("confirm edge UI stopped", "systemctl is-active edge-bacnet-ui.service || true", False),
-        ("apply UI files", "cp /tmp/edge-bacnet-ui-v2-update/app.py /home/swadmin/edge-bacnet-ui-v2/app.py && cp /tmp/edge-bacnet-ui-v2-update/README.md /home/swadmin/edge-bacnet-ui-v2/README.md && cp /tmp/edge-bacnet-ui-v2-update/requirements.txt /home/swadmin/edge-bacnet-ui-v2/requirements.txt && rm -rf /home/swadmin/edge-bacnet-ui-v2/templates && cp -a /tmp/edge-bacnet-ui-v2-update/templates /home/swadmin/edge-bacnet-ui-v2/templates", False),
+        ("apply UI files", "cp /tmp/edge-bacnet-ui-v2-update/app.py /home/swadmin/edge-bacnet-ui-v2/app.py && cp /tmp/edge-bacnet-ui-v2-update/edge_program_engine.py /home/swadmin/edge-bacnet-ui-v2/edge_program_engine.py && cp /tmp/edge-bacnet-ui-v2-update/edge_trend_store.py /home/swadmin/edge-bacnet-ui-v2/edge_trend_store.py && cp /tmp/edge-bacnet-ui-v2-update/README.md /home/swadmin/edge-bacnet-ui-v2/README.md && cp /tmp/edge-bacnet-ui-v2-update/requirements.txt /home/swadmin/edge-bacnet-ui-v2/requirements.txt && rm -rf /home/swadmin/edge-bacnet-ui-v2/templates && cp -a /tmp/edge-bacnet-ui-v2-update/templates /home/swadmin/edge-bacnet-ui-v2/templates", False),
         ("verify UI file ownership", "find /home/swadmin/edge-bacnet-ui-v2 -maxdepth 2 \\( ! -user swadmin -o ! -group swadmin \\) -print | head -20 || true", False),
         ("preserve start.sh executable", "chmod +x /home/swadmin/edge-bacnet-ui-v2/start.sh", False),
         ("verify replaced templates", "ls -lah /home/swadmin/edge-bacnet-ui-v2/templates", False),
@@ -899,6 +955,9 @@ def service_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     repo = shell_quote(request.remote_repo)
     return [
         ("install iot-cx-agent service", f"sudo -S -p '' install -m 0644 {repo}/deploy/iot-cx-agent.service /etc/systemd/system/iot-cx-agent.service", True),
+        ("install fixed Edge-agent restart helper", f"sudo -S -p '' install -o root -g root -m 0755 {repo}/deploy/iot-cx-restart-agent /usr/local/sbin/iot-cx-restart-agent", True),
+        ("install Edge-agent restart authorization", f"sudo -S -p '' install -o root -g root -m 0440 {repo}/deploy/iot-cx-agent-restart.sudoers /etc/sudoers.d/iot-cx-agent-restart", True),
+        ("validate Edge-agent restart authorization", "sudo -S -p '' visudo -cf /etc/sudoers.d/iot-cx-agent-restart", True),
         ("systemd daemon reload", "sudo -S -p '' systemctl daemon-reload", True),
         ("show agent service", "systemctl cat iot-cx-agent.service --no-pager", False),
         ("enable agent service", sudo_systemctl_timeout("enable", "iot-cx-agent.service"), True),
@@ -946,14 +1005,14 @@ def disable_agent_commands() -> list[tuple[str, str, bool]]:
 
 def create_update_zip(source_folder: str) -> Path:
     source = Path(source_folder)
-    required = ["app.py", "templates", "README.md", "requirements.txt"]
+    required = ["app.py", "edge_program_engine.py", "edge_trend_store.py", "templates", "README.md", "requirements.txt"]
     missing = [item for item in required if not (source / item).exists()]
     if missing:
         raise RuntimeError(f"Local BACnet UI source folder is missing: {', '.join(missing)}")
     temp_dir = Path(tempfile.mkdtemp(prefix="legacy-edge-upgrade-"))
     zip_path = temp_dir / "edge-bacnet-ui-v2-update.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file_name in ["app.py", "README.md", "requirements.txt"]:
+        for file_name in ["app.py", "edge_program_engine.py", "edge_trend_store.py", "README.md", "requirements.txt"]:
             archive.write(source / file_name, arcname=file_name)
         for path in (source / "templates").rglob("*"):
             if path.is_file():

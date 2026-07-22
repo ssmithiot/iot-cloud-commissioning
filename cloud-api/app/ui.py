@@ -20,6 +20,7 @@ APP_SCRIPT = r"""
   let dashboardJobs = [];
   let dashboardGatewayUpdates = new Map();
   let selectedGatewayUpdateIds = new Set();
+  const edgeReleaseTarget = { agentVersion: "0.1.8", uiVersion: "0.1.8" };
   let dashboardGatewayRefreshInFlight = false;
   let dashboardGatewayRefreshTimer = null;
   let dashboardWeather = new Map();
@@ -1324,6 +1325,11 @@ APP_SCRIPT = r"""
     return version && version.toLowerCase() !== "current" ? version : "Update required";
   }
 
+  function edgeUiVersion(gateway) {
+    const version = String(gateway.ui_version || "").trim();
+    return version && version.toLowerCase() !== "current" ? version : "Update required";
+  }
+
   function versionAtLeast(actual, required) {
     const actualParts = String(actual || "").split(".").map((part) => Number(part));
     const requiredParts = required.split(".").map((part) => Number(part));
@@ -1339,7 +1345,9 @@ APP_SCRIPT = r"""
   }
 
   function gatewayRequiresUpdate(gateway) {
-    return edgeAppVersion(gateway) === "Update required" || gatewayNeedsResourceHealthUpdate(gateway);
+    return !versionAtLeast(gateway.agent_version, edgeReleaseTarget.agentVersion)
+      || !versionAtLeast(gateway.ui_version, edgeReleaseTarget.uiVersion)
+      || gatewayNeedsResourceHealthUpdate(gateway);
   }
 
   function gatewayUpdateState(gatewayId) {
@@ -1348,18 +1356,22 @@ APP_SCRIPT = r"""
 
   function gatewayVersionCell(gateway) {
     const version = edgeAppVersion(gateway);
+    const uiVersion = edgeUiVersion(gateway);
     const update = gatewayUpdateState(gateway.gateway_id);
     if (update?.status === "queued" || update?.status === "running") {
       return `<strong>Update ${escapeHtml(update.status)}</strong>`;
     }
     const actionLabel = update?.status === "failed" ? "Retry" : "Update";
-    if (gatewayNeedsResourceHealthUpdate(gateway)) {
-      return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Health update required (${edgeResourceHealthMinimumVersion}+)</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+    const needsRelease = !versionAtLeast(gateway.agent_version, edgeReleaseTarget.agentVersion)
+      || !versionAtLeast(gateway.ui_version, edgeReleaseTarget.uiVersion);
+    const current = `Agent ${escapeHtml(version)} · UI ${escapeHtml(uiVersion)}`;
+    if (!needsRelease && !gatewayNeedsResourceHealthUpdate(gateway)) {
+      return `<strong>${current}</strong>`;
     }
-    if (version !== "Update required") {
-      return `<strong>${escapeHtml(version)}</strong>`;
-    }
-    return `<strong>Update required</strong> <button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+    const notices = [];
+    if (needsRelease) notices.push(`Release ${edgeReleaseTarget.agentVersion}`);
+    if (gatewayNeedsResourceHealthUpdate(gateway)) notices.push(`Health ${edgeResourceHealthMinimumVersion}+`);
+    return `<strong>${current}</strong><small class="edge-app-update-notice">${escapeHtml(notices.join(" · "))} required</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
   }
 
   async function refreshGatewayUpdates() {
@@ -1399,11 +1411,16 @@ APP_SCRIPT = r"""
     try {
       await api("/api/ui/gateway-updates", {
         method: "POST",
-        body: JSON.stringify({ gateway_ids: ids })
+        body: JSON.stringify({
+          gateway_ids: ids,
+          update_scope: "edge_release",
+          target_agent_version: edgeReleaseTarget.agentVersion,
+          target_ui_version: edgeReleaseTarget.uiVersion
+        })
       });
       selectedGatewayUpdateIds.clear();
       await refreshGatewayUpdates();
-      setText("status", `Queued ${ids.length} application update${ids.length === 1 ? "" : "s"}. The local legacy updater will process them.`);
+      setText("status", `Queued ${ids.length} Edge ${edgeReleaseTarget.agentVersion} release update${ids.length === 1 ? "" : "s"}. The local updater applies the UI and agent without reprovisioning.`);
       renderGatewayList();
     } catch (error) {
       setText("status", errorMessage(error), true);

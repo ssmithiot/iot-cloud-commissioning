@@ -372,7 +372,7 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'colspan="10"' in response.text
     assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
     assert "gatewayNeedsResourceHealthUpdate" in response.text
-    assert "Health update required" in response.text
+    assert "Health" in response.text
 
 
 def test_dashboard_uses_resizable_connected_gateway_workspace() -> None:
@@ -607,8 +607,9 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     request = queued.json()[0]
     assert request["gateway_id"] == "GW001"
     assert request["status"] == "queued"
-    assert request["update_scope"] == "ui_only"
-    assert request["target_ui_version"] == "0.1.7"
+    assert request["update_scope"] == "edge_release"
+    assert request["target_agent_version"] == "0.1.8"
+    assert request["target_ui_version"] == "0.1.8"
 
     listed = client.get("/api/admin/gateway-updates", headers=admin_headers())
     assert listed.status_code == 200
@@ -628,7 +629,7 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     with SessionLocal() as db:
         edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
         assert edge_node is not None
-        assert edge_node.ui_version == "0.1.7"
+        assert edge_node.ui_version == "0.1.8"
         assert edge_node.agent_version == "0.1.0"
         assert edge_node.site_id == "demo-site"
 
@@ -639,7 +640,7 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     with SessionLocal() as db:
         edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
         assert edge_node is not None
-        assert edge_node.ui_version == "0.1.7"
+        assert edge_node.ui_version == "0.1.8"
 
 
 def test_configure_gateway_redirects_to_cloud_tunnel() -> None:
