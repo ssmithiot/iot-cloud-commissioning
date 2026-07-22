@@ -62,7 +62,7 @@ PHASES = [
     "Provision cloud gateway",
     "Clone/update cloud repo",
     "Write cloud config/token",
-    "Install Python agent",
+    "Install Python agent + configure Edge mirror",
     "Install/start service",
     "Final verification",
 ]
@@ -939,6 +939,56 @@ def config_commands(request: UpgradeRequest, gateway_token: str) -> list[tuple[s
     ]
 
 
+def edge_mirror_config_commands() -> list[tuple[str, str, bool]]:
+    """Upsert only Edge-mirror settings; never replace identity or credentials."""
+    script = r'''
+from datetime import datetime, timezone
+from pathlib import Path
+import os
+import re
+import shutil
+
+path = Path("/etc/iot-cx-agent/agent.yaml")
+if not path.is_file():
+    raise SystemExit("Existing agent.yaml is required; this release does not provision gateways.")
+settings = {
+    "edge_ui_data_dir": "/home/swadmin/edge-bacnet-ui-v2/data",
+    "cloud_trend_sync_enabled": "false",
+    "local_edge_trends_enabled": "true",
+    "local_edge_trend_cloud_sync_enabled": "true",
+    "local_edge_trend_upload_interval_sec": "30",
+    "local_edge_trend_upload_batch_size": "250",
+}
+text = path.read_text(encoding="utf-8")
+for key, value in settings.items():
+    line = f"{key}: {value}"
+    pattern = rf"(?m)^{re.escape(key)}:\s*.*$"
+    text, count = re.subn(pattern, line, text)
+    if count == 0:
+        text = text.rstrip() + "\n" + line + "\n"
+backup = path.with_name(f"agent.yaml.edge-mirror.{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.bak")
+shutil.copy2(path, backup)
+temp = path.with_suffix(".yaml.tmp")
+temp.write_text(text, encoding="utf-8")
+os.chmod(temp, 0o644)
+os.replace(temp, path)
+'''
+    encoded = b64(script)
+    update = (
+        f"printf %s {shell_quote(encoded)} | base64 -d > /tmp/iot-cx-edge-mirror-config.py "
+        "&& sudo -S -p '' python3 /tmp/iot-cx-edge-mirror-config.py "
+        "&& rm -f /tmp/iot-cx-edge-mirror-config.py"
+    )
+    return [
+        ("upsert Edge inventory and trend settings", update, True),
+        (
+            "verify Edge inventory and trend settings",
+            "grep -E '^(edge_ui_data_dir|cloud_trend_sync_enabled|local_edge_trends_enabled|local_edge_trend_cloud_sync_enabled|local_edge_trend_upload_interval_sec|local_edge_trend_upload_batch_size):' /etc/iot-cx-agent/agent.yaml && test -d /home/swadmin/edge-bacnet-ui-v2/data",
+            False,
+        ),
+    ]
+
+
 def install_agent_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     repo = shell_quote(request.remote_repo)
     return [
@@ -1309,6 +1359,7 @@ class LegacyUpgradeRunner:
                 output = self.run_commands(install_agent_commands(self.request))
                 if not self.request.dry_run and "Successfully installed" not in output:
                     self.log.append("Warning: pip output did not include 'Successfully installed'; verify package install above.\n")
+                self.run_commands(edge_mirror_config_commands())
             elif index == 10:
                 output = self.run_commands(service_commands(self.request))
                 if not self.request.dry_run and "Heartbeat accepted" not in output:
@@ -1391,7 +1442,7 @@ class LegacyUpgradeRunner:
                 "Local UI auth status": ui_auth,
                 "Cloud provision status": job.phases[6].status.value,
                 "Cloud repo status": job.phases[7].status.value,
-                "Agent config status": job.phases[8].status.value,
+                "Edge inventory/trend config status": job.phases[9].status.value,
                 "iot-cx-agent service status": job.phases[10].status.value,
                 "Heartbeat status": heartbeat,
                 "Cloud portal manual confirmation": "Yes" if self.request.cloud_portal_verified else "No",

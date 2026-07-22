@@ -21,6 +21,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     agent_config_text,
     auth_commands,
     config_commands,
+    edge_mirror_config_commands,
     apply_ui_commands,
     load_env_defaults,
     parse_upgrade_request,
@@ -129,6 +130,18 @@ def test_agent_config_uses_47814_and_expected_paths() -> None:
     assert "default_port: 47814" in config
     assert "bacwi_path: /home/swadmin/bacnet-stack/bin/bacwi" in config
     assert "local_ui_url: http://127.0.0.1:5000" in config
+
+
+def test_edge_mirror_config_is_additive_and_does_not_touch_tokens() -> None:
+    commands = edge_mirror_config_commands()
+    joined = "\n".join(command for _label, command, _sudo in commands)
+    assert "edge_ui_data_dir" in joined
+    assert "local_edge_trends_enabled" in joined
+    assert "cloud_trend_sync_enabled" in joined
+    assert "edge-agent.env" not in joined
+    assert "GATEWAY_API_TOKEN" not in joined
+    encoded = commands[0][1].split("printf %s ", 1)[1].split(" | base64", 1)[0].strip("'")
+    assert "Existing agent.yaml is required" in base64.b64decode(encoded).decode("utf-8")
 
 
 def test_rollback_rejects_unexpected_backup_filename() -> None:
