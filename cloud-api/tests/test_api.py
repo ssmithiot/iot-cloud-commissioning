@@ -1919,6 +1919,29 @@ def test_tunnel_session_rewrites_template_and_live_point_refresh_urls() -> None:
     assert f'pvFullPageLink").href = "{prefix}/write-pv?device="' in rewritten
 
 
+def test_tunnel_session_rewrites_timed_override_urls() -> None:
+    prefix = "/gateways/GW777/tunnel/session/session-1"
+    html = b"""
+    <html><head></head><body>
+    <a href="/timed-overrides?status=active">Timed Overrides</a>
+    <a href="/timed-overrides/export.csv?status=active">Export</a>
+    <form method="post" action="/timed-overrides/bulk-action"></form>
+    <form method="post" action="/timed-overrides/override-1/action"></form>
+    <script>
+    fetch("/timed-overrides/override-1", {headers: {"Accept": "application/json"}});
+    </script>
+    </body></html>
+    """
+
+    rewritten = main_module._rewrite_tunnel_html_body(html, prefix).decode()
+
+    assert f'href="{prefix}/timed-overrides?status=active"' in rewritten
+    assert f'href="{prefix}/timed-overrides/export.csv?status=active"' in rewritten
+    assert f'action="{prefix}/timed-overrides/bulk-action"' in rewritten
+    assert f'action="{prefix}/timed-overrides/override-1/action"' in rewritten
+    assert f'fetch("{prefix}/timed-overrides/override-1"' in rewritten
+
+
 def test_tunnel_session_rewrites_packet_capture_urls() -> None:
     prefix = "/gateways/GW777/tunnel/session/session-1"
     html = b"""
@@ -1947,6 +1970,7 @@ def test_tunnel_session_json_rewrites_gateway_local_allowlist_urls() -> None:
         "template": "/template/scan/status/abc",
         "live": "/devices/live/profile-1/refresh?read_method=rpm",
         "capture": "/captures/jobs",
+        "timed_overrides": "/timed-overrides/bulk-action",
         "write": "/write-pv/apply",
         "external": "https://example.com/discover/results/abc",
         "cloud": "/api/ui/gateways",
@@ -1959,6 +1983,7 @@ def test_tunnel_session_json_rewrites_gateway_local_allowlist_urls() -> None:
     assert rewritten["template"] == f"{prefix}/template/scan/status/abc"
     assert rewritten["live"] == f"{prefix}/devices/live/profile-1/refresh?read_method=rpm"
     assert rewritten["capture"] == f"{prefix}/captures/jobs"
+    assert rewritten["timed_overrides"] == f"{prefix}/timed-overrides/bulk-action"
     assert rewritten["write"] == f"{prefix}/write-pv/apply"
     assert rewritten["external"] == payload["external"]
     assert rewritten["cloud"] == payload["cloud"]

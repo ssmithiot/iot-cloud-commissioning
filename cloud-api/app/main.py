@@ -226,6 +226,7 @@ TUNNEL_GATEWAY_LOCAL_ROUTE_PREFIXES = (
     "/static",
     "/template",
     "/templates",
+    "/timed-overrides",
     "/view",
     "/write-pv",
 )
