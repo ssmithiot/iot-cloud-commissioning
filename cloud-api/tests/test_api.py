@@ -895,11 +895,12 @@ def test_gateway_update_default_full_non_provisioning_for_rollout_versions(agent
     with SessionLocal() as db:
         stored = db.scalar(select(GatewayUpdateRequest).where(GatewayUpdateRequest.gateway_id == "GW001"))
         assert stored is not None
-        assert stored.update_scope == "agent"
-        assert stored.target_ui_version is None
+        assert stored.update_scope == "edge_release"
+        assert stored.target_agent_version == "0.1.9"
+        assert stored.target_ui_version == "0.1.9"
 
 
-def test_gateway_update_uses_existing_schema_for_full_non_provisioning_request() -> None:
+def test_gateway_update_uses_existing_release_target_schema_for_full_non_provisioning_request() -> None:
     create_gateway_token("GW001")
 
     queued = client.post(
@@ -915,16 +916,20 @@ def test_gateway_update_uses_existing_schema_for_full_non_provisioning_request()
     with SessionLocal() as db:
         stored = db.scalar(select(GatewayUpdateRequest).where(GatewayUpdateRequest.gateway_id == "GW001"))
         assert stored is not None
-        assert stored.update_scope == "agent"
-        assert stored.target_ui_version is None
-        assert not hasattr(stored, "target_agent_version")
+        assert stored.update_scope == "edge_release"
+        assert stored.target_agent_version == "0.1.9"
+        assert stored.target_ui_version == "0.1.9"
 
 
-def test_no_gateway_update_migration_or_new_database_columns() -> None:
+def test_cloud_release_change_adds_no_migration_after_existing_0023_head() -> None:
     migration_dir = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+    revision_files = {path.name for path in migration_dir.glob("*.py")}
 
-    assert not (migration_dir / "0022_gateway_full_non_provisioning_updates.py").exists()
-    assert not hasattr(GatewayUpdateRequest, "target_agent_version")
+    assert "0022_edge_local_trend_samples.py" in revision_files
+    assert "0023_edge_release_targets.py" in revision_files
+    assert "0022_gateway_full_non_provisioning_updates.py" not in revision_files
+    assert not any(name.startswith("0024_") for name in revision_files)
+    assert hasattr(GatewayUpdateRequest, "target_agent_version")
     assert GatewayUpdateRequest.__table__.c.update_scope.type.length == 20
 
 

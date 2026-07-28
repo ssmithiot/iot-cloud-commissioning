@@ -415,7 +415,7 @@ def _scoped_gateway_statement(db: Session, auth: AdminAuthContext):
 
 EDGE_RELEASE_VERSION = "0.1.9"
 FULL_NON_PROVISIONING_PUBLIC_SCOPE = "full_non_provisioning"
-FULL_NON_PROVISIONING_STORED_SCOPE = "agent"
+FULL_NON_PROVISIONING_STORED_SCOPE = "edge_release"
 
 
 def _stored_gateway_update_scope(scope: str) -> str:
@@ -425,12 +425,14 @@ def _stored_gateway_update_scope(scope: str) -> str:
 
 
 def _gateway_update_public_scope(update: GatewayUpdateRequest) -> str:
-    if update.update_scope == FULL_NON_PROVISIONING_STORED_SCOPE and update.target_ui_version is None:
+    if update.update_scope == FULL_NON_PROVISIONING_STORED_SCOPE:
         return FULL_NON_PROVISIONING_PUBLIC_SCOPE
     return update.update_scope
 
 
 def _gateway_update_target_agent_version(update: GatewayUpdateRequest) -> str | None:
+    if update.target_agent_version:
+        return update.target_agent_version
     return EDGE_RELEASE_VERSION if _gateway_update_public_scope(update) == FULL_NON_PROVISIONING_PUBLIC_SCOPE else None
 
 
@@ -1752,8 +1754,11 @@ def ui_request_gateway_updates(
                 gateway_id=gateway_id,
                 requested_by=auth.email or "admin-token",
                 update_scope=_stored_gateway_update_scope(payload.update_scope),
+                target_agent_version=payload.target_agent_version
+                if payload.update_scope in {"agent", "edge_release", "full_non_provisioning"}
+                else None,
                 target_ui_version=payload.target_ui_version
-                if payload.update_scope == "ui_only"
+                if payload.update_scope in {"ui_only", "edge_release", "full_non_provisioning"}
                 else None,
                 status="queued",
                 requested_at=now,
@@ -3240,8 +3245,8 @@ def admin_complete_gateway_update(
         # Gateway identity, tokens, BACnet settings, and routing are preserved
         # by the gateway updater workflow and intentionally untouched here.
         edge_node = _get_gateway_with_site_or_404(db, update.gateway_id)
-        edge_node.agent_version = EDGE_RELEASE_VERSION
-        edge_node.ui_version = EDGE_RELEASE_VERSION
+        edge_node.agent_version = _gateway_update_target_agent_version(update) or EDGE_RELEASE_VERSION
+        edge_node.ui_version = _gateway_update_target_ui_version(update) or EDGE_RELEASE_VERSION
     db.commit()
     return _gateway_update_out(update, _get_gateway_with_site_or_404(db, update.gateway_id))
 

@@ -378,7 +378,7 @@ class GatewayHeartbeatTrendOut(BaseModel):
 
 class GatewayUpdateRequestIn(BaseModel):
     gateway_ids: list[str] = Field(min_length=1, max_length=100)
-    update_scope: Literal["ui_only", "agent", "full_non_provisioning"] = "full_non_provisioning"
+    update_scope: Literal["ui_only", "agent", "edge_release", "full_non_provisioning"] = "full_non_provisioning"
     target_agent_version: str | None = Field(default="0.1.9", min_length=1, max_length=80)
     target_ui_version: str | None = Field(default="0.1.9", min_length=1, max_length=80)
 
