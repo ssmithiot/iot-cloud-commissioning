@@ -7,7 +7,7 @@ import shlex
 import socket
 import subprocess
 import sys
-import zipfile
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -31,7 +31,9 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     config_commands,
     apply_ui_commands,
     DEFAULT_EDGE_UPDATE_REF,
+    DEFAULT_RELEASE_MANIFEST,
     create_update_zip,
+    embedded_ui_artifact_summary,
     edge_ui_data_dir_config_command,
     edge_ui_data_dir_config_script,
     edge_ui_data_dir_validation_command,
@@ -50,6 +52,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     sudo_systemctl_timeout,
     start_sh_update_script,
     update_start_sh_command,
+    validated_embedded_ui_artifact,
     ui_source_validation_summary,
     validate_ui_source_for_deploy,
 )
@@ -135,6 +138,24 @@ def write_manifest(path: Path, edge_ui_tag: str) -> Path:
                 "edge_ui_tag": edge_ui_tag,
                 "artifact": "tools/releases/gw006-edge-ui-0.1.9-code.tar.gz",
                 "sha256": "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683",
+                "preserves": ["data/", ".env", "start.sh", "gateway identity", "credentials"],
+                "rollback_release": "0.1.8",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_artifact_manifest(path: Path, artifact: str, sha256: str) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "edge_release": "0.1.9",
+                "base_release": "0.1.8",
+                "edge_ui_tag": "719d4a82ed972269d44db7c0638800b26e82002d",
+                "artifact": artifact,
+                "sha256": sha256,
                 "preserves": ["data/", ".env", "start.sh", "gateway identity", "credentials"],
                 "rollback_release": "0.1.8",
             }
@@ -1096,10 +1117,13 @@ def test_form_page_shows_019_pilot_preflight_requirements() -> None:
     assert "Run Preflight" in html
 
 
-def test_form_page_defaults_to_temp_019_ui_source() -> None:
+def test_form_page_marks_ui_source_as_developer_only_and_ignored() -> None:
     html = legacy_webapp.form_page().decode("utf-8")
 
     assert 'name="ui_source_folder" value="C:\\Temp\\edge-bacnet-ui-0.1.9"' in html
+    assert 'name="ui_source_folder" value="C:\\Temp\\edge-bacnet-ui-0.1.9" disabled' in html
+    assert "developer-only; ignored for 0.1.9" in html
+    assert "embedded validated artifact" in html
     assert "C:\\Dev\\edge-bacnet-ui-v2" not in html
 
 
@@ -1121,6 +1145,7 @@ def test_form_refresh_shows_configured_default_ui_source() -> None:
     refreshed = legacy_webapp.form_page().decode("utf-8")
 
     assert 'value="C:\\Temp\\edge-bacnet-ui-0.1.9"' in refreshed
+    assert "embedded validated artifact" in refreshed
 
 
 def test_parse_upgrade_request_defaults_git_ref_to_release_commit() -> None:
@@ -1204,44 +1229,174 @@ def test_queued_gateway_update_defaults_git_ref_to_release_commit(monkeypatch: p
         JOBS.pop("queued-default-ref-test", None)
 
 
-def test_create_update_zip_includes_019_runtime_inventory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    for name in [
-        "app.py",
-        "edge_program_engine.py",
-        "edge_trend_store.py",
-        "timed_override_store.py",
-        "router_config.py",
-        "README.md",
-        "requirements.txt",
-    ]:
-        (source / name).write_text(f"{name}\n", encoding="utf-8")
-    for directory in ["templates", "static"]:
-        (source / directory).mkdir()
-        (source / directory / "item.txt").write_text(directory, encoding="utf-8")
-    (source / "data").mkdir()
-    (source / "data" / "timed-overrides.db").write_text("site data", encoding="utf-8")
-    (source / ".env").write_text("secret=true", encoding="utf-8")
-    (source / "start.sh").write_text("site startup", encoding="utf-8")
-    (source / ".local-backups").mkdir()
-    (source / ".local-backups" / "app.py").write_text("backup", encoding="utf-8")
-    monkeypatch.setattr(legacy_webapp, "validate_ui_source_for_deploy", lambda _source, _manifest: "719d4a8")
+def embedded_artifact_names() -> set[str]:
+    artifact, _summary = validated_embedded_ui_artifact(DEFAULT_RELEASE_MANIFEST)
+    with tarfile.open(artifact, "r:gz") as archive:
+        return set(archive.getnames())
 
-    zip_path = create_update_zip(str(source), "manifest.json")
 
-    with zipfile.ZipFile(zip_path) as archive:
-        names = set(archive.namelist())
+def test_embedded_artifact_summary_validates_release_checksum() -> None:
+    summary = embedded_ui_artifact_summary(DEFAULT_RELEASE_MANIFEST)
+
+    assert summary["UI deployment source"] == "embedded-release-artifact"
+    assert summary["UI package source"] == "embedded-release-artifact"
+    assert summary["UI source commit"] == "719d4a82ed972269d44db7c0638800b26e82002d"
+    assert summary["UI artifact SHA-256"] == "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683"
+    assert summary["UI artifact validation"] == "Passed"
+    assert summary["UI artifact path"].endswith("tools/releases/gw006-edge-ui-0.1.9-code.tar.gz")
+
+
+def test_preflight_summary_reports_embedded_artifact_release_fields() -> None:
+    runner = make_runner("embedded-artifact-preflight-test")
+    try:
+        runner.validate_inspection(existing_install_preflight_output())
+        with JOBS_LOCK:
+            summary = JOBS["embedded-artifact-preflight-test"].summary
+            log = JOBS["embedded-artifact-preflight-test"].log
+    finally:
+        with JOBS_LOCK:
+            JOBS.pop("embedded-artifact-preflight-test", None)
+
+    assert summary["UI_DEPLOYMENT_SOURCE"] == "embedded-release-artifact"
+    assert summary["UI_SOURCE_COMMIT"] == "719d4a82ed972269d44db7c0638800b26e82002d"
+    assert summary["UI_ARTIFACT_SHA256"] == "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683"
+    assert summary["UI_ARTIFACT_VALIDATION"] == "Passed"
+    assert "UI_DEPLOYMENT_SOURCE: embedded-release-artifact" in log
+    assert "UI_ARTIFACT_VALIDATION: Passed" in log
+
+
+def test_missing_or_modified_embedded_artifact_fails_closed(tmp_path: Path) -> None:
+    missing_manifest = write_artifact_manifest(
+        tmp_path / "missing.json",
+        "tools/releases/does-not-exist.tar.gz",
+        "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683",
+    )
+    modified = tmp_path / "modified.tar.gz"
+    modified.write_bytes(b"not the release artifact")
+    modified_manifest = write_artifact_manifest(
+        tmp_path / "modified.json",
+        str(modified),
+        "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683",
+    )
+
+    assert embedded_ui_artifact_summary(str(missing_manifest))["UI artifact validation"].startswith("Failed")
+    assert embedded_ui_artifact_summary(str(modified_manifest))["UI artifact validation"].startswith("Failed")
+    with pytest.raises(RuntimeError, match="UI artifact validation failed"):
+        validated_embedded_ui_artifact(str(missing_manifest))
+    with pytest.raises(RuntimeError, match="UI artifact validation failed"):
+        validated_embedded_ui_artifact(str(modified_manifest))
+
+
+def test_external_ui_source_folder_is_not_consulted_for_normal_release_artifact(tmp_path: Path) -> None:
+    stale_source = tmp_path / "stale-ui"
+    stale_source.mkdir()
+    (stale_source / "app.py").write_text("stale checkout must not be packaged\n", encoding="utf-8")
+    missing_source = tmp_path / "missing-ui"
+
+    artifact_from_stale = create_update_zip(str(stale_source), DEFAULT_RELEASE_MANIFEST)
+    artifact_from_missing = create_update_zip(str(missing_source), DEFAULT_RELEASE_MANIFEST)
+
+    assert artifact_from_stale == artifact_from_missing
+    assert artifact_from_stale.name == "gw006-edge-ui-0.1.9-code.tar.gz"
+    with tarfile.open(artifact_from_stale, "r:gz") as archive:
+        app_text = archive.extractfile("app.py").read().decode("utf-8")  # type: ignore[union-attr]
+    assert "stale checkout must not be packaged" not in app_text
+
+
+def test_embedded_artifact_includes_019_runtime_inventory_and_excludes_site_state() -> None:
+    names = embedded_artifact_names()
+
     assert "app.py" in names
+    assert "edge_program_engine.py" in names
     assert "edge_trend_store.py" in names
     assert "timed_override_store.py" in names
     assert "router_config.py" in names
-    assert "templates/item.txt" in names
-    assert "static/item.txt" in names
-    assert "data/timed-overrides.db" not in names
+    assert "templates/edge_trends_disabled.html" in names
+    assert "templates/timed_overrides.html" in names
+    assert "templates/edge_programs.html" in names
+    assert "static/css/sidebar_nav.css" in names
+    assert "deploy/iot-cx-edge-router-control.py" in names
+    assert "data/" not in names
     assert ".env" not in names
     assert "start.sh" not in names
-    assert ".local-backups/app.py" not in names
+    assert not any(name.startswith("data/") for name in names)
+    assert not any(name.endswith(".db") for name in names)
+    assert not any(".local-backups/" in name for name in names)
+    assert not any("__pycache__" in name or name.endswith(".pyc") for name in names)
+
+
+def test_embedded_artifact_extracts_with_expected_root_layout(tmp_path: Path) -> None:
+    artifact, _summary = validated_embedded_ui_artifact(DEFAULT_RELEASE_MANIFEST)
+
+    with tarfile.open(artifact, "r:gz") as archive:
+        archive.extractall(tmp_path, filter="data")
+
+    assert (tmp_path / "app.py").is_file()
+    assert (tmp_path / "templates" / "edge_trends_disabled.html").is_file()
+    assert (tmp_path / "static" / "css" / "sidebar_nav.css").is_file()
+    assert not (tmp_path / "data").exists()
+    assert not (tmp_path / "start.sh").exists()
+
+
+def test_apply_ui_commands_extract_embedded_artifact_tarball() -> None:
+    commands = {label: command for label, command, _sudo in apply_ui_commands(make_request())}
+
+    assert commands["extract embedded UI artifact"] == (
+        "tar -xzf /home/swadmin/edge-bacnet-ui-v2-update.tar.gz -C /tmp/edge-bacnet-ui-v2-update"
+    )
+    assert "zip" not in commands["extract embedded UI artifact"]
+
+
+def test_build_upload_zip_dry_run_reports_embedded_artifact_without_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = replace(make_request(), dry_run=True, ui_source_folder=r"C:\Stale\edge-ui")
+    job_id = "embedded-dry-run-test"
+    with JOBS_LOCK:
+        JOBS[job_id] = UpgradeJob(request=request)
+    runner = LegacyUpgradeRunner(job_id, request)
+    monkeypatch.setattr(runner, "upload_file", lambda *_args, **_kwargs: pytest.fail("dry run uploaded artifact"))
+    monkeypatch.setattr(runner, "run_commands", lambda *_args, **_kwargs: pytest.fail("dry run ran remote commands"))
+
+    try:
+        runner.build_upload_zip()
+        with JOBS_LOCK:
+            log = JOBS[job_id].log
+    finally:
+        with JOBS_LOCK:
+            JOBS.pop(job_id, None)
+
+    assert "UI_DEPLOYMENT_SOURCE=embedded-release-artifact" in log
+    assert "UI_SOURCE_COMMIT=719d4a82ed972269d44db7c0638800b26e82002d" in log
+    assert "UI_ARTIFACT_SHA256=a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683" in log
+    assert "UI_ARTIFACT_VALIDATION=Passed" in log
+    assert "Would upload embedded validated UI artifact" in log
+    assert r"C:\Stale\edge-ui" not in log
+
+
+def test_build_upload_zip_uploads_embedded_artifact_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = replace(make_request(), dry_run=False, ui_source_folder=r"C:\Missing\edge-ui")
+    job_id = "embedded-upload-test"
+    with JOBS_LOCK:
+        JOBS[job_id] = UpgradeJob(request=request)
+    runner = LegacyUpgradeRunner(job_id, request)
+    uploads: list[tuple[Path, str]] = []
+    command_labels: list[str] = []
+
+    monkeypatch.setattr(runner, "upload_file", lambda local, remote: uploads.append((local, remote)))
+
+    def fake_run_commands(command_list, *, stop_on_failure=True):
+        command_labels.extend(label for label, _command, _sudo in command_list)
+        return "-rw-r--r-- 1 swadmin swadmin 123 edge-bacnet-ui-v2-update.tar.gz\n"
+
+    monkeypatch.setattr(runner, "run_commands", fake_run_commands)
+    try:
+        runner.build_upload_zip()
+    finally:
+        with JOBS_LOCK:
+            JOBS.pop(job_id, None)
+
+    artifact, _summary = validated_embedded_ui_artifact(DEFAULT_RELEASE_MANIFEST)
+    assert uploads == [(artifact, "/home/swadmin/edge-bacnet-ui-v2-update.tar.gz")]
+    assert command_labels == ["verify uploaded UI artifact"]
 
 
 def test_runner_uses_nested_shell_when_direct_gateway_client_is_unavailable(monkeypatch) -> None:
@@ -1306,7 +1461,7 @@ def test_nested_upload_uses_small_heredoc_chunks(tmp_path, monkeypatch) -> None:
     with JOBS_LOCK:
         JOBS[job_id] = UpgradeJob(request=request)
     runner = LegacyUpgradeRunner(job_id, request)
-    local_file = tmp_path / "upload.zip"
+    local_file = tmp_path / "upload.tar.gz"
     local_file.write_bytes(b"x" * (NESTED_UPLOAD_CHUNK_SIZE * 2))
     commands = []
 
@@ -1317,11 +1472,11 @@ def test_nested_upload_uses_small_heredoc_chunks(tmp_path, monkeypatch) -> None:
         return "ok\n"
 
     monkeypatch.setattr(runner, "run_commands", fake_run_commands)
-    runner.upload_file(local_file, "/tmp/upload.zip")
+    runner.upload_file(local_file, "/tmp/upload.tar.gz")
 
-    upload_commands = [command for label, command, _sudo in commands if label.startswith("upload UI zip chunk")]
+    upload_commands = [command for label, command, _sudo in commands if label.startswith("upload UI artifact chunk")]
     assert len(upload_commands) > 1
-    assert all("cat >> /tmp/upload.zip.b64 <<'IOTGWCFG_UPLOAD_CHUNK'" in command for command in upload_commands)
+    assert all("cat >> /tmp/upload.tar.gz.b64 <<'IOTGWCFG_UPLOAD_CHUNK'" in command for command in upload_commands)
     assert all("printf %s" not in command for command in upload_commands)
     assert max(len(command) for command in upload_commands) < 5000
     with JOBS_LOCK:

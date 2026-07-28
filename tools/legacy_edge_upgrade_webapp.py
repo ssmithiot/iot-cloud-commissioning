@@ -17,11 +17,9 @@ import shlex
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
-import zipfile
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
@@ -48,7 +46,7 @@ DEFAULT_RELEASE_MANIFEST = str(Path(__file__).resolve().parent / "releases" / "m
 DEFAULT_EDGE_UI_COMMIT = "719d4a82ed972269d44db7c0638800b26e82002d"
 DEFAULT_EDGE_UI_DATA_DIR = "/home/swadmin/edge-bacnet-ui-v2/data"
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
-REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
+REMOTE_UI_ARTIFACT_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.tar.gz"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
 NESTED_UPLOAD_CHUNK_SIZE = 3000
 UI_PACKAGE_FILES = (
@@ -84,7 +82,7 @@ WORKER_STATUS_LOCK = threading.Lock()
 PHASES = [
     "Inspect gateway",
     "Back up local BACnet UI",
-    "Build/upload UI update ZIP",
+    "Build/upload UI release artifact",
     "Apply UI update",
     "Confirm UI auth",
     "Restart local UI",
@@ -226,6 +224,36 @@ def validate_ui_source_for_deploy(source_folder: str, release_manifest_path: str
     if summary["Source validation"] != "Passed":
         raise RuntimeError(f"UI source validation failed: {summary['Source validation']}")
     return summary["UI source commit"]
+
+
+def embedded_ui_artifact_summary(release_manifest_path: str) -> dict[str, str]:
+    manifest = load_manifest(Path(release_manifest_path))
+    repository_root = Path(__file__).resolve().parents[1]
+    summary = {
+        "UI deployment source": "embedded-release-artifact",
+        "UI package source": "embedded-release-artifact",
+        "UI source commit": manifest.edge_ui_tag,
+        "Expected UI commit": manifest.edge_ui_tag,
+        "UI artifact path": str((repository_root / manifest.artifact).resolve()),
+        "UI artifact SHA-256": "unknown",
+        "UI artifact validation": "Failed",
+    }
+    try:
+        artifact = verify_manifest_artifact(manifest, repository_root)
+    except Exception as exc:
+        summary["UI artifact validation"] = f"Failed: {exc}"
+        return summary
+    summary["UI artifact path"] = str(artifact)
+    summary["UI artifact SHA-256"] = manifest.sha256
+    summary["UI artifact validation"] = "Passed"
+    return summary
+
+
+def validated_embedded_ui_artifact(release_manifest_path: str) -> tuple[Path, dict[str, str]]:
+    summary = embedded_ui_artifact_summary(release_manifest_path)
+    if summary["UI artifact validation"] != "Passed":
+        raise RuntimeError(f"UI artifact validation failed: {summary['UI artifact validation']}")
+    return Path(summary["UI artifact path"]), summary
 
 
 class LiveLog:
@@ -615,8 +643,9 @@ def form_page(message: str = "") -> bytes:
   <label class="wide">Repo path on gateway
     <input name="remote_repo" value="{DEFAULT_REPO_PATH}" required>
   </label>
-  <label class="wide">Local BACnet UI source folder on Windows
-    <input name="ui_source_folder" value="{escape(DEFAULT_UI_SOURCE, quote=True)}" required>
+  <label class="wide">Local BACnet UI source folder on Windows (developer-only; ignored for 0.1.9)
+    <input name="ui_source_folder" value="{escape(DEFAULT_UI_SOURCE, quote=True)}" disabled>
+    <span class="hint">0.1.9 deploys the embedded validated artifact from this updater package.</span>
   </label>
   <label>Local BACnet UI username
     <input name="ui_username" value="admin" required>
@@ -626,7 +655,7 @@ def form_page(message: str = "") -> bytes:
   </label>
   <div class="wide checks">
     <label><input type="checkbox" name="dry_run" value="1" checked> Dry run / Preflight</label>
-    <label><input type="checkbox" name="reuse_uploaded_zip" value="1"> Reuse uploaded UI ZIP</label>
+    <label><input type="checkbox" name="reuse_uploaded_zip" value="1"> Reuse uploaded UI artifact</label>
     <label><input type="checkbox" name="skip_edge_ui_stop" value="1"> Edge UI already stopped / skip stop</label>
     <label><input type="checkbox" name="cloud_portal_verified" value="1"> Cloud portal verified</label>
     <label><input type="checkbox" name="final_update_confirmed" value="1"> Final Update/Deploy confirmed</label>
@@ -1111,7 +1140,7 @@ def backup_commands(edge_release: str = DEFAULT_EDGE_RELEASE) -> list[tuple[str,
 
 
 def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
-    normalize = r"""python3 -c 'import zipfile,pathlib; src=pathlib.Path("/home/swadmin/edge-bacnet-ui-v2-update.zip"); dest=pathlib.Path("/tmp/edge-bacnet-ui-v2-update"); z=zipfile.ZipFile(src); [((dest / pathlib.PurePosixPath(i.filename.replace("\\","/"))).parent.mkdir(parents=True, exist_ok=True), (dest / pathlib.PurePosixPath(i.filename.replace("\\","/"))).write_bytes(z.read(i))) for i in z.infolist() if i.filename and not i.filename.replace("\\","/").endswith("/")]; z.close()'"""
+    extract = f"tar -xzf {shell_quote(REMOTE_UI_ARTIFACT_PATH)} -C /tmp/edge-bacnet-ui-v2-update"
     stop_command = (
         ("skip edge UI stop", "echo 'Skipping edge UI stop because Edge UI already stopped / skip stop is checked.'", False)
         if request.skip_edge_ui_stop
@@ -1119,8 +1148,8 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     )
     return [
         ("prepare normalized extraction folder", "rm -rf /tmp/edge-bacnet-ui-v2-update && mkdir -p /tmp/edge-bacnet-ui-v2-update", False),
-        ("extract UI update zip with normalized paths", normalize, False),
-        ("verify normalized templates", r"""test -d /tmp/edge-bacnet-ui-v2-update/templates && ! find /tmp/edge-bacnet-ui-v2-update -maxdepth 1 -name 'templates\*' | grep -q . && ls -lah /tmp/edge-bacnet-ui-v2-update/templates""", False),
+        ("extract embedded UI artifact", extract, False),
+        ("verify normalized templates", r"""test -d /tmp/edge-bacnet-ui-v2-update/templates && ls -lah /tmp/edge-bacnet-ui-v2-update/templates""", False),
         stop_command,
         ("confirm edge UI stopped", "systemctl is-active edge-bacnet-ui.service || true", False),
         ("apply code-only UI files", apply_ui_files_command(), False),
@@ -1438,26 +1467,9 @@ def disable_agent_commands() -> list[tuple[str, str, bool]]:
 
 
 def create_update_zip(source_folder: str, release_manifest_path: str) -> Path:
-    source = Path(source_folder)
-    validate_ui_source_for_deploy(str(source), release_manifest_path)
-    required = [*UI_PACKAGE_FILES, *UI_PACKAGE_DIRS]
-    missing = [item for item in required if not (source / item).exists()]
-    if missing:
-        raise RuntimeError(f"Local BACnet UI source folder is missing: {', '.join(missing)}")
-    temp_dir = Path(tempfile.mkdtemp(prefix="legacy-edge-upgrade-"))
-    zip_path = temp_dir / "edge-bacnet-ui-v2-update.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file_name in [*UI_PACKAGE_FILES, *UI_OPTIONAL_PACKAGE_FILES]:
-            if not (source / file_name).exists():
-                continue
-            archive.write(source / file_name, arcname=file_name)
-        for directory in UI_PACKAGE_DIRS:
-            for path in (source / directory).rglob("*"):
-                if path.is_file():
-                    archive.write(path, arcname=path.relative_to(source).as_posix())
-    if zip_path.stat().st_size <= 0:
-        raise RuntimeError("Built UI update ZIP is empty")
-    return zip_path
+    """Legacy developer helper retained for tests; normal 0.1.9 deploys the embedded artifact."""
+    artifact, _summary = validated_embedded_ui_artifact(release_manifest_path)
+    return artifact
 
 
 def provision_cloud_gateway(request: UpgradeRequest, log: LiveLog, redactor: Redactor) -> str:
@@ -1680,14 +1692,14 @@ class LegacyUpgradeRunner:
             part = (offset // NESTED_UPLOAD_CHUNK_SIZE) + 1
             self.run_commands(
                 [(
-                    f"upload UI zip chunk {part}/{total_parts}",
+                    f"upload UI artifact chunk {part}/{total_parts}",
                     f"cat >> {shell_quote(remote_b64)} <<'IOTGWCFG_UPLOAD_CHUNK'\n{chunk}\nIOTGWCFG_UPLOAD_CHUNK",
                     False,
                 )]
             )
         self.run_commands(
             [(
-                "decode nested UI zip upload",
+                "decode nested UI artifact upload",
                 f"base64 -d {shell_quote(remote_b64)} > {shell_quote(remote_path)} && rm -f {shell_quote(remote_b64)}",
                 False,
             )]
@@ -1719,14 +1731,14 @@ class LegacyUpgradeRunner:
                     JOBS[self.job_id].backup_filename = backup
             elif index == 2:
                 if self.request.reuse_uploaded_zip:
-                    self.run_commands([("verify existing uploaded UI zip", f"ls -lh {REMOTE_ZIP_PATH} && test -s {REMOTE_ZIP_PATH}", False)])
+                    self.run_commands([("verify existing uploaded UI artifact", f"ls -lh {REMOTE_UI_ARTIFACT_PATH} && test -s {REMOTE_UI_ARTIFACT_PATH}", False)])
                     with JOBS_LOCK:
                         job = JOBS[self.job_id]
                         job.phases[index].status = PhaseStatus.SKIPPED
-                        job.phases[index].detail = "Skipped; reused uploaded ZIP"
+                        job.phases[index].detail = "Skipped; reused uploaded artifact"
                         job.current_phase = index + 1
                         job.status = "waiting"
-                    self.log.append("\nPhase skipped: Build/upload UI update ZIP; reusing existing uploaded ZIP.\n")
+                    self.log.append("\nPhase skipped: Build/upload UI release artifact; reusing existing uploaded artifact.\n")
                     return
                 self.build_upload_zip()
             elif index == 3:
@@ -1801,9 +1813,9 @@ class LegacyUpgradeRunner:
         pre_port = next((line.split("=", 1)[1].strip() for line in output.splitlines() if line.startswith("PRE_UPGRADE_AGENT_DEFAULT_PORT=")), "47814")
         sudo_state = "yes" if "SUDO_AVAILABLE=yes" in output else "not confirmed"
         backup_path = "/home/swadmin" if "BACKUP_PATH_WRITABLE=/home/swadmin" in output else "not confirmed"
-        source_summary = ui_source_validation_summary(self.request.ui_source_folder, self.request.release_manifest_path)
-        if not self.request.dry_run and source_summary["Source validation"] != "Passed":
-            raise RuntimeError(f"UI source validation failed: {source_summary['Source validation']}")
+        source_summary = embedded_ui_artifact_summary(self.request.release_manifest_path)
+        if not self.request.dry_run and source_summary["UI artifact validation"] != "Passed":
+            raise RuntimeError(f"UI artifact validation failed: {source_summary['UI artifact validation']}")
         with JOBS_LOCK:
             job = JOBS[self.job_id]
             job.pre_upgrade_agent_default_port = pre_port if pre_port.isdigit() else "47814"
@@ -1816,6 +1828,10 @@ class LegacyUpgradeRunner:
                     "Target UI version": DEFAULT_EDGE_RELEASE,
                     "Target agent version": DEFAULT_EDGE_RELEASE,
                     **source_summary,
+                    "UI_DEPLOYMENT_SOURCE": source_summary["UI deployment source"],
+                    "UI_SOURCE_COMMIT": source_summary["UI source commit"],
+                    "UI_ARTIFACT_SHA256": source_summary["UI artifact SHA-256"],
+                    "UI_ARTIFACT_VALIDATION": source_summary["UI artifact validation"],
                     "BACnet policy": "Preserve existing configuration",
                     "BACnet files/settings changed": "None",
                     "start.sh": "Preserved",
@@ -1841,23 +1857,24 @@ class LegacyUpgradeRunner:
         return matches[-1]
 
     def build_upload_zip(self) -> None:
-        source_commit = validate_ui_source_for_deploy(self.request.ui_source_folder, self.request.release_manifest_path)
+        artifact_path, artifact_summary = validated_embedded_ui_artifact(self.request.release_manifest_path)
+        self.log.append("UI_DEPLOYMENT_SOURCE=embedded-release-artifact\n")
+        self.log.append(f"UI_SOURCE_COMMIT={artifact_summary['UI source commit']}\n")
+        self.log.append(f"UI_ARTIFACT_SHA256={artifact_summary['UI artifact SHA-256']}\n")
+        self.log.append("UI_ARTIFACT_VALIDATION=Passed\n")
         if self.request.dry_run:
-            zip_path = Path(tempfile.gettempdir()) / "edge-bacnet-ui-v2-update.dry-run.zip"
-            self.log.append(f"[dry-run] UI source validation passed: {self.request.ui_source_folder} at {source_commit}.\n")
-            self.log.append(f"[dry-run] Would build ZIP from validated UI source and upload to {REMOTE_ZIP_PATH}.\n")
+            self.log.append(f"[dry-run] Would upload embedded validated UI artifact {artifact_path} to {REMOTE_UI_ARTIFACT_PATH}.\n")
             self.log.append(f"[dry-run] Required contents: {', '.join([*UI_PACKAGE_FILES, *(item + '/' for item in UI_PACKAGE_DIRS)])}\n")
             self.log.append("[dry-run] Preserved: data/, .env, start.sh, databases, saved devices/templates, programs, trends, timed overrides, credentials, gateway identity, cloud identity, BACnet route settings.\n")
             self.log.append("[dry-run] Services that would restart: edge-bacnet-ui.service; iot-cx-agent.service only when agent phases are selected.\n")
             self.log.append("[dry-run] BACnet defaults apply only when no usable BACnet route settings exist: external router, UDP 47814, internal Edge router disabled.\n")
             self.log.append("[dry-run] Rollback scope: full pre-upgrade folder backup plus release-named code-only checkpoint.\n")
             return
-        zip_path = create_update_zip(self.request.ui_source_folder, self.request.release_manifest_path)
-        self.log.append(f"Built local UI update ZIP: {zip_path} ({zip_path.stat().st_size} bytes)\n")
-        self.upload_file(zip_path, REMOTE_ZIP_PATH)
-        output = self.run_commands([("verify uploaded UI zip", f"ls -lh {REMOTE_ZIP_PATH} && test -s {REMOTE_ZIP_PATH}", False)])
+        self.log.append(f"Using embedded UI release artifact: {artifact_path} ({artifact_path.stat().st_size} bytes)\n")
+        self.upload_file(artifact_path, REMOTE_UI_ARTIFACT_PATH)
+        output = self.run_commands([("verify uploaded UI artifact", f"ls -lh {REMOTE_UI_ARTIFACT_PATH} && test -s {REMOTE_UI_ARTIFACT_PATH}", False)])
         if not output.strip():
-            raise RuntimeError("Uploaded ZIP verification returned no output")
+            raise RuntimeError("Uploaded UI artifact verification returned no output")
 
     def validate_ui_restart(self, output: str) -> None:
         if self.request.dry_run:
