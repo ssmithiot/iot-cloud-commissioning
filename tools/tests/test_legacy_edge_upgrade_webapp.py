@@ -19,6 +19,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     LegacyUpgradeRunner,
     NESTED_UPLOAD_CHUNK_SIZE,
     Redactor,
+    TARGETED_AGENT_ONLY_PHASES,
     UPDATE_AGENT_PHASES,
     UpgradeJob,
     UpgradeRequest,
@@ -31,6 +32,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     apply_ui_commands,
     DEFAULT_EDGE_UPDATE_REF,
     create_update_zip,
+    edge_ui_data_dir_config_command,
     edge_ui_data_dir_config_script,
     edge_ui_data_dir_validation_command,
     final_commands,
@@ -495,7 +497,7 @@ def test_edge_ui_data_dir_missing_key_is_added_with_default_path(tmp_path: Path)
     result = run_edge_ui_data_dir_config(config_path)
 
     updated = config_path.read_text(encoding="utf-8")
-    assert "EDGE_UI_DATA_DIR_ACTION=add" in result.stdout
+    assert "EDGE_UI_DATA_DIR_ACTION=Added" in result.stdout
     assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data\n" in updated
     assert "gateway_id: GW062" in updated
     assert "GATEWAY_API_TOKEN: should-stay" in updated
@@ -511,7 +513,7 @@ def test_edge_ui_data_dir_correct_existing_value_is_preserved_without_duplicatio
     result = run_edge_ui_data_dir_config(config_path)
 
     updated = config_path.read_text(encoding="utf-8")
-    assert "EDGE_UI_DATA_DIR_ACTION=preserve" in result.stdout
+    assert "EDGE_UI_DATA_DIR_ACTION=Preserved" in result.stdout
     assert updated.count("edge_ui_data_dir:") == 1
     assert "bacnet_default_port: 47814" in updated
 
@@ -520,9 +522,10 @@ def test_edge_ui_data_dir_custom_non_empty_value_is_preserved(tmp_path: Path) ->
     config_path = tmp_path / "agent.yaml"
     config_path.write_text("edge_ui_data_dir: /custom/edge/data\nheartbeat_interval_sec: 30\n", encoding="utf-8")
 
-    run_edge_ui_data_dir_config(config_path)
+    result = run_edge_ui_data_dir_config(config_path)
 
     updated = config_path.read_text(encoding="utf-8")
+    assert "EDGE_UI_DATA_DIR_ACTION=PreservedCustom" in result.stdout
     assert "edge_ui_data_dir: /custom/edge/data\n" in updated
     assert "/home/swadmin/edge-bacnet-ui-v2/data" not in updated
 
@@ -565,6 +568,20 @@ def test_agent_only_phase_selection_applies_config_fix_without_cloud_or_token_ph
     assert ensure_command[2] is True
     assert "edge_ui_data_dir" in edge_ui_data_dir_config_script()
     assert "GATEWAY_API_TOKEN" not in "\n".join(command for _label, command, _sudo in commands)
+
+
+def test_edge_ui_data_dir_config_command_is_nested_ssh_safe_and_finite() -> None:
+    command = edge_ui_data_dir_config_command()
+
+    assert command.startswith("sudo -S -p '' timeout -k 5s 30s python3 -c ")
+    assert "<<" not in command
+    assert "cat >" not in command
+    assert "/tmp/iot-cx-ensure-edge-ui-data-dir.py" not in command
+    assert "base64" in command
+    assert "EDGE_UI_DATA_DIR_ACTION" not in command
+    assert "\n" not in command
+    assert command.count("sudo -S -p ''") == 1
+    assert "sudo -n" not in command
 
 
 def test_edge_ui_data_dir_config_does_not_change_identity_tokens_bacnet_or_route_settings(tmp_path: Path) -> None:
@@ -611,6 +628,33 @@ def test_dry_run_displays_edge_ui_data_dir_plan_without_modifying_config(tmp_pat
 
     assert config_path.read_text(encoding="utf-8") == "gateway_id: GW062\n"
     assert "ensure Edge UI data dir config" in log_text
+
+
+def test_phase_10_config_timeout_fails_phase_and_skips_agent_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = replace(make_request(), dry_run=False)
+    job_id = "edge-ui-data-dir-timeout"
+    with JOBS_LOCK:
+        JOBS[job_id] = UpgradeJob(request=request)
+    runner = LegacyUpgradeRunner(job_id, request)
+    labels: list[str] = []
+
+    def fake_run_commands(command_list, *, stop_on_failure=True):
+        labels.extend(label for label, _command, _sudo in command_list)
+        if any(label == "ensure Edge UI data dir config (add if missing, preserve existing)" for label, _command, _sudo in command_list):
+            raise RuntimeError("ensure Edge UI data dir config (add if missing, preserve existing) failed with exit code 124")
+        return "ok\n"
+
+    monkeypatch.setattr(runner, "run_commands", fake_run_commands)
+    with pytest.raises(RuntimeError, match="exit code 124"):
+        runner.run_phase(9)
+
+    assert "ensure Edge UI data dir config (add if missing, preserve existing)" in labels
+    assert "restart agent service" not in labels
+    with JOBS_LOCK:
+        job = JOBS.pop(job_id)
+    assert job.status == "failed"
+    assert job.phases[9].status == legacy_webapp.PhaseStatus.FAILED
+    assert job.phases[10].status == legacy_webapp.PhaseStatus.NOT_STARTED
 
 
 def make_fake_runtime_bin(tmp_path: Path, *, service_user: str = "root", fail_inner_sudo: bool = False) -> Path:
@@ -1015,6 +1059,22 @@ def test_parse_upgrade_request_allows_standard_update_agent_real_run_phases() ->
 
     assert request.dry_run is False
     assert request.selected_phases == (0, 1, 2, 3, 4, 5, 7, 9, 10, 11)
+
+
+def test_parse_upgrade_request_allows_targeted_agent_only_real_run_phases() -> None:
+    body = (
+        "gateway_id=GW062&cloud_url=https%3A%2F%2Fiot-cloud-api-dev.onrender.com"
+        "&admin_api_token=admin-secret-token&cradlepoint_host=10.2.0.55"
+        "&cradlepoint_password=cp-secret&gateway_password=gw-secret"
+        "&ui_password=ui-secret&final_update_confirmed=1"
+        "&selected_phases=0&selected_phases=7&selected_phases=9"
+        "&selected_phases=10&selected_phases=11"
+    ).encode("utf-8")
+
+    request = parse_upgrade_request(body)
+
+    assert request.dry_run is False
+    assert request.selected_phases == TARGETED_AGENT_ONLY_PHASES == (0, 7, 9, 10, 11)
 
 
 def test_parse_upgrade_request_rejects_other_targeted_real_run_phases() -> None:

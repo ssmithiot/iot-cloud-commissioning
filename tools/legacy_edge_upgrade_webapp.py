@@ -70,6 +70,7 @@ UI_OPTIONAL_PACKAGE_FILES = (
 # the proven edge UI writer and the agent that delegates queued jobs to it.
 # Nothing polls this list to auto-update a gateway when it reconnects.
 UPDATE_AGENT_PHASES = (0, 1, 2, 3, 4, 5, 7, 9, 10, 11)
+TARGETED_AGENT_ONLY_PHASES = (0, 7, 9, 10, 11)
 UI_ONLY_PHASES = (0, 1, 2, 3, 4, 5)
 JOBS: dict[str, "UpgradeJob"] = {}
 JOBS_LOCK = threading.Lock()
@@ -98,6 +99,7 @@ TARGETED_REAL_RUN_PHASES = (4, 5, 11)
 STANDARD_REAL_RUN_PHASE_SETS = (
     tuple(range(len(PHASES))),
     UPDATE_AGENT_PHASES,
+    TARGETED_AGENT_ONLY_PHASES,
     UI_ONLY_PHASES,
 )
 
@@ -1291,7 +1293,12 @@ for line in lines:
         existing_values.append(match.group(1).strip())
 
 resolved = next((value for value in existing_values if value), default_path)
-action = "preserve" if any(value for value in existing_values) else "add"
+if not any(value for value in existing_values):
+    action = "Added"
+elif resolved == default_path:
+    action = "Preserved"
+else:
+    action = "PreservedCustom"
 new_lines = []
 wrote = False
 for line in lines:
@@ -1312,12 +1319,9 @@ print(f"EDGE_UI_DATA_DIR={{resolved}}")
 
 
 def edge_ui_data_dir_config_command() -> str:
-    script_b64 = shell_quote(b64(edge_ui_data_dir_config_script()))
-    script_path = "/tmp/iot-cx-ensure-edge-ui-data-dir.py"
-    return (
-        f"printf %s {script_b64} | base64 -d > {script_path} "
-        f"&& sudo -S -p '' python3 {script_path}; code=$?; rm -f {script_path}; exit $code"
-    )
+    payload = b64(edge_ui_data_dir_config_script())
+    runner = f"import base64; exec(base64.b64decode({payload!r}).decode('utf-8'))"
+    return f"sudo -S -p '' timeout -k 5s 30s python3 -c {shell_quote(runner)}"
 
 
 def edge_ui_data_dir_validation_command(
