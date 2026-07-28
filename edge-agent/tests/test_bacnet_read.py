@@ -2,7 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from iot_cx_agent.bacnet import parse_bacnet_read_value, parse_bacnet_rpm_present_values, prepare_bacnet_command
+from iot_cx_agent.bacnet import parse_bacnet_read_value, parse_bacnet_rpm_present_values, prepare_bacnet_command, resolve_bacnet_route
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.jobs import execute_job
 
@@ -92,6 +92,47 @@ def edge_router_authority_config(tmp_path: Path, bacrp_path: str = "bacrp", bacr
             "bacnet_bbmd_port": 47809,
         }
     )
+
+
+def legacy_basrtb_route_config(tmp_path: Path, *, port: int = 47814, bacrp_path: str = "bacrp", bacrpm_path: str = "bacrpm") -> AgentConfig:
+    edge_dir = tmp_path / "edge-ui-data"
+    (edge_dir / "cache").mkdir(parents=True)
+    (edge_dir / "cache" / "last_discovery.json").write_text(
+        """
+        {
+          "devices": [
+            {
+              "device": "1103",
+              "mac": "C0:A8:01:C8:BA:C6",
+              "snet": "202",
+              "sadr": "01",
+              "bacnet_port": "47814"
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    base = config(tmp_path, bacrp_path=bacrp_path, bacrpm_path=bacrpm_path)
+    return AgentConfig(**{**base.__dict__, "edge_ui_data_dir": edge_dir, "bacnet_default_port": port})
+
+
+def incomplete_routed_route_config(tmp_path: Path, bacrp_path: str = "bacrp", bacrpm_path: str = "bacrpm") -> AgentConfig:
+    edge_dir = tmp_path / "edge-ui-data"
+    (edge_dir / "cache").mkdir(parents=True)
+    (edge_dir / "cache" / "last_discovery.json").write_text(
+        '{"devices":[{"device":"1103","snet":"202","sadr":"01"}]}',
+        encoding="utf-8",
+    )
+    base = config(tmp_path, bacrp_path=bacrp_path, bacrpm_path=bacrpm_path)
+    return AgentConfig(**{**base.__dict__, "edge_ui_data_dir": edge_dir})
+
+
+def executable_stub(tmp_path: Path, name: str) -> str:
+    path = tmp_path / name
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
+    path.chmod(0o755)
+    return str(path)
 
 
 def bacnet_read_job(request: dict[str, object]) -> dict[str, object]:
@@ -256,6 +297,29 @@ def test_cloud_native_bip_uses_saved_endpoint_without_mstp_route(tmp_path: Path)
     assert "202" not in prepared
 
 
+def test_legacy_basrtb_routed_mstp_trend_read_includes_route_args(tmp_path: Path) -> None:
+    agent_config = legacy_basrtb_route_config(tmp_path)
+
+    prepared = prepare_bacnet_command(agent_config, ["bacrpm", "1103", "analog-value", "7", "85"])
+    route = resolve_bacnet_route(agent_config, "1103")
+
+    assert prepared == [
+        "bacrpm",
+        "1103",
+        "analog-value",
+        "7",
+        "85",
+        "--mac",
+        "192.168.1.200:47814",
+        "--dnet",
+        "202",
+        "--dadr",
+        "01",
+    ]
+    assert route["classification"] == "routed-mstp"
+    assert route["source"] == "last-discovery-cache"
+
+
 def test_bacnet_bulk_read_uses_one_rpm_command_for_multiple_points(tmp_path: Path, monkeypatch) -> None:
     calls = []
 
@@ -309,6 +373,8 @@ def test_bacnet_bulk_read_uses_one_rpm_command_for_multiple_points(tmp_path: Pat
     assert result["requested_count"] == 2
     assert result["value_count"] == 2
     assert result["single_read_fallback_count"] == 0
+    assert result["route_diagnostics"]["route_classification"] == "default"
+    assert result["route_diagnostics"]["local_bacnet_source_port"] == 47814
     assert result["values"] == [
         {
             "saved_point_id": "point-1",
@@ -329,6 +395,84 @@ def test_bacnet_bulk_read_uses_one_rpm_command_for_multiple_points(tmp_path: Pat
             "read_source": "rpm-bulk",
         },
     ]
+
+
+def test_trend_bulk_rpm_uses_route_aware_preparation(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+    bacrpm_path = executable_stub(tmp_path, "bacrpm")
+
+    def fake_run(*args, **kwargs):
+        calls.append(args[0])
+        assert kwargs["env"]["BACNET_IP_PORT"] == "47814"
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="analog-value, 7\n  present-value: Real: 68.5\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    status, result, error = execute_job(
+        legacy_basrtb_route_config(tmp_path, bacrpm_path=bacrpm_path),
+        bacnet_read_bulk_job(
+            {
+                "device_instance": 1103,
+                "points": [{"saved_point_id": "point-1103-av7", "object_type": "analog-value", "object_instance": 7}],
+            }
+        ),
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert calls == [
+        [
+            bacrpm_path,
+            "1103",
+            "analog-value",
+            "7",
+            "85",
+            "--mac",
+            "192.168.1.200:47814",
+            "--dnet",
+            "202",
+            "--dadr",
+            "01",
+        ]
+    ]
+    assert result is not None
+    assert result["route_diagnostics"]["route_classification"] == "routed-mstp"
+    assert result["route_diagnostics"]["dnet"] == "202"
+    assert result["route_diagnostics"]["dadr"] == "01"
+
+
+def test_existing_47809_site_remains_on_47809_for_bulk_reads(tmp_path: Path, monkeypatch) -> None:
+    def fake_run(*args, **kwargs):
+        assert kwargs["env"]["BACNET_IP_PORT"] == "47809"
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="analog-value, 7\n  present-value: Real: 68.5\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    agent_config = config(tmp_path, bacrpm_path=sys.executable)
+    status, result, error = execute_job(
+        AgentConfig(**{**agent_config.__dict__, "bacnet_default_port": 47809}),
+        bacnet_read_bulk_job(
+            {
+                "device_instance": 1103,
+                "points": [{"saved_point_id": "point-1103-av7", "object_type": "analog-value", "object_instance": 7}],
+            }
+        ),
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert result is not None
+    assert result["route_diagnostics"]["local_bacnet_source_port"] == 47809
 
 
 def test_bacnet_bulk_read_uses_edge_priority_array_read_before_property_87(tmp_path: Path, monkeypatch) -> None:
@@ -400,6 +544,8 @@ def test_bacnet_bulk_read_falls_back_to_single_reads_when_rpm_returns_no_values(
         ["bacrp", "1", "analog-value", "1", "85"],
         ["bacrp", "1", "binary-value", "5", "85"],
     ]
+    assert result["route_diagnostics"]["batches"][0]["command_type"] == "bulk-rpm"
+    assert result["route_diagnostics"]["batches"][1]["command_type"] == "single-fallback"
     assert result["values"] == [
         {
             "saved_point_id": "point-1",
@@ -420,6 +566,67 @@ def test_bacnet_bulk_read_falls_back_to_single_reads_when_rpm_returns_no_values(
             "read_source": "single-fallback",
         },
     ]
+
+
+def test_trend_single_read_fallback_uses_same_route_aware_preparation(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+    bacrpm_path = executable_stub(tmp_path, "bacrpm")
+
+    def fake_run(*args, **kwargs):
+        calls.append(args[0])
+        if args[0][0] == bacrpm_path:
+            return subprocess.CompletedProcess(args[0], 0, stdout="no parseable present values here\n", stderr="")
+        return subprocess.CompletedProcess(args[0], 0, stdout="present-value: Real: 68.5\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    status, result, error = execute_job(
+        legacy_basrtb_route_config(tmp_path, bacrpm_path=bacrpm_path),
+        bacnet_read_bulk_job(
+            {
+                "device_instance": 1103,
+                "points": [{"saved_point_id": "point-1103-av7", "object_type": "analog-value", "object_instance": 7}],
+            }
+        ),
+    )
+
+    expected_route_args = ["--mac", "192.168.1.200:47814", "--dnet", "202", "--dadr", "01"]
+    assert status == "completed"
+    assert error is None
+    assert calls == [
+        [bacrpm_path, "1103", "analog-value", "7", "85", *expected_route_args],
+        ["bacrp", "1103", "analog-value", "7", "85", *expected_route_args],
+    ]
+    assert result is not None
+    assert result["single_read_fallback_count"] == 1
+    assert result["route_diagnostics"]["batches"][1]["command_type"] == "single-fallback"
+
+
+def test_known_routed_device_with_incomplete_metadata_fails_before_plain_read(tmp_path: Path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args[0])
+        raise AssertionError("plain bacrp/bacrpm must not be executed for incomplete routed metadata")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    status, result, error = execute_job(
+        incomplete_routed_route_config(tmp_path, bacrpm_path=sys.executable),
+        bacnet_read_bulk_job(
+            {
+                "device_instance": 1103,
+                "points": [{"saved_point_id": "point-1103-av7", "object_type": "analog-value", "object_instance": 7}],
+            }
+        ),
+    )
+
+    assert status == "failed"
+    assert calls == []
+    assert result is not None
+    assert result["status"] == "error"
+    assert result["route_diagnostics"]["route_classification"] == "metadata-error"
+    assert "metadata incomplete for routed device 1103" in str(error)
 
 
 def test_bacnet_read_invalid_object_type_fails_cleanly(tmp_path: Path) -> None:

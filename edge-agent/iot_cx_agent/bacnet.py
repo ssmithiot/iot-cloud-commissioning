@@ -73,6 +73,10 @@ BACNET_OBJECT_LIST_INDEX_BLOCK_SIZE = 40
 BACNET_RUNTIME_BUSY = "bacnet_runtime_busy"
 
 
+class BacnetRouteMetadataError(RuntimeError):
+    """Raised when a known routed device lacks enough metadata for a safe read."""
+
+
 def resolved_bacnet_port(config: AgentConfig) -> int:
     return config.bacnet_default_port
 
@@ -113,17 +117,47 @@ def _bacnet_ip_mac_to_ip_port(mac_hex: str) -> str:
     return f"{ip}:{port}"
 
 
-def _edge_saved_native_bip_route(config: AgentConfig, device_instance: object) -> list[str]:
+def _route_diagnostics(snapshot: dict[str, object], config: AgentConfig, command_type: str = "") -> dict[str, object]:
+    route_args = list(snapshot.get("route_args") or [])
+    diagnostic = {
+        "device_instance": str(snapshot.get("device_instance") or ""),
+        "route_classification": str(snapshot.get("classification") or "default"),
+        "router_profile": config.bacnet_router_profile,
+        "local_bacnet_source_port": resolved_bacnet_port(config),
+        "command_type": command_type,
+        "route_metadata_source": str(snapshot.get("source") or ""),
+        "route_args": route_args,
+    }
+    for key in ("mac", "dnet", "dadr", "snet", "sadr", "native_endpoint"):
+        if snapshot.get(key):
+            diagnostic[key] = snapshot[key]
+    return diagnostic
+
+
+def _route_args_from_snapshot(snapshot: dict[str, object]) -> list[str]:
+    return list(snapshot.get("route_args") or [])
+
+
+def _valid_routed_sadr(value: object) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"", "0", "00"}:
+        return ""
+    if _bacnet_ip_mac_to_ip_port(text):
+        return ""
+    return text
+
+
+def _route_snapshot_from_native_saved_device(config: AgentConfig, device_instance: object) -> dict[str, object] | None:
     if config.edge_ui_data_dir is None:
-        return []
+        return None
     target = str(device_instance).strip()
     if not target:
-        return []
+        return None
     devices_dir = config.edge_ui_data_dir / "devices"
     try:
         paths = sorted(devices_dir.glob("*.json"))
     except Exception:
-        return []
+        return None
     for path in paths:
         try:
             saved_device = json.loads(path.read_text(encoding="utf-8"))
@@ -134,11 +168,20 @@ def _edge_saved_native_bip_route(config: AgentConfig, device_instance: object) -
         meta = saved_device.get("meta") if isinstance(saved_device.get("meta"), dict) else {}
         native_endpoint = _bacnet_ip_mac_to_ip_port(str(meta.get("sadr", "")).strip())
         if native_endpoint:
-            return ["--mac", native_endpoint]
-    return []
+            return {
+                "device_instance": target,
+                "classification": "native-bip",
+                "source": "saved-device-native-bip",
+                "native_endpoint": native_endpoint,
+                "mac": native_endpoint,
+                "snet": str(meta.get("snet") or "").strip(),
+                "sadr": str(meta.get("sadr") or "").strip(),
+                "route_args": ["--mac", native_endpoint],
+            }
+    return None
 
 
-def _edge_router_authoritative_route(config: AgentConfig, device_instance: object) -> list[str]:
+def _edge_router_authoritative_route_snapshot(config: AgentConfig, device_instance: object) -> dict[str, object] | None:
     """Return directed bacnet-stack args for Edge-router-owned MS/TP devices.
 
     The cloud agent can keep its own local BACnet/IP client socket, but when the
@@ -148,20 +191,30 @@ def _edge_router_authoritative_route(config: AgentConfig, device_instance: objec
     """
     target = str(device_instance).strip()
     if not target:
-        return []
+        return None
     router_config = _load_edge_router_json(config, "router-config.json")
     if not router_config.get("enabled"):
-        return []
+        return None
     bip = _active_edge_router_bip(router_config)
     if not bip:
-        return []
+        return None
     router_mac = f"{bip.get('bind_address') or '127.0.0.1'}:{int(bip.get('udp_port') or 47809)}"
     status = _load_edge_router_json(config, "router-mstp-status.json")
 
     for line in status.get("route_table") or []:
         match = re.search(r"device\s+(\d+)\s+via\s+network\s+(\d+)\s+address\s+([0-9A-Fa-f]+)", str(line))
         if match is not None and match.group(1) == target:
-            return ["--mac", router_mac, "--dnet", match.group(2), "--dadr", match.group(3).upper()]
+            dnet = match.group(2)
+            dadr = match.group(3).upper()
+            return {
+                "device_instance": target,
+                "classification": "routed-mstp",
+                "source": "edge-router-status",
+                "mac": router_mac,
+                "dnet": dnet,
+                "dadr": dadr,
+                "route_args": ["--mac", router_mac, "--dnet", dnet, "--dadr", dadr],
+            }
 
     for trunk in router_config.get("mstp_trunks") or []:
         if not trunk.get("enabled"):
@@ -175,8 +228,122 @@ def _edge_router_authoritative_route(config: AgentConfig, device_instance: objec
                 except Exception:
                     dadr = str(mac).strip().upper()
                 if dnet and dadr:
-                    return ["--mac", router_mac, "--dnet", dnet, "--dadr", dadr]
-    return []
+                    return {
+                        "device_instance": target,
+                        "classification": "routed-mstp",
+                        "source": "edge-router-trunk-status",
+                        "mac": router_mac,
+                        "dnet": dnet,
+                        "dadr": dadr,
+                        "route_args": ["--mac", router_mac, "--dnet", dnet, "--dadr", dadr],
+                    }
+    return None
+
+
+def _load_json_file(path: Path) -> object | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _iter_saved_route_records(config: AgentConfig) -> list[tuple[str, dict[str, object]]]:
+    if config.edge_ui_data_dir is None:
+        return []
+    records: list[tuple[str, dict[str, object]]] = []
+    devices_dir = config.edge_ui_data_dir / "devices"
+    try:
+        for path in sorted(devices_dir.glob("*.json")):
+            saved = _load_json_file(path)
+            if isinstance(saved, dict):
+                meta = saved.get("meta") if isinstance(saved.get("meta"), dict) else {}
+                merged = {**meta, "device": saved.get("device_id") or saved.get("device") or meta.get("device")}
+                records.append((f"saved-device:{path.name}", merged))
+    except Exception:
+        pass
+    for path, label in (
+        (config.edge_ui_data_dir / "kept_devices.json", "kept-devices"),
+        (config.edge_ui_data_dir / "cache" / "last_discovery.json", "last-discovery-cache"),
+        (config.edge_ui_data_dir / "last_discovery.json", "last-discovery"),
+    ):
+        payload = _load_json_file(path)
+        if isinstance(payload, dict):
+            devices = payload.get("devices")
+        else:
+            devices = payload
+        if isinstance(devices, list):
+            for item in devices:
+                if isinstance(item, dict):
+                    records.append((label, item))
+    return records
+
+
+def _snapshot_from_cached_route_row(device_instance: object, row: dict[str, object], source: str) -> dict[str, object] | None:
+    target = str(device_instance).strip()
+    row_device = row.get("device") or row.get("device_id") or row.get("device_instance")
+    if str(row_device or "").strip() != target:
+        return None
+    snet = str(row.get("snet") or row.get("dnet") or "").strip()
+    sadr = str(row.get("sadr") or row.get("dadr") or "").strip().upper()
+    native_endpoint = _bacnet_ip_mac_to_ip_port(sadr)
+    if native_endpoint:
+        return None
+
+    dadr = _valid_routed_sadr(sadr)
+    known_routed = bool((snet and snet != "0") or dadr)
+    if not known_routed:
+        return None
+
+    router_mac = str(row.get("router") or row.get("mac") or "").strip()
+    router_mac = _bacnet_ip_mac_to_ip_port(router_mac) or router_mac
+    if not (router_mac and snet and snet != "0" and dadr):
+        raise BacnetRouteMetadataError(
+            f"BACnet route metadata incomplete for routed device {target}: "
+            f"source={source}, router={'set' if router_mac else 'missing'}, "
+            f"dnet={snet or 'missing'}, dadr={dadr or 'missing'}"
+        )
+
+    return {
+        "device_instance": target,
+        "classification": "routed-mstp",
+        "source": source,
+        "mac": router_mac,
+        "snet": snet,
+        "sadr": sadr,
+        "dnet": snet,
+        "dadr": dadr,
+        "route_args": ["--mac", router_mac, "--dnet", snet, "--dadr", dadr],
+    }
+
+
+def resolve_bacnet_route(config: AgentConfig, device_instance: object) -> dict[str, object]:
+    target = str(device_instance).strip()
+    snapshot = _edge_router_authoritative_route_snapshot(config, target)
+    if snapshot is not None:
+        return snapshot
+
+    snapshot = _route_snapshot_from_native_saved_device(config, target)
+    if snapshot is not None:
+        return snapshot
+
+    route_error: BacnetRouteMetadataError | None = None
+    for source, row in _iter_saved_route_records(config):
+        try:
+            snapshot = _snapshot_from_cached_route_row(target, row, source)
+        except BacnetRouteMetadataError as exc:
+            route_error = exc
+            continue
+        if snapshot is not None:
+            return snapshot
+    if route_error is not None:
+        raise route_error
+
+    return {
+        "device_instance": target,
+        "classification": "default",
+        "source": "no-route-metadata",
+        "route_args": [],
+    }
 
 
 def _strip_bacnet_route_args(args: list[str]) -> list[str]:
@@ -198,9 +365,7 @@ def prepare_bacnet_command(config: AgentConfig, args: list[str]) -> list[str]:
     command_name = Path(str(args[0])).name if args else ""
     if command_name not in {"bacrp", "bacrpm", "bacwp"} or len(args) < 2:
         return args
-    route_args = _edge_router_authoritative_route(config, args[1])
-    if not route_args:
-        route_args = _edge_saved_native_bip_route(config, args[1])
+    route_args = _route_args_from_snapshot(resolve_bacnet_route(config, args[1]))
     if not route_args:
         return args
     prepared = _strip_bacnet_route_args(list(args))
@@ -840,9 +1005,24 @@ def run_bacnet_read(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[
 
     port = resolved_bacnet_port(config)
     env = bacnet_environment(config)
-    args = prepare_bacnet_command(config, build_bacnet_read_args(config, normalized))
     normalized["bacnet_port"] = port
     normalized["bacnet_router_profile"] = config.bacnet_router_profile
+    try:
+        route_snapshot = resolve_bacnet_route(config, normalized["device_instance"])
+        args = prepare_bacnet_command(config, build_bacnet_read_args(config, normalized))
+    except BacnetRouteMetadataError as exc:
+        normalized["route_diagnostic"] = {
+            "device_instance": str(normalized["device_instance"]),
+            "route_classification": "metadata-error",
+            "router_profile": config.bacnet_router_profile,
+            "local_bacnet_source_port": port,
+            "command_type": "single",
+            "sanitized_error": str(exc),
+        }
+        return _failure_result(normalized, str(exc)), str(exc)
+    route_diagnostic = _route_diagnostics(route_snapshot, config, "single")
+    if route_diagnostic["route_classification"] != "default":
+        normalized["route_diagnostic"] = route_diagnostic
 
     lock = BacnetRuntimeLock(config, port)
     if not lock.acquire():
@@ -905,6 +1085,20 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
     env = bacnet_environment(config)
     normalized["bacnet_port"] = port
     normalized["bacnet_router_profile"] = config.bacnet_router_profile
+    try:
+        route_snapshot = resolve_bacnet_route(config, normalized["device_instance"])
+    except BacnetRouteMetadataError as exc:
+        normalized["route_diagnostics"] = {
+            "device_instance": str(normalized["device_instance"]),
+            "route_classification": "metadata-error",
+            "router_profile": config.bacnet_router_profile,
+            "local_bacnet_source_port": port,
+            "sanitized_error": str(exc),
+            "batches": [],
+        }
+        return _failure_result(normalized, str(exc)), str(exc)
+    route_diagnostic = _route_diagnostics(route_snapshot, config, "bulk-rpm")
+    route_batches: list[dict[str, object]] = []
 
     rpm_status = _command_status(config.bacrpm_path)
     if not rpm_status["executable"]:
@@ -922,7 +1116,16 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
     try:
         for chunk in _chunks(list(normalized["points"]), BACNET_POINT_LOAD_BATCH_SIZE):
             args = build_bacnet_rpm_value_batch_args(config, int(normalized["device_instance"]), chunk)
+            started = time.monotonic()
             completed, error = _run_command(args, config, env, "BACnet value RPM batch read")
+            route_batches.append(
+                {
+                    **_route_diagnostics(route_snapshot, config, "bulk-rpm"),
+                    "requested_count": len(chunk),
+                    "elapsed_time_sec": round(time.monotonic() - started, 3),
+                    "sanitized_error": error or "",
+                }
+            )
             parsed: dict[tuple[str, int], tuple[object, str]] = {}
             if error is not None or completed is None:
                 errors.append(error or "BACnet value RPM batch read failed")
@@ -944,11 +1147,21 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
                         "property_id": BACNET_PRESENT_VALUE_PROPERTY_ID,
                     }
                     fallback_args = build_bacnet_read_args(config, fallback_request)
+                    fallback_started = time.monotonic()
                     fallback_completed, fallback_error = _run_command(
                         fallback_args,
                         config,
                         env,
                         "BACnet value single-read fallback",
+                    )
+                    route_batches.append(
+                        {
+                            **_route_diagnostics(route_snapshot, config, "single-fallback"),
+                            "object_type": point["object_type"],
+                            "object_instance": point["object_instance"],
+                            "elapsed_time_sec": round(time.monotonic() - fallback_started, 3),
+                            "sanitized_error": fallback_error or "",
+                        }
                     )
                     fallback_count += 1
                     if fallback_error is not None or fallback_completed is None:
@@ -1034,6 +1247,10 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
             "value_count": len([item for item in values if item.get("status") == "ok"]),
             "single_read_fallback_count": fallback_count,
             "values": values,
+            "route_diagnostics": {
+                **route_diagnostic,
+                "batches": route_batches,
+            },
         }
     )
     if raw_outputs:
@@ -1133,7 +1350,10 @@ def _run_bacrp(
     env: dict[str, str],
     description: str,
 ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
-    args = prepare_bacnet_command(config, args)
+    try:
+        args = prepare_bacnet_command(config, args)
+    except BacnetRouteMetadataError as exc:
+        return None, str(exc)
     try:
         completed = subprocess.run(
             args,
@@ -1162,7 +1382,10 @@ def _run_command(
     env: dict[str, str],
     description: str,
 ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
-    args = prepare_bacnet_command(config, args)
+    try:
+        args = prepare_bacnet_command(config, args)
+    except BacnetRouteMetadataError as exc:
+        return None, str(exc)
     try:
         completed = subprocess.run(
             args,

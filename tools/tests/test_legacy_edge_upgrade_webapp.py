@@ -433,6 +433,7 @@ def test_existing_47809_agent_default_remains_47809() -> None:
     final = "\n".join(command for _label, command, _sudo in final_commands("47809"))
 
     assert "bacnet_default_port: 47809" in config
+    assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data" in config
     assert "default_port: 47809" in config
     assert "bacnet-47809.lock" in config
     assert "pre=47809" in final
@@ -444,6 +445,7 @@ def test_existing_47814_agent_default_remains_47814() -> None:
     final = "\n".join(command for _label, command, _sudo in final_commands("47814"))
 
     assert "bacnet_default_port: 47814" in config
+    assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data" in config
     assert "default_port: 47814" in config
     assert "pre=47814" in final
 
@@ -456,6 +458,7 @@ def test_fresh_agent_install_defaults_to_47814() -> None:
     assert "default_port: 47814" in config
     assert "bacnet-47814.lock" in config
     assert "bacnet_default_port: 47814" in agent_yaml
+    assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data" in agent_yaml
 
 
 def test_existing_gateway_is_not_converted_to_47814() -> None:
@@ -463,6 +466,7 @@ def test_existing_gateway_is_not_converted_to_47814() -> None:
 
     assert "47814" not in agent_yaml
     assert "bacnet_default_port: 47809" in agent_yaml
+    assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data" in agent_yaml
     assert "default_port: 47809" in agent_yaml
 
 

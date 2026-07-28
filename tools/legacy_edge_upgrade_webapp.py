@@ -1253,6 +1253,7 @@ cloud_url: {request.cloud_url}
 tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
 tunnel_request_timeout_sec: 900
+edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data
 
 bacnet_default_port: {port}
 heartbeat_interval_sec: 30
@@ -1281,7 +1282,7 @@ def config_commands(request: UpgradeRequest, gateway_token: str, bacnet_default_
         ("write agent.yaml", f"printf %s {shell_quote(agent_b64)} | base64 -d > /tmp/agent.yaml && sudo -S -p '' install -m 0644 -o root -g root /tmp/agent.yaml /etc/iot-cx-agent/agent.yaml && rm -f /tmp/agent.yaml", True),
         ("write edge-agent.env", f"printf %s {shell_quote(env_b64)} | base64 -d > /tmp/edge-agent.env && sudo -S -p '' install -m 0600 -o root -g root /tmp/edge-agent.env /etc/iot-cx-agent/edge-agent.env && rm -f /tmp/edge-agent.env", True),
         ("fix agent data ownership", "sudo -S -p '' install -d -m 0750 -o swadmin -g swadmin /var/lib/iot-cx-agent", True),
-        ("safe config verification", "grep -E 'gateway_id:|site_id:|cloud_url:|local_ui_url:|bacnet_default_port:' /etc/iot-cx-agent/agent.yaml && sudo -S -p '' test -s /etc/iot-cx-agent/edge-agent.env && echo 'GATEWAY_API_TOKEN=***SET***' && ls -ld /var/lib/iot-cx-agent", True),
+        ("safe config verification", "grep -E 'gateway_id:|site_id:|cloud_url:|local_ui_url:|edge_ui_data_dir:|bacnet_default_port:' /etc/iot-cx-agent/agent.yaml && sudo -S -p '' test -s /etc/iot-cx-agent/edge-agent.env && echo 'GATEWAY_API_TOKEN=***SET***' && ls -ld /var/lib/iot-cx-agent", True),
     ]
 
 

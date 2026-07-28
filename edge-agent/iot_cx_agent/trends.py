@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 from typing import Any
 
 import requests
@@ -16,6 +17,9 @@ from iot_cx_agent.db import (
     trend_last_sample_at,
 )
 from iot_cx_agent.heartbeat import auth_headers
+
+
+logger = logging.getLogger("iot-cx-agent")
 
 
 def _now() -> datetime:
@@ -74,8 +78,14 @@ def sample_configured_trends(config: AgentConfig) -> int:
     stored = 0
     for device_instance, trends in grouped.items():
         result, error = run_bacnet_read_bulk(config, {"device_instance": device_instance, "points": [{"saved_point_id": trend["point_id"], "object_type": trend["object_type"], "object_instance": trend["object_instance"]} for trend in trends]})
+        if isinstance(result, dict) and result.get("route_diagnostics"):
+            diagnostic = dict(result["route_diagnostics"])
+            diagnostic.pop("route_args", None)
+            logger.info("Trend BACnet route diagnostics: %s", diagnostic)
         if error == BACNET_RUNTIME_BUSY:
             continue
+        if error:
+            logger.warning("Trend BACnet read failed for device %s: %s", device_instance, error)
         for value in result.get("values", []) if isinstance(result, dict) else []:
             if value.get("status") == "ok" and value.get("saved_point_id"):
                 sample = {"point_id": str(value["saved_point_id"]), "sampled_at": now.isoformat(), "value": str(value.get("value", ""))}

@@ -3,6 +3,7 @@ site_id: UNPROVISIONED
 cloud_url: http://localhost:8000
 tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
+edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data
 # Maximum time for a cloud-relayed request to complete at the local gateway UI.
 # The WebSocket connection/reconnect timeout remains 30 seconds.
 tunnel_request_timeout_sec: 900

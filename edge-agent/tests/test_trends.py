@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 
 import pytest
@@ -112,3 +113,40 @@ def test_sampling_queues_only_successful_due_points_within_backlog_limit(tmp_pat
     queued = pending_trend_samples(agent_config.sqlite_path)
     assert len(queued) == 1
     assert queued[0][1]["point_id"] == "point-1"
+
+
+def test_sampling_logs_safe_route_diagnostics(tmp_path: Path, monkeypatch, caplog) -> None:
+    agent_config = config(tmp_path)
+    initialize_database(agent_config.sqlite_path)
+    trend_configs = [
+        {"point_id": "point-1", "device_instance": 1103, "object_type": "analog-value", "object_instance": 7, "interval_sec": 60},
+    ]
+
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: Response(trend_configs))
+    monkeypatch.setattr(
+        "iot_cx_agent.trends.run_bacnet_read_bulk",
+        lambda *args, **kwargs: (
+            {
+                "route_diagnostics": {
+                    "device_instance": "1103",
+                    "route_classification": "routed-mstp",
+                    "router_profile": "basrtb",
+                    "local_bacnet_source_port": 47814,
+                    "dnet": "202",
+                    "dadr": "01",
+                    "route_args": ["--mac", "192.168.1.200:47814", "--dnet", "202", "--dadr", "01"],
+                    "batches": [{"command_type": "bulk-rpm", "elapsed_time_sec": 0.125, "sanitized_error": ""}],
+                },
+                "values": [{"saved_point_id": "point-1", "status": "ok", "value": "68.5"}],
+            },
+            None,
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="iot-cx-agent"):
+        assert sample_configured_trends(agent_config) == 1
+
+    assert "Trend BACnet route diagnostics" in caplog.text
+    assert "routed-mstp" in caplog.text
+    assert "202" in caplog.text
+    assert "iotcc_gw_prefix_secret" not in caplog.text

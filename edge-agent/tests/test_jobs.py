@@ -208,6 +208,22 @@ def test_load_config_reads_tunnel_settings(tmp_path: Path) -> None:
     assert agent_config.local_ui_url == "http://127.0.0.1:5100"
 
 
+def test_load_config_reads_edge_ui_data_dir(tmp_path: Path) -> None:
+    edge_data = tmp_path / "edge-bacnet-ui-v2" / "data"
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW001\n"
+        "site_id: demo-site\n"
+        "cloud_url: http://localhost:8000\n"
+        f"edge_ui_data_dir: {edge_data}\n",
+        encoding="utf-8",
+    )
+
+    agent_config = load_config(config_path)
+
+    assert agent_config.edge_ui_data_dir == edge_data
+
+
 def test_load_config_uses_installed_edge_app_version(tmp_path: Path) -> None:
     config_path = tmp_path / "agent.yaml"
     config_path.write_text(
