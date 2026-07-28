@@ -74,7 +74,7 @@ def make_request() -> UpgradeRequest:
         gateway_password="gw-secret",
         git_ref="main",
         remote_repo="/home/swadmin/iot-cloud-commissioning",
-        ui_source_folder=r"C:\Dev\edge-bacnet-ui-v2",
+        ui_source_folder=r"C:\Temp\edge-bacnet-ui-0.1.9",
         ui_username="admin",
         ui_password="ui-secret",
         edge_agent_write_token="gateway-local-write-secret",
@@ -589,6 +589,33 @@ def test_form_page_shows_019_pilot_preflight_requirements() -> None:
     assert "Final Update/Deploy confirmed" in html
     assert "value=\"0.1.9\"" in html
     assert "Run Preflight" in html
+
+
+def test_form_page_defaults_to_temp_019_ui_source() -> None:
+    html = legacy_webapp.form_page().decode("utf-8")
+
+    assert 'name="ui_source_folder" value="C:\\Temp\\edge-bacnet-ui-0.1.9"' in html
+    assert "C:\\Dev\\edge-bacnet-ui-v2" not in html
+
+
+def test_submitted_ui_source_path_persists_for_job() -> None:
+    body = (
+        "gateway_id=GW010&cloud_url=https%3A%2F%2Fiot-cloud-api-dev.onrender.com"
+        "&admin_api_token=admin-secret-token&cradlepoint_host=10.0.0.10"
+        "&cradlepoint_password=cp-secret&gateway_password=gw-secret"
+        "&ui_password=ui-secret"
+        "&ui_source_folder=C%3A%5CBuilds%5Cedge-ui-pilot"
+    ).encode("utf-8")
+
+    request = parse_upgrade_request(body)
+
+    assert request.ui_source_folder == r"C:\Builds\edge-ui-pilot"
+
+
+def test_form_refresh_shows_configured_default_ui_source() -> None:
+    refreshed = legacy_webapp.form_page().decode("utf-8")
+
+    assert 'value="C:\\Temp\\edge-bacnet-ui-0.1.9"' in refreshed
 
 
 def test_parse_upgrade_request_defaults_git_ref_to_release_commit() -> None:

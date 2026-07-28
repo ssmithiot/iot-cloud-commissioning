@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover - shown in browser and terminal at runti
 DEFAULT_PORT = 8766
 DEFAULT_CLOUD_URL = "https://iot-cloud-api-dev.onrender.com"
 DEFAULT_REPO_PATH = "/home/swadmin/iot-cloud-commissioning"
-DEFAULT_UI_SOURCE = r"C:\Dev\edge-bacnet-ui-v2"
+DEFAULT_UI_SOURCE = r"C:\Temp\edge-bacnet-ui-0.1.9"
 DEFAULT_EDGE_UPDATE_REF = "844d93d013359d837619e991da8f4da7a5000472"
 DEFAULT_EDGE_RELEASE = "0.1.9"
 DEFAULT_RELEASE_MANIFEST = str(Path(__file__).resolve().parent / "releases" / "manifests" / "edge-0.1.9.json")
