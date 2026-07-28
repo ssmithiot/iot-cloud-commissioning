@@ -895,9 +895,37 @@ def test_gateway_update_default_full_non_provisioning_for_rollout_versions(agent
     with SessionLocal() as db:
         stored = db.scalar(select(GatewayUpdateRequest).where(GatewayUpdateRequest.gateway_id == "GW001"))
         assert stored is not None
-        assert stored.update_scope == "full_non_provisioning"
-        assert stored.target_agent_version == "0.1.9"
-        assert stored.target_ui_version == "0.1.9"
+        assert stored.update_scope == "agent"
+        assert stored.target_ui_version is None
+
+
+def test_gateway_update_uses_existing_schema_for_full_non_provisioning_request() -> None:
+    create_gateway_token("GW001")
+
+    queued = client.post(
+        "/api/ui/gateway-updates",
+        headers=admin_headers(),
+        json={"gateway_ids": ["GW001"]},
+    )
+    request = queued.json()[0]
+
+    assert request["update_scope"] == "full_non_provisioning"
+    assert request["target_agent_version"] == "0.1.9"
+    assert request["target_ui_version"] == "0.1.9"
+    with SessionLocal() as db:
+        stored = db.scalar(select(GatewayUpdateRequest).where(GatewayUpdateRequest.gateway_id == "GW001"))
+        assert stored is not None
+        assert stored.update_scope == "agent"
+        assert stored.target_ui_version is None
+        assert not hasattr(stored, "target_agent_version")
+
+
+def test_no_gateway_update_migration_or_new_database_columns() -> None:
+    migration_dir = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+
+    assert not (migration_dir / "0022_gateway_full_non_provisioning_updates.py").exists()
+    assert not hasattr(GatewayUpdateRequest, "target_agent_version")
+    assert GatewayUpdateRequest.__table__.c.update_scope.type.length == 20
 
 
 def test_configure_gateway_redirects_to_cloud_tunnel() -> None:

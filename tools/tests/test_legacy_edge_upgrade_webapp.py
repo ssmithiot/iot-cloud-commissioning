@@ -1303,6 +1303,9 @@ def test_queued_gateway_update_defaults_git_ref_to_release_commit(monkeypatch: p
         "site_id": "GW010",
         "cradlepoint_host": "10.0.0.10",
         "gateway_host": "192.168.1.200",
+        "update_scope": "full_non_provisioning",
+        "target_agent_version": "0.1.9",
+        "target_ui_version": "0.1.9",
     }
     captured = {}
 
@@ -1337,6 +1340,8 @@ def test_queued_gateway_update_defaults_git_ref_to_release_commit(monkeypatch: p
 
     assert outcome == "completed"
     assert captured["request"].git_ref == DEFAULT_EDGE_UPDATE_REF == FINAL_AGENT_COMMIT
+    assert captured["request"].selected_phases == UPDATE_AGENT_PHASES
+    assert captured["request"].release_manifest_path.endswith("edge-0.1.9.json")
     with JOBS_LOCK:
         JOBS.pop("queued-default-ref-test", None)
 
