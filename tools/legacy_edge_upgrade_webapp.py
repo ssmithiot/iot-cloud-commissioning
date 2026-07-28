@@ -1092,11 +1092,40 @@ def apply_ui_files_command() -> str:
     return "python3 -c " + shell_quote(script)
 
 
-def inspect_commands() -> list[tuple[str, str, bool]]:
-    route_probe = r"""python3 - <<'PY'
+def bacnet_route_probe_script() -> str:
+    return r"""
 from pathlib import Path
 import subprocess
 import re
+
+INSPECTION_TIMEOUT_SEC = 5
+DETECTOR_TIMEOUT_SEC = 30
+inspection_failures = []
+
+
+def run_bounded(label, command):
+    try:
+        completed = subprocess.run(
+            ['timeout', f'{INSPECTION_TIMEOUT_SEC}s', *command],
+            text=True,
+            capture_output=True,
+            timeout=INSPECTION_TIMEOUT_SEC + 2,
+        )
+    except subprocess.TimeoutExpired:
+        inspection_failures.append(f'{label} timeout after {INSPECTION_TIMEOUT_SEC}s')
+        return ''
+    except Exception as exc:
+        inspection_failures.append(f'{label} failed: {exc}')
+        return ''
+    if completed.returncode == 124:
+        inspection_failures.append(f'{label} timeout after {INSPECTION_TIMEOUT_SEC}s')
+        return completed.stdout
+    if completed.returncode not in (0, 1, 3):
+        stderr = completed.stderr.strip()
+        inspection_failures.append(f'{label} failed with exit code {completed.returncode}' + (f': {stderr}' if stderr else ''))
+    return completed.stdout
+
+
 start = Path('/home/swadmin/edge-bacnet-ui-v2/start.sh')
 router = Path('/home/swadmin/edge-bacnet-ui-v2/data/router-config.json')
 legacy_router = Path('/home/swadmin/edge-bacnet-ui-v2/data/edge_bacnet_router.json')
@@ -1112,8 +1141,8 @@ def valid_port(value):
 services = ('iot-cx-bacnet-router.service', 'iot-cx-mstp-router.service')
 service_states = {}
 for service in services:
-    active = subprocess.run(['systemctl', 'is-active', service], text=True, capture_output=True).stdout.strip()
-    enabled = subprocess.run(['systemctl', 'is-enabled', service], text=True, capture_output=True).stdout.strip()
+    active = run_bounded(f'{service} active state', ['systemctl', 'is-active', service]).strip()
+    enabled = run_bounded(f'{service} enabled state', ['systemctl', 'is-enabled', service]).strip()
     service_states[service] = f'{active}/{enabled}' if active or enabled else 'unknown'
 port = settings.get('BACNET_IP_PORT', '')
 configured_list_ports = [value.strip() for value in settings.get('BACNET_IP_PORTS', '').split(',') if value.strip()]
@@ -1125,10 +1154,7 @@ for index, value in enumerate(configured_list_ports, start=1):
     if not valid_port(value):
         conflicts.append(f'invalid BACNET_IP_PORTS[{index}]={value}')
 listener_owners = {}
-try:
-    ss_output = subprocess.run(['sh', '-c', 'ss -H -lunp 2>/dev/null || ss -H -lun 2>/dev/null || true'], text=True, capture_output=True).stdout
-except Exception:
-    ss_output = ''
+ss_output = run_bounded('UDP listener inspection', ['sh', '-c', 'ss -H -lunp 2>/dev/null || ss -H -lun 2>/dev/null || true'])
 for line in ss_output.splitlines():
     match = re.search(r':([0-9]{2,5})\s', line + ' ')
     if not match:
@@ -1148,9 +1174,24 @@ active_internal = [
 ]
 if len(active_internal) > 1:
     conflicts.append(f'multiple internal router services active/enabled: {", ".join(active_internal)}')
+serial_owners = {}
+process_output = run_bounded('serial owner inspection', ['pgrep', '-af', r'bacnet|router|mstp|485|ttyUSB|ttyACM'])
+for line in process_output.splitlines():
+    device_match = re.search(r'(/dev/(?:ttyUSB|ttyACM|serial/by-id/)[^\s]+)', line)
+    if not device_match:
+        continue
+    process = line.split(None, 1)[1] if len(line.split(None, 1)) > 1 else line
+    serial_owners.setdefault(device_match.group(1), set()).add(process[:80])
+for device, owners in sorted(serial_owners.items()):
+    if len(owners) > 1:
+        conflicts.append(f'conflicting serial ownership on {device}: {", ".join(sorted(owners))}')
+if inspection_failures:
+    conflicts.extend(inspection_failures)
 mode = settings.get('BACNET_PORT_MODE', 'external' if not settings else 'unknown')
 configured_ports = ','.join(dict.fromkeys(value for value in ports if value)) or ('47814' if not settings else 'none')
 preferred_route = '47809-first' if mode == 'dual-47809-first' or configured_ports.startswith('47809,') else 'configured'
+print(f'detection_status={"failed" if inspection_failures else "ok"}')
+print(f'reason={"; ".join(inspection_failures) if inspection_failures else "none"}')
 if conflicts:
     print(f'ROUTE_DECISION=ambiguous {"; ".join(conflicts)}')
 elif settings:
@@ -1180,7 +1221,24 @@ elif legacy_router.exists():
     print('INTERNAL_EDGE_ROUTER_CONFIG=edge_bacnet_router.json present; preserve')
 else:
     print('INTERNAL_EDGE_ROUTER_CONFIG=none; fresh default disabled')
-PY"""
+"""
+
+
+def bacnet_route_probe_command() -> str:
+    encoded = b64(bacnet_route_probe_script())
+    detector_timeout_sec = 30
+    inner = f"printf %s {shell_quote(encoded)} | base64 -d | python3 -c 'exec(__import__(\"sys\").stdin.read())'"
+    script = (
+        f"timeout {detector_timeout_sec}s sh -c {shell_quote(inner)}; "
+        "code=$?; "
+        f"if [ \"$code\" -eq 124 ]; then printf '%s\\n' 'detection_status=failed' 'reason=detector timeout after {detector_timeout_sec}s' 'ROUTE_DECISION=ambiguous detector timeout after {detector_timeout_sec}s' 'UPDATE_ALLOWED=false' 'BACNET_CONFLICT=detector timeout after {detector_timeout_sec}s'; "
+        "elif [ \"$code\" -ne 0 ]; then printf '%s\\n' 'detection_status=failed' \"reason=detector exited with code $code\" \"ROUTE_DECISION=ambiguous detector exited with code $code\" 'UPDATE_ALLOWED=false' \"BACNET_CONFLICT=detector exited with code $code\"; fi"
+    )
+    return script
+
+
+def inspect_commands() -> list[tuple[str, str, bool]]:
+    route_probe = bacnet_route_probe_command()
     return [
         ("hostname", "hostname", False),
         ("network addresses", "ip -br addr", False),
@@ -1782,6 +1840,8 @@ class LegacyUpgradeRunner:
         route_files = fields.get("ROUTE_FILES", "unknown")
         route_files_label = "Preserved unchanged" if route_files == "preserve_unchanged" else route_files.replace("_", " ")
         conflict = fields.get("BACNET_CONFLICT", "unknown")
+        update_allowed = fields.get("UPDATE_ALLOWED", "unknown")
+        update_allowed_label = {"true": "Yes", "false": "No"}.get(update_allowed, update_allowed)
         agent_version = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("EDGE_AGENT_VERSION=")), "unknown")
         sudo_state = "yes" if "SUDO_AVAILABLE=yes" in output else "not confirmed"
         backup_path = "/home/swadmin" if "BACKUP_PATH_WRITABLE=/home/swadmin" in output else "not confirmed"
@@ -1802,6 +1862,7 @@ class LegacyUpgradeRunner:
                     "Internal Edge router services": services_label,
                     "Existing router config files": route_files_label,
                     "Conflict": conflict,
+                    "Update allowed": update_allowed_label,
                     "Detected BACnet route mode": mode,
                     "Detected external router port": port,
                     "BACNET_IP_PORT note": "BACNET_IP_PORT is not necessarily the external router destination by itself; interpret BACNET_IP_PORTS and route mode together.",

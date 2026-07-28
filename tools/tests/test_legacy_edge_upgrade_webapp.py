@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import socket
 import subprocess
 import sys
@@ -23,6 +24,8 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     agent_config_text,
     apply_ui_files_script,
     auth_commands,
+    bacnet_route_probe_command,
+    bacnet_route_probe_script,
     classify_bacnet_preflight,
     config_commands,
     apply_ui_commands,
@@ -239,6 +242,7 @@ def test_bacnet_preflight_classifies_gw006_dual_port_preserve_existing() -> None
         assert summary["Preferred route order"] == "47809 first"
         assert summary["Existing router config files"] == "Preserved unchanged"
         assert summary["Conflict"] == "None"
+        assert summary["Update allowed"] == "Yes"
         assert "BACNET_IP_PORT is not necessarily" in summary["BACNET_IP_PORT note"]
     finally:
         with JOBS_LOCK:
@@ -287,6 +291,69 @@ def test_bacnet_preflight_blocks_invalid_primary_port() -> None:
     assert state["route_decision"] == "ambiguous"
     assert state["update_allowed"] == "false"
     assert "invalid BACNET_IP_PORT=not-a-port" in state["conflict"]
+
+
+def test_bacnet_route_detection_command_contains_no_interactive_heredoc() -> None:
+    command = bacnet_route_probe_command()
+
+    assert "\n" not in command
+    assert "<<" not in command
+    assert "python3 - <<" not in command
+    assert "base64 -d" in command
+    assert "timeout 30s" in command
+
+
+def test_bacnet_route_detection_inspections_are_bounded() -> None:
+    script = bacnet_route_probe_script()
+
+    assert "INSPECTION_TIMEOUT_SEC = 5" in script
+    assert "DETECTOR_TIMEOUT_SEC = 30" in script
+    assert "['timeout', f'{INSPECTION_TIMEOUT_SEC}s', *command]" in script
+    assert "['systemctl', 'is-active', service]" in script
+    assert "['systemctl', 'is-enabled', service]" in script
+    assert "ss -H -lunp" in script
+    assert "['pgrep', '-af'," in script
+    assert "sudo" not in script
+
+
+def test_bacnet_route_detection_command_executes_and_emits_parseable_output() -> None:
+    command = bacnet_route_probe_command()
+    completed = subprocess.run(command, shell=True, text=True, capture_output=True, timeout=10)
+
+    assert completed.returncode == 0
+    output = completed.stdout
+    assert "detection_status=" in output
+    assert "ROUTE_DECISION=" in output
+    assert "UPDATE_ALLOWED=" in output
+
+
+def test_bacnet_route_detection_timed_out_inspection_blocks_safely(tmp_path: Path) -> None:
+    fake_timeout = tmp_path / "timeout"
+    fake_timeout.write_text(
+        "#!/usr/bin/env sh\n"
+        "case \"$*\" in\n"
+        "  *systemctl*|*ss\\ -*|*pgrep*) exit 124 ;;\n"
+        "  *) shift; exec \"$@\" ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_timeout.chmod(0o755)
+
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    completed = subprocess.run(
+        [sys.executable, "-c", bacnet_route_probe_script()],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    output = completed.stdout
+    assert "detection_status=failed" in output
+    assert "reason=iot-cx-bacnet-router.service active state timeout after 5s" in output
+    assert "ROUTE_DECISION=ambiguous" in output
+    assert "UPDATE_ALLOWED=false" in output
 
 
 def test_update_start_sh_defaults_unconfigured_install_to_external_47814(tmp_path: Path) -> None:
