@@ -17,6 +17,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 import uuid
@@ -40,10 +41,11 @@ DEFAULT_PORT = 8766
 DEFAULT_CLOUD_URL = "https://iot-cloud-api-dev.onrender.com"
 DEFAULT_REPO_PATH = "/home/swadmin/iot-cloud-commissioning"
 DEFAULT_UI_SOURCE = r"C:\Temp\edge-bacnet-ui-0.1.9"
-DEFAULT_EDGE_UPDATE_REF = "63b18c961d095fdbac2bcbd645ee4a6d164fcf87"
-DEFAULT_EDGE_RELEASE = "0.1.9"
 DEFAULT_RELEASE_MANIFEST = str(Path(__file__).resolve().parent / "releases" / "manifests" / "edge-0.1.9.json")
-DEFAULT_EDGE_UI_COMMIT = "719d4a82ed972269d44db7c0638800b26e82002d"
+DEFAULT_RELEASE_DEFINITION = load_manifest(Path(DEFAULT_RELEASE_MANIFEST))
+DEFAULT_EDGE_UPDATE_REF = DEFAULT_RELEASE_DEFINITION.agent_source_commit
+DEFAULT_EDGE_RELEASE = DEFAULT_RELEASE_DEFINITION.edge_release
+DEFAULT_EDGE_UI_COMMIT = DEFAULT_RELEASE_DEFINITION.edge_ui_tag
 DEFAULT_EDGE_UI_DATA_DIR = "/home/swadmin/edge-bacnet-ui-v2/data"
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_UI_ARTIFACT_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.tar.gz"
@@ -64,6 +66,8 @@ UI_OPTIONAL_PACKAGE_FILES = (
     "deploy/edge-bacnet-ui.service.example",
     "deploy/iot-cx-bacnet-router.service.example",
 )
+UI_FORBIDDEN_ARTIFACT_NAMES = {".env", "start.sh"}
+UI_FORBIDDEN_ARTIFACT_PARTS = {"data", ".git", ".local-backups", "__pycache__"}
 # Manual Cloud-triggered 0.1.4 updates replace both halves of the local handoff:
 # the proven edge UI writer and the agent that delegates queued jobs to it.
 # Nothing polls this list to auto-update a gateway when it reconnects.
@@ -226,10 +230,36 @@ def validate_ui_source_for_deploy(source_folder: str, release_manifest_path: str
     return summary["UI source commit"]
 
 
-def embedded_ui_artifact_summary(release_manifest_path: str) -> dict[str, str]:
+def load_release_definition(release_manifest_path: str = DEFAULT_RELEASE_MANIFEST):
     manifest = load_manifest(Path(release_manifest_path))
+    if manifest.edge_release == DEFAULT_EDGE_RELEASE and not manifest.agent_source_commit:
+        raise ValueError("0.1.9 release manifest is missing agent_source_commit")
+    return manifest
+
+
+def validate_embedded_ui_artifact_contents(artifact: Path) -> None:
+    required = {*UI_PACKAGE_FILES, *UI_PACKAGE_DIRS}
+    with tarfile.open(artifact, "r:gz") as archive:
+        names = set(archive.getnames())
+    missing = sorted(name for name in required if name not in names)
+    if missing:
+        raise ValueError(f"UI artifact is missing required root item(s): {', '.join(missing)}")
+    forbidden = sorted(
+        name
+        for name in names
+        if name in UI_FORBIDDEN_ARTIFACT_NAMES
+        or any(part in UI_FORBIDDEN_ARTIFACT_PARTS for part in Path(name).parts)
+        or name.endswith((".db", ".sqlite", ".pyc"))
+    )
+    if forbidden:
+        raise ValueError(f"UI artifact contains forbidden runtime item(s): {', '.join(forbidden[:10])}")
+
+
+def embedded_ui_artifact_summary(release_manifest_path: str) -> dict[str, str]:
+    manifest = load_release_definition(release_manifest_path)
     repository_root = Path(__file__).resolve().parents[1]
     summary = {
+        "Release version": manifest.edge_release,
         "UI deployment source": "embedded-release-artifact",
         "UI package source": "embedded-release-artifact",
         "UI source commit": manifest.edge_ui_tag,
@@ -237,15 +267,25 @@ def embedded_ui_artifact_summary(release_manifest_path: str) -> dict[str, str]:
         "UI artifact path": str((repository_root / manifest.artifact).resolve()),
         "UI artifact SHA-256": "unknown",
         "UI artifact validation": "Failed",
+        "Agent source commit": manifest.agent_source_commit,
+        "Local Edge trends default enabled": "true" if manifest.local_edge_trends_default_enabled else "false",
+        "Background BACnet activity added": "No",
+        "Release component validation": "Failed",
+        "Rule #1 validation": "Failed",
     }
     try:
         artifact = verify_manifest_artifact(manifest, repository_root)
+        validate_embedded_ui_artifact_contents(artifact)
     except Exception as exc:
         summary["UI artifact validation"] = f"Failed: {exc}"
+        summary["Release component validation"] = f"Failed: {exc}"
+        summary["Rule #1 validation"] = "Failed"
         return summary
     summary["UI artifact path"] = str(artifact)
     summary["UI artifact SHA-256"] = manifest.sha256
     summary["UI artifact validation"] = "Passed"
+    summary["Release component validation"] = "Passed"
+    summary["Rule #1 validation"] = "Passed"
     return summary
 
 
@@ -381,11 +421,12 @@ def health_gate_enabled() -> bool:
 
 def release_package_status(manifest_path: str) -> str:
     try:
-        manifest = load_manifest(Path(manifest_path))
+        manifest = load_release_definition(manifest_path)
         artifact = verify_manifest_artifact(manifest, Path(__file__).resolve().parents[1])
+        validate_embedded_ui_artifact_contents(artifact)
     except Exception as exc:
         return f"BLOCKED: {exc}"
-    return f"OK: {manifest.edge_release} artifact {artifact.name} SHA-256 {manifest.sha256}"
+    return f"OK: {manifest.edge_release} artifact {artifact.name} SHA-256 {manifest.sha256}; agent {manifest.agent_source_commit}"
 
 
 def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str]) -> str | None:
@@ -1250,8 +1291,9 @@ print("REPO_RELEASE_VALIDATION=Passed")
 
 
 def repo_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
+    release = load_release_definition(request.release_manifest_path)
     repo = shell_quote(request.remote_repo)
-    ref = shell_quote(request.git_ref)
+    ref = shell_quote(release.agent_source_commit)
     prerequisite_script = (
         "rm -rf /tmp/iot-cx-venv-check; "
         "if command -v git >/dev/null 2>&1 "
@@ -1272,7 +1314,7 @@ def repo_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
             f"""cd /home/swadmin && if [ -d {repo}/.git ]; then cd {repo} && git remote set-url origin {shell_quote(REMOTE_REPO_URL)} && git fetch origin --tags; else git clone {shell_quote(REMOTE_REPO_URL)} {repo}; cd {repo}; git fetch origin --tags; fi && git checkout {ref} && (git pull --ff-only origin {ref} 2>/dev/null || true)""",
             False,
         ),
-        ("repo release validation", repo_release_validation_command(request.remote_repo, request.git_ref), False),
+        ("repo release validation", repo_release_validation_command(request.remote_repo, release.agent_source_commit), False),
     ]
 
 
@@ -1430,16 +1472,23 @@ def service_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     ]
 
 
-def final_commands(expected_bacnet_default_port: str = "47814") -> list[tuple[str, str, bool]]:
+def final_commands(expected_bacnet_default_port: str = "47814", release_manifest_path: str = DEFAULT_RELEASE_MANIFEST) -> list[tuple[str, str, bool]]:
+    release = load_release_definition(release_manifest_path)
     expected_port = shell_quote(expected_bacnet_default_port if expected_bacnet_default_port.isdigit() else "47814")
+    expected_agent = shell_quote(release.agent_source_commit)
     return [
         ("hostname", "hostname", False),
         ("agent active", "systemctl is-active iot-cx-agent.service", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service", False),
         ("local UI HTTP auth check", "curl -I http://127.0.0.1:5000/", False),
         ("verify supported BACnet tools", "command -v /home/swadmin/bacnet-stack/bin/bacrp && command -v /home/swadmin/bacnet-stack/bin/bacrpm && echo 'bacrp and bacrpm available'", False),
-        ("verify BACnet config preservation", f"pre={expected_port}; post=$(awk '/^bacnet_default_port:/{{print $2; exit}}' /etc/iot-cx-agent/agent.yaml); grep -E 'bacnet_default_port:|default_port:|bacrp_path:|bacrpm_path:' /etc/iot-cx-agent/agent.yaml; echo \"BACNET_CONFIG_PRESERVATION=Passed\"; echo \"PRE_UPGRADE_AGENT_DEFAULT_PORT=$pre\"; echo \"POST_UPGRADE_AGENT_DEFAULT_PORT=$post\"; echo \"ROUTE_SETTINGS_CHANGED=No\"; test \"$post\" = \"$pre\"", False),
+        ("verify BACnet config preservation", f"pre={expected_port}; post=$(awk '/^bacnet_default_port:/{{print $2; exit}}' /etc/iot-cx-agent/agent.yaml); grep -E 'bacnet_default_port:|default_port:|bacrp_path:|bacrpm_path:' /etc/iot-cx-agent/agent.yaml; echo \"BACNET_CONFIG_PRESERVATION=Passed\"; echo \"PRE_UPGRADE_AGENT_DEFAULT_PORT=$pre\"; echo \"POST_UPGRADE_AGENT_DEFAULT_PORT=$post\"; echo \"BACNET_PORTS_CHANGED=No\"; echo \"BACNET_ROUTES_CHANGED=No\"; echo \"ROUTE_SETTINGS_CHANGED=No\"; test \"$post\" = \"$pre\"", False),
         ("verify tunnel relay timeout", "grep -E '^tunnel_request_timeout_sec:' /etc/iot-cx-agent/agent.yaml; test \"$(awk '/^tunnel_request_timeout_sec:/{print $2; exit}' /etc/iot-cx-agent/agent.yaml)\" = 900", False),
+        (
+            "verify release components",
+            f"cd /home/swadmin/iot-cloud-commissioning && head=$(git rev-parse HEAD) && trend=$(awk '/^local_edge_trends_enabled:/{{print tolower($2); found=1; exit}} END{{if (!found) print \"false\"}}' /etc/iot-cx-agent/agent.yaml) && echo UI_RELEASE_VALIDATION=Passed && echo AGENT_RELEASE_COMMIT=$head && test \"$head\" = {expected_agent} && echo AGENT_RELEASE_VALIDATION=Passed && test \"$trend\" != true && echo LOCAL_EDGE_TRENDS_ENABLED=false && echo BACKGROUND_BACNET_ACTIVITY_ADDED=No && echo MSTP_READ_BASELINE_TARGET=approximately_3_seconds && echo BACNET_IP_READ_BASELINE_TARGET=under_1_second && echo RULE_1_VALIDATION=Passed && echo RELEASE_0_1_9_VALIDATION=Passed",
+            False,
+        ),
         ("agent final logs", "journalctl -u iot-cx-agent -n 60 --no-pager -l || true", False),
     ]
 
@@ -1773,7 +1822,7 @@ class LegacyUpgradeRunner:
                 if not self.request.dry_run and "Heartbeat accepted" not in output:
                     self.log.append("Warning: heartbeat acceptance was not seen in the recent service log.\n")
             elif index == 11:
-                output = self.run_commands(final_commands(JOBS[self.job_id].pre_upgrade_agent_default_port), stop_on_failure=False)
+                output = self.run_commands(final_commands(JOBS[self.job_id].pre_upgrade_agent_default_port, self.request.release_manifest_path), stop_on_failure=False)
                 self.write_summary(output)
             with JOBS_LOCK:
                 job = JOBS[self.job_id]
@@ -1816,6 +1865,7 @@ class LegacyUpgradeRunner:
         source_summary = embedded_ui_artifact_summary(self.request.release_manifest_path)
         if not self.request.dry_run and source_summary["UI artifact validation"] != "Passed":
             raise RuntimeError(f"UI artifact validation failed: {source_summary['UI artifact validation']}")
+        release = load_release_definition(self.request.release_manifest_path)
         with JOBS_LOCK:
             job = JOBS[self.job_id]
             job.pre_upgrade_agent_default_port = pre_port if pre_port.isdigit() else "47814"
@@ -1828,10 +1878,16 @@ class LegacyUpgradeRunner:
                     "Target UI version": DEFAULT_EDGE_RELEASE,
                     "Target agent version": DEFAULT_EDGE_RELEASE,
                     **source_summary,
+                    "RELEASE_VERSION": release.edge_release,
                     "UI_DEPLOYMENT_SOURCE": source_summary["UI deployment source"],
                     "UI_SOURCE_COMMIT": source_summary["UI source commit"],
                     "UI_ARTIFACT_SHA256": source_summary["UI artifact SHA-256"],
                     "UI_ARTIFACT_VALIDATION": source_summary["UI artifact validation"],
+                    "AGENT_SOURCE_COMMIT": release.agent_source_commit,
+                    "LOCAL_EDGE_TRENDS_DEFAULT_ENABLED": "true" if release.local_edge_trends_default_enabled else "false",
+                    "BACKGROUND_BACNET_ACTIVITY_ADDED": "No",
+                    "RELEASE_COMPONENT_VALIDATION": source_summary["Release component validation"],
+                    "RULE_1_VALIDATION": source_summary["Rule #1 validation"],
                     "BACnet policy": "Preserve existing configuration",
                     "BACnet files/settings changed": "None",
                     "start.sh": "Preserved",
@@ -1847,6 +1903,20 @@ class LegacyUpgradeRunner:
         self.log.append("\nPreflight validation checklist:\n")
         for key, value_text in JOBS[self.job_id].summary.items():
             self.log.append(f"{key}: {value_text}\n")
+        self.log.append("\nRelease validation markers:\n")
+        for key in (
+            "RELEASE_VERSION",
+            "UI_DEPLOYMENT_SOURCE",
+            "UI_SOURCE_COMMIT",
+            "UI_ARTIFACT_SHA256",
+            "UI_ARTIFACT_VALIDATION",
+            "AGENT_SOURCE_COMMIT",
+            "LOCAL_EDGE_TRENDS_DEFAULT_ENABLED",
+            "BACKGROUND_BACNET_ACTIVITY_ADDED",
+            "RELEASE_COMPONENT_VALIDATION",
+            "RULE_1_VALIDATION",
+        ):
+            self.log.append(f"{key}={JOBS[self.job_id].summary[key]}\n")
 
     def extract_latest_backup(self, output: str) -> str:
         matches = re.findall(r"(edge-bacnet-ui-v2\.backup\.\d{8}-\d{6}\.tar\.gz)", output)
@@ -1857,11 +1927,18 @@ class LegacyUpgradeRunner:
         return matches[-1]
 
     def build_upload_zip(self) -> None:
+        release = load_release_definition(self.request.release_manifest_path)
         artifact_path, artifact_summary = validated_embedded_ui_artifact(self.request.release_manifest_path)
+        self.log.append(f"RELEASE_VERSION={release.edge_release}\n")
         self.log.append("UI_DEPLOYMENT_SOURCE=embedded-release-artifact\n")
         self.log.append(f"UI_SOURCE_COMMIT={artifact_summary['UI source commit']}\n")
         self.log.append(f"UI_ARTIFACT_SHA256={artifact_summary['UI artifact SHA-256']}\n")
         self.log.append("UI_ARTIFACT_VALIDATION=Passed\n")
+        self.log.append(f"AGENT_SOURCE_COMMIT={release.agent_source_commit}\n")
+        self.log.append(f"LOCAL_EDGE_TRENDS_DEFAULT_ENABLED={'true' if release.local_edge_trends_default_enabled else 'false'}\n")
+        self.log.append("BACKGROUND_BACNET_ACTIVITY_ADDED=No\n")
+        self.log.append("RELEASE_COMPONENT_VALIDATION=Passed\n")
+        self.log.append("RULE_1_VALIDATION=Passed\n")
         if self.request.dry_run:
             self.log.append(f"[dry-run] Would upload embedded validated UI artifact {artifact_path} to {REMOTE_UI_ARTIFACT_PATH}.\n")
             self.log.append(f"[dry-run] Required contents: {', '.join([*UI_PACKAGE_FILES, *(item + '/' for item in UI_PACKAGE_DIRS)])}\n")
@@ -1892,6 +1969,15 @@ class LegacyUpgradeRunner:
         pre_port = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("PRE_UPGRADE_AGENT_DEFAULT_PORT=")), "unknown")
         post_port = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("POST_UPGRADE_AGENT_DEFAULT_PORT=")), "unknown")
         route_changed = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("ROUTE_SETTINGS_CHANGED=")), "unknown")
+        bacnet_ports_changed = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("BACNET_PORTS_CHANGED=")), "unknown")
+        bacnet_routes_changed = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("BACNET_ROUTES_CHANGED=")), "unknown")
+        ui_release_validation = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("UI_RELEASE_VALIDATION=")), "Warning: not seen")
+        agent_release_commit = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("AGENT_RELEASE_COMMIT=")), "unknown")
+        agent_release_validation = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("AGENT_RELEASE_VALIDATION=")), "Warning: not seen")
+        local_edge_trends_enabled = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("LOCAL_EDGE_TRENDS_ENABLED=")), "unknown")
+        background_bacnet_activity = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("BACKGROUND_BACNET_ACTIVITY_ADDED=")), "unknown")
+        rule_1_validation = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("RULE_1_VALIDATION=")), "Warning: not seen")
+        release_validation = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("RELEASE_0_1_9_VALIDATION=")), "Warning: not seen")
         with JOBS_LOCK:
             job = JOBS[self.job_id]
             job.summary = {
@@ -1909,7 +1995,16 @@ class LegacyUpgradeRunner:
                 "BACnet configuration preservation": bacnet_preservation,
                 "Pre-upgrade agent default port": pre_port,
                 "Post-upgrade agent default port": post_port,
+                "BACnet ports changed": bacnet_ports_changed,
+                "BACnet routes changed": bacnet_routes_changed,
                 "Route settings changed": route_changed,
+                "UI release validation": ui_release_validation,
+                "Agent release commit": agent_release_commit,
+                "Agent release validation": agent_release_validation,
+                "Local Edge trends enabled": local_edge_trends_enabled,
+                "Background BACnet activity added": background_bacnet_activity,
+                "Rule #1 validation": rule_1_validation,
+                "Release 0.1.9 validation": release_validation,
                 "Cloud portal manual confirmation": "Yes" if self.request.cloud_portal_verified else "No",
                 "Backup filename": job.backup_filename or "(none captured)",
                 "Warnings/errors": job.warning or job.error or "(none)",

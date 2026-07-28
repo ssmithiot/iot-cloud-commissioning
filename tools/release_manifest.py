@@ -32,6 +32,8 @@ class EdgeReleaseManifest:
     sha256: str
     preserves: tuple[str, ...]
     rollback_release: str
+    agent_source_commit: str = ""
+    local_edge_trends_default_enabled: bool = False
 
 
 def sha256_file(path: Path) -> str:
@@ -56,6 +58,18 @@ def load_manifest(path: Path) -> EdgeReleaseManifest:
     sha256 = str(raw["sha256"]).lower()
     if len(sha256) != 64 or any(char not in "0123456789abcdef" for char in sha256):
         raise ValueError("Release manifest sha256 must be 64 lowercase hexadecimal characters")
+    agent_source_commit = str(raw.get("agent_source_commit", "")).lower()
+    if agent_source_commit and (len(agent_source_commit) != 40 or any(char not in "0123456789abcdef" for char in agent_source_commit)):
+        raise ValueError("Release manifest agent_source_commit must be a 40-character lowercase hexadecimal commit")
+    local_trends_raw = raw.get("local_edge_trends_default_enabled", False)
+    if isinstance(local_trends_raw, bool):
+        local_edge_trends_default_enabled = local_trends_raw
+    elif isinstance(local_trends_raw, str) and local_trends_raw.strip().lower() in {"0", "false", "no", "off"}:
+        local_edge_trends_default_enabled = False
+    elif isinstance(local_trends_raw, str) and local_trends_raw.strip().lower() in {"1", "true", "yes", "on"}:
+        local_edge_trends_default_enabled = True
+    else:
+        raise ValueError("Release manifest local_edge_trends_default_enabled must be a boolean")
     return EdgeReleaseManifest(
         edge_release=str(raw["edge_release"]),
         base_release=str(raw["base_release"]),
@@ -64,6 +78,8 @@ def load_manifest(path: Path) -> EdgeReleaseManifest:
         sha256=sha256,
         preserves=preserves,
         rollback_release=str(raw["rollback_release"]),
+        agent_source_commit=agent_source_commit,
+        local_edge_trends_default_enabled=local_edge_trends_default_enabled,
     )
 
 

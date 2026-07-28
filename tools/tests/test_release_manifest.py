@@ -17,6 +17,8 @@ def manifest_data() -> dict[str, object]:
         "edge_ui_tag": "edge-ui-v0.1.8",
         "artifact": "tools/releases/edge-ui-0.1.8-code.tar.gz",
         "sha256": "a" * 64,
+        "agent_source_commit": "b" * 40,
+        "local_edge_trends_default_enabled": False,
         "preserves": ["data/", ".env", "start.sh", "gateway identity", "credentials"],
         "rollback_release": "0.1.7",
     }
@@ -37,7 +39,10 @@ def test_manifest_loads_and_hashes_artifact(tmp_path: Path) -> None:
     assert sha256_file(artifact) == "1a1ac94b9abe7f57ea5d404dcdc041b434ffd7dde167bf963684319e0459d058"
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest_data()), encoding="utf-8")
-    assert load_manifest(path).edge_release == "0.1.8"
+    manifest = load_manifest(path)
+    assert manifest.edge_release == "0.1.8"
+    assert manifest.agent_source_commit == "b" * 40
+    assert manifest.local_edge_trends_default_enabled is False
 
 
 def test_edge_source_preflight_rejects_dirty_or_wrong_tag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

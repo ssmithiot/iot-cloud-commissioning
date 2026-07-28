@@ -39,6 +39,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     edge_ui_data_dir_validation_command,
     final_commands,
     install_agent_commands,
+    load_release_definition,
     inspect_commands,
     load_env_defaults,
     parse_upgrade_request,
@@ -56,6 +57,12 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     ui_source_validation_summary,
     validate_ui_source_for_deploy,
 )
+
+
+FINAL_AGENT_COMMIT = "d2722d395ab3b380f8858b5208863a8e49ff2cc3"
+STALE_AGENT_COMMIT = "0" * 40
+FINAL_UI_COMMIT = "719d4a82ed972269d44db7c0638800b26e82002d"
+FINAL_UI_ARTIFACT_SHA256 = "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683"
 
 
 def test_duplicate_server_launch_does_not_start_an_orphaned_worker(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,7 +144,9 @@ def write_manifest(path: Path, edge_ui_tag: str) -> Path:
                 "base_release": "0.1.8",
                 "edge_ui_tag": edge_ui_tag,
                 "artifact": "tools/releases/gw006-edge-ui-0.1.9-code.tar.gz",
-                "sha256": "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683",
+                "sha256": FINAL_UI_ARTIFACT_SHA256,
+                "agent_source_commit": FINAL_AGENT_COMMIT,
+                "local_edge_trends_default_enabled": False,
                 "preserves": ["data/", ".env", "start.sh", "gateway identity", "credentials"],
                 "rollback_release": "0.1.8",
             }
@@ -153,9 +162,11 @@ def write_artifact_manifest(path: Path, artifact: str, sha256: str) -> Path:
             {
                 "edge_release": "0.1.9",
                 "base_release": "0.1.8",
-                "edge_ui_tag": "719d4a82ed972269d44db7c0638800b26e82002d",
+                "edge_ui_tag": FINAL_UI_COMMIT,
                 "artifact": artifact,
                 "sha256": sha256,
+                "agent_source_commit": FINAL_AGENT_COMMIT,
+                "local_edge_trends_default_enabled": False,
                 "preserves": ["data/", ".env", "start.sh", "gateway identity", "credentials"],
                 "rollback_release": "0.1.8",
             }
@@ -418,9 +429,9 @@ def test_ambiguous_route_text_no_longer_blocks_existing_upgrade() -> None:
 def test_final_deployment_blocks_ui_source_not_expected_commit(tmp_path: Path) -> None:
     source = tmp_path / "ui"
     head = make_git_source(source)
-    manifest = write_manifest(tmp_path / "manifest.json", "719d4a82ed972269d44db7c0638800b26e82002d")
+    manifest = write_manifest(tmp_path / "manifest.json", FINAL_UI_COMMIT)
 
-    assert head != "719d4a82ed972269d44db7c0638800b26e82002d"
+    assert head != FINAL_UI_COMMIT
     with pytest.raises(RuntimeError, match="UI source validation failed"):
         validate_ui_source_for_deploy(str(source), str(manifest))
 
@@ -720,6 +731,25 @@ def test_final_verification_no_longer_requires_edge_ui_data_dir() -> None:
 
     assert "verify Edge UI data dir config" not in labels
     assert "edge_ui_data_dir" not in commands
+
+
+def test_final_verification_reports_release_and_rule_1_markers() -> None:
+    commands = "\n".join(command for _label, command, _sudo in final_commands("47814"))
+
+    assert f"test \"$head\" = {FINAL_AGENT_COMMIT}" in commands
+    assert "AGENT_RELEASE_COMMIT=$head" in commands
+    assert "AGENT_RELEASE_VALIDATION=Passed" in commands
+    assert "LOCAL_EDGE_TRENDS_ENABLED=false" in commands
+    assert "BACKGROUND_BACNET_ACTIVITY_ADDED=No" in commands
+    assert "BACNET_CONFIG_PRESERVATION=Passed" in commands
+    assert "BACNET_PORTS_CHANGED=No" in commands
+    assert "BACNET_ROUTES_CHANGED=No" in commands
+    assert "ROUTE_SETTINGS_CHANGED=No" in commands
+    assert "MSTP_READ_BASELINE_TARGET=approximately_3_seconds" in commands
+    assert "BACNET_IP_READ_BASELINE_TARGET=under_1_second" in commands
+    assert "RULE_1_VALIDATION=Passed" in commands
+    assert "RELEASE_0_1_9_VALIDATION=Passed" in commands
+    assert STALE_AGENT_COMMIT not in commands
 
 
 @pytest.mark.parametrize(
@@ -1074,6 +1104,50 @@ def test_parse_upgrade_request_allows_standard_update_agent_real_run_phases() ->
 
     assert request.dry_run is False
     assert request.selected_phases == (0, 1, 2, 3, 4, 5, 7, 9, 10, 11)
+    assert 6 not in request.selected_phases
+    assert 8 not in request.selected_phases
+
+
+def test_full_non_provisioning_phase_selection_installs_complete_release_without_cloud_provisioning() -> None:
+    selected = UPDATE_AGENT_PHASES
+    phase_names = [legacy_webapp.PHASES[index] for index in selected]
+
+    assert phase_names == [
+        "Inspect gateway",
+        "Back up local BACnet UI",
+        "Build/upload UI release artifact",
+        "Apply UI update",
+        "Confirm UI auth",
+        "Restart local UI",
+        "Clone/update cloud repo",
+        "Install Python agent",
+        "Install/start service",
+        "Final verification",
+    ]
+    assert "Provision cloud gateway" not in phase_names
+    assert "Write cloud config/token" not in phase_names
+
+
+def test_full_non_provisioning_update_commands_do_not_create_or_sample_local_trends() -> None:
+    request = replace(make_request(), selected_phases=UPDATE_AGENT_PHASES)
+    command_groups = [
+        backup_commands("0.1.9"),
+        repo_commands(request),
+        install_agent_commands(request),
+        service_commands(request),
+        final_commands("47814"),
+    ]
+    joined = "\n".join(command for commands in command_groups for _label, command, _sudo in commands)
+
+    assert "edge-trends.db" not in joined
+    assert "trend_runs" not in joined
+    assert "trend_samples" not in joined
+    assert "sample_local_edge_trends" not in joined
+    read_surface = joined.replace("command -v /home/swadmin/bacnet-stack/bin/bacrp", "")
+    read_surface = read_surface.replace("command -v /home/swadmin/bacnet-stack/bin/bacrpm", "")
+    assert "/bacrp " not in read_surface
+    assert "/bacrpm " not in read_surface
+    assert "local_edge_trends_enabled: true" not in joined
 
 
 def test_parse_upgrade_request_allows_targeted_agent_only_real_run_phases() -> None:
@@ -1158,7 +1232,7 @@ def test_parse_upgrade_request_defaults_git_ref_to_release_commit() -> None:
 
     request = parse_upgrade_request(body)
 
-    assert request.git_ref == DEFAULT_EDGE_UPDATE_REF == "63b18c961d095fdbac2bcbd645ee4a6d164fcf87"
+    assert request.git_ref == DEFAULT_EDGE_UPDATE_REF == FINAL_AGENT_COMMIT
     assert request.edge_release == "0.1.9"
     assert request.release_manifest_path.endswith("edge-0.1.9.json")
 
@@ -1167,8 +1241,46 @@ def test_repo_commands_checkout_exact_019_agent_release_pointer() -> None:
     request = replace(make_request(), git_ref=DEFAULT_EDGE_UPDATE_REF)
     commands = {label: command for label, command, _sudo in repo_commands(request)}
 
-    assert f"git checkout {shlex.quote('63b18c961d095fdbac2bcbd645ee4a6d164fcf87')}" in commands["clone or update cloud repo"]
+    assert f"git checkout {shlex.quote(FINAL_AGENT_COMMIT)}" in commands["clone or update cloud repo"]
+    assert FINAL_AGENT_COMMIT in commands["repo release validation"]
+    assert STALE_AGENT_COMMIT not in "\n".join(commands.values())
     assert "844d93d013359d837619e991da8f4da7a5000472" not in commands["clone or update cloud repo"]
+
+
+def test_repo_commands_ignore_stale_submitted_git_ref_and_use_release_definition() -> None:
+    request = replace(make_request(), git_ref=STALE_AGENT_COMMIT)
+    joined = "\n".join(command for _label, command, _sudo in repo_commands(request))
+
+    assert f"git checkout {shlex.quote(FINAL_AGENT_COMMIT)}" in joined
+    assert STALE_AGENT_COMMIT not in joined
+
+
+def test_stale_default_constant_cannot_override_authoritative_release_definition(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(legacy_webapp, "DEFAULT_EDGE_UPDATE_REF", STALE_AGENT_COMMIT)
+    request = replace(make_request(), git_ref=legacy_webapp.DEFAULT_EDGE_UPDATE_REF)
+
+    joined = "\n".join(command for _label, command, _sudo in repo_commands(request))
+
+    assert f"git checkout {shlex.quote(FINAL_AGENT_COMMIT)}" in joined
+    assert STALE_AGENT_COMMIT not in joined
+
+
+def test_authoritative_release_definition_supplies_ui_agent_and_trend_policy() -> None:
+    release = load_release_definition(DEFAULT_RELEASE_MANIFEST)
+    summary = embedded_ui_artifact_summary(DEFAULT_RELEASE_MANIFEST)
+
+    assert release.edge_release == "0.1.9"
+    assert release.edge_ui_tag == FINAL_UI_COMMIT
+    assert release.artifact == "tools/releases/gw006-edge-ui-0.1.9-code.tar.gz"
+    assert release.sha256 == FINAL_UI_ARTIFACT_SHA256
+    assert release.agent_source_commit == FINAL_AGENT_COMMIT
+    assert release.local_edge_trends_default_enabled is False
+    assert summary["UI source commit"] == release.edge_ui_tag
+    assert summary["UI artifact SHA-256"] == release.sha256
+    assert summary["Agent source commit"] == release.agent_source_commit
+    assert summary["Local Edge trends default enabled"] == "false"
+    assert summary["Release component validation"] == "Passed"
+    assert summary["Rule #1 validation"] == "Passed"
 
 
 def test_backup_commands_create_named_code_only_checkpoint() -> None:
@@ -1224,7 +1336,7 @@ def test_queued_gateway_update_defaults_git_ref_to_release_commit(monkeypatch: p
     )
 
     assert outcome == "completed"
-    assert captured["request"].git_ref == DEFAULT_EDGE_UPDATE_REF == "63b18c961d095fdbac2bcbd645ee4a6d164fcf87"
+    assert captured["request"].git_ref == DEFAULT_EDGE_UPDATE_REF == FINAL_AGENT_COMMIT
     with JOBS_LOCK:
         JOBS.pop("queued-default-ref-test", None)
 
@@ -1240,8 +1352,8 @@ def test_embedded_artifact_summary_validates_release_checksum() -> None:
 
     assert summary["UI deployment source"] == "embedded-release-artifact"
     assert summary["UI package source"] == "embedded-release-artifact"
-    assert summary["UI source commit"] == "719d4a82ed972269d44db7c0638800b26e82002d"
-    assert summary["UI artifact SHA-256"] == "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683"
+    assert summary["UI source commit"] == FINAL_UI_COMMIT
+    assert summary["UI artifact SHA-256"] == FINAL_UI_ARTIFACT_SHA256
     assert summary["UI artifact validation"] == "Passed"
     assert summary["UI artifact path"].endswith("tools/releases/gw006-edge-ui-0.1.9-code.tar.gz")
 
@@ -1258,25 +1370,37 @@ def test_preflight_summary_reports_embedded_artifact_release_fields() -> None:
             JOBS.pop("embedded-artifact-preflight-test", None)
 
     assert summary["UI_DEPLOYMENT_SOURCE"] == "embedded-release-artifact"
-    assert summary["UI_SOURCE_COMMIT"] == "719d4a82ed972269d44db7c0638800b26e82002d"
-    assert summary["UI_ARTIFACT_SHA256"] == "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683"
+    assert summary["UI_SOURCE_COMMIT"] == FINAL_UI_COMMIT
+    assert summary["UI_ARTIFACT_SHA256"] == FINAL_UI_ARTIFACT_SHA256
     assert summary["UI_ARTIFACT_VALIDATION"] == "Passed"
+    assert summary["RELEASE_VERSION"] == "0.1.9"
+    assert summary["AGENT_SOURCE_COMMIT"] == FINAL_AGENT_COMMIT
+    assert summary["LOCAL_EDGE_TRENDS_DEFAULT_ENABLED"] == "false"
+    assert summary["BACKGROUND_BACNET_ACTIVITY_ADDED"] == "No"
+    assert summary["RELEASE_COMPONENT_VALIDATION"] == "Passed"
+    assert summary["RULE_1_VALIDATION"] == "Passed"
     assert "UI_DEPLOYMENT_SOURCE: embedded-release-artifact" in log
     assert "UI_ARTIFACT_VALIDATION: Passed" in log
+    assert "RELEASE_VERSION=0.1.9" in log
+    assert f"AGENT_SOURCE_COMMIT={FINAL_AGENT_COMMIT}" in log
+    assert "LOCAL_EDGE_TRENDS_DEFAULT_ENABLED=false" in log
+    assert "BACKGROUND_BACNET_ACTIVITY_ADDED=No" in log
+    assert "RELEASE_COMPONENT_VALIDATION=Passed" in log
+    assert "RULE_1_VALIDATION=Passed" in log
 
 
 def test_missing_or_modified_embedded_artifact_fails_closed(tmp_path: Path) -> None:
     missing_manifest = write_artifact_manifest(
         tmp_path / "missing.json",
         "tools/releases/does-not-exist.tar.gz",
-        "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683",
+        FINAL_UI_ARTIFACT_SHA256,
     )
     modified = tmp_path / "modified.tar.gz"
     modified.write_bytes(b"not the release artifact")
     modified_manifest = write_artifact_manifest(
         tmp_path / "modified.json",
         str(modified),
-        "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683",
+        FINAL_UI_ARTIFACT_SHA256,
     )
 
     assert embedded_ui_artifact_summary(str(missing_manifest))["UI artifact validation"].startswith("Failed")
@@ -1365,9 +1489,15 @@ def test_build_upload_zip_dry_run_reports_embedded_artifact_without_mutation(mon
             JOBS.pop(job_id, None)
 
     assert "UI_DEPLOYMENT_SOURCE=embedded-release-artifact" in log
-    assert "UI_SOURCE_COMMIT=719d4a82ed972269d44db7c0638800b26e82002d" in log
-    assert "UI_ARTIFACT_SHA256=a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683" in log
+    assert "RELEASE_VERSION=0.1.9" in log
+    assert f"UI_SOURCE_COMMIT={FINAL_UI_COMMIT}" in log
+    assert f"UI_ARTIFACT_SHA256={FINAL_UI_ARTIFACT_SHA256}" in log
     assert "UI_ARTIFACT_VALIDATION=Passed" in log
+    assert f"AGENT_SOURCE_COMMIT={FINAL_AGENT_COMMIT}" in log
+    assert "LOCAL_EDGE_TRENDS_DEFAULT_ENABLED=false" in log
+    assert "BACKGROUND_BACNET_ACTIVITY_ADDED=No" in log
+    assert "RELEASE_COMPONENT_VALIDATION=Passed" in log
+    assert "RULE_1_VALIDATION=Passed" in log
     assert "Would upload embedded validated UI artifact" in log
     assert r"C:\Stale\edge-ui" not in log
 
