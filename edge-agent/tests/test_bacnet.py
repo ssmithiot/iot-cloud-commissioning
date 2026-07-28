@@ -289,7 +289,7 @@ def test_bacnet_load_points_uses_rpm_batch_when_available(tmp_path: Path, monkey
     assert result is not None
     assert result["read_mode"] == "rpm-index-blocks"
     assert result["enrichment_mode"] == "rpm"
-    assert result["batch_size"] == 40
+    assert result["batch_size"] == 8
     assert result["points"][0]["object_name"] == "SPACE_SENSOR"
     assert result["points"][0]["present_value"] is None
     assert result["points"][1]["object_name"] == "REMOTE_SENSOR"

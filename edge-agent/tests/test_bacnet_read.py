@@ -2,7 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from iot_cx_agent.bacnet import parse_bacnet_read_value, parse_bacnet_rpm_present_values
+from iot_cx_agent.bacnet import parse_bacnet_read_value, parse_bacnet_rpm_present_values, prepare_bacnet_command
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.jobs import execute_job
 
@@ -21,6 +21,76 @@ def config(tmp_path: Path, bacrp_path: str = "bacrp", bacrpm_path: str = "bacrpm
         sqlite_path=tmp_path / "edge.db",
         bacnet_lock_path=tmp_path / "bacnet.lock",
         bacnet_lock_timeout_sec=0,
+    )
+
+
+def edge_router_authority_config(tmp_path: Path, bacrp_path: str = "bacrp", bacrpm_path: str = "bacrpm") -> AgentConfig:
+    edge_dir = tmp_path / "edge-ui-data"
+    edge_dir.mkdir()
+    (edge_dir / "router-config.json").write_text(
+        """
+        {
+          "enabled": true,
+          "bip_interfaces": [
+            {
+              "enabled": true,
+              "bind_address": "192.168.1.200",
+              "udp_port": 47809
+            }
+          ],
+          "mstp_trunks": [
+            {
+              "enabled": true,
+              "id": "mstp-1",
+              "network_number": 202
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    (edge_dir / "router-mstp-status.json").write_text(
+        """
+        {
+          "route_table": ["device 1 via network 202 address 01"],
+          "trunks": {
+            "mstp-1": {
+              "macs": {
+                "17": {"device_instance": "1569", "online": true}
+              }
+            }
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+    devices_dir = edge_dir / "devices"
+    devices_dir.mkdir()
+    (devices_dir / "46-plant-chillers.json").write_text(
+        """
+        {
+          "device_id": "46",
+          "device_name": "Plant Chillers",
+          "meta": {
+            "device": "46",
+            "mac": "C0:A8:01:66:BA:C6",
+            "snet": "1",
+            "sadr": "C0:A8:01:67:BA:C0",
+            "bacnet_port": "47814"
+          },
+          "points": [{"object_type": "analog-value", "instance": 1}]
+        }
+        """,
+        encoding="utf-8",
+    )
+    base = config(tmp_path, bacrp_path=bacrp_path, bacrpm_path=bacrpm_path)
+    return AgentConfig(
+        **{
+            **base.__dict__,
+            "edge_ui_data_dir": edge_dir,
+            "bacnet_bbmd_address": "192.168.1.200",
+            "bacnet_bbmd_port": 47809,
+        }
     )
 
 
@@ -103,6 +173,87 @@ def test_bacnet_read_success_with_mocked_command_args(tmp_path: Path, monkeypatc
         "raw_value": "72.4",
         "status": "ok",
     }
+
+
+def test_router_authority_routes_cloud_read_through_edge_router(tmp_path: Path, monkeypatch) -> None:
+    def fake_run(*args, **kwargs):
+        assert args[0] == [
+            "bacrp",
+            "1",
+            "analog-value",
+            "1",
+            "85",
+            "--mac",
+            "192.168.1.200:47809",
+            "--dnet",
+            "202",
+            "--dadr",
+            "01",
+        ]
+        assert kwargs["env"]["BACNET_IP_PORT"] == "47814"
+        assert kwargs["env"]["BACNET_BBMD_ADDRESS"] == "192.168.1.200"
+        assert kwargs["env"]["BACNET_BBMD_PORT"] == "47809"
+        return subprocess.CompletedProcess(args[0], 0, stdout="present-value: Real: 72.4\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    status, result, error = execute_job(edge_router_authority_config(tmp_path), bacnet_read_job(valid_read_request()))
+
+    assert status == "completed"
+    assert error is None
+    assert result["status"] == "ok"
+
+
+def test_router_authority_replaces_stale_cloud_route_args(tmp_path: Path) -> None:
+    prepared = prepare_bacnet_command(
+        edge_router_authority_config(tmp_path),
+        [
+            "/home/swadmin/bacnet-stack/bin/bacrpm",
+            "1569",
+            "analog-value",
+            "1",
+            "85",
+            "--mac",
+            "192.168.1.102:47808",
+            "--dnet",
+            "2001",
+            "--dadr",
+            "11",
+        ],
+    )
+
+    assert prepared == [
+        "/home/swadmin/bacnet-stack/bin/bacrpm",
+        "1569",
+        "analog-value",
+        "1",
+        "85",
+        "--mac",
+        "192.168.1.200:47809",
+        "--dnet",
+        "202",
+        "--dadr",
+        "11",
+    ]
+
+
+def test_cloud_native_bip_uses_saved_endpoint_without_mstp_route(tmp_path: Path) -> None:
+    prepared = prepare_bacnet_command(
+        edge_router_authority_config(tmp_path),
+        ["/home/swadmin/bacnet-stack/bin/bacrpm", "46", "analog-value", "1", "85"],
+    )
+
+    assert prepared == [
+        "/home/swadmin/bacnet-stack/bin/bacrpm",
+        "46",
+        "analog-value",
+        "1",
+        "85",
+        "--mac",
+        "192.168.1.103:47808",
+    ]
+    assert "--dnet" not in prepared
+    assert "202" not in prepared
 
 
 def test_bacnet_bulk_read_uses_one_rpm_command_for_multiple_points(tmp_path: Path, monkeypatch) -> None:

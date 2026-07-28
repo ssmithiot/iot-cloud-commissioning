@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -67,13 +68,144 @@ BACNET_PRESENT_VALUE_PROPERTY_ID = 85
 BACNET_PRIORITY_ARRAY_PROPERTY_ID = 87
 BACNET_OBJECT_LIST_PROPERTY_ID = 76
 BACNET_OBJECT_NAME_PROPERTY_ID = 77
-BACNET_POINT_LOAD_BATCH_SIZE = 40
+BACNET_POINT_LOAD_BATCH_SIZE = 8
 BACNET_OBJECT_LIST_INDEX_BLOCK_SIZE = 40
 BACNET_RUNTIME_BUSY = "bacnet_runtime_busy"
 
 
 def resolved_bacnet_port(config: AgentConfig) -> int:
     return config.bacnet_default_port
+
+
+def bacnet_environment(config: AgentConfig) -> dict[str, str]:
+    env = os.environ.copy()
+    env["BACNET_IP_PORT"] = str(resolved_bacnet_port(config))
+    if config.bacnet_bbmd_address and config.bacnet_bbmd_port:
+        env["BACNET_BBMD_ADDRESS"] = config.bacnet_bbmd_address
+        env["BACNET_BBMD_PORT"] = str(config.bacnet_bbmd_port)
+    return env
+
+
+def _active_edge_router_bip(router_config: dict[str, Any]) -> dict[str, Any]:
+    return next((item for item in router_config.get("bip_interfaces") or [] if item.get("enabled")), {})
+
+
+def _load_edge_router_json(config: AgentConfig, name: str) -> dict[str, Any]:
+    if config.edge_ui_data_dir is None:
+        return {}
+    try:
+        path = config.edge_ui_data_dir / name
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _bacnet_ip_mac_to_ip_port(mac_hex: str) -> str:
+    parts = [p for p in re.split(r"[:\-\s]+", (mac_hex or "").strip()) if p]
+    if len(parts) != 6:
+        return ""
+    try:
+        values = [int(part, 16) for part in parts]
+    except ValueError:
+        return ""
+    ip = ".".join(str(value) for value in values[:4])
+    port = values[4] * 256 + values[5]
+    return f"{ip}:{port}"
+
+
+def _edge_saved_native_bip_route(config: AgentConfig, device_instance: object) -> list[str]:
+    if config.edge_ui_data_dir is None:
+        return []
+    target = str(device_instance).strip()
+    if not target:
+        return []
+    devices_dir = config.edge_ui_data_dir / "devices"
+    try:
+        paths = sorted(devices_dir.glob("*.json"))
+    except Exception:
+        return []
+    for path in paths:
+        try:
+            saved_device = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if str(saved_device.get("device_id") or "").strip() != target:
+            continue
+        meta = saved_device.get("meta") if isinstance(saved_device.get("meta"), dict) else {}
+        native_endpoint = _bacnet_ip_mac_to_ip_port(str(meta.get("sadr", "")).strip())
+        if native_endpoint:
+            return ["--mac", native_endpoint]
+    return []
+
+
+def _edge_router_authoritative_route(config: AgentConfig, device_instance: object) -> list[str]:
+    """Return directed bacnet-stack args for Edge-router-owned MS/TP devices.
+
+    The cloud agent can keep its own local BACnet/IP client socket, but when the
+    persistent Edge router is authoritative it must address routed MS/TP devices
+    through the router's B/IP MAC and DNET/SADR instead of relying on stale
+    BASRT-B discovery state or direct transport assumptions.
+    """
+    target = str(device_instance).strip()
+    if not target:
+        return []
+    router_config = _load_edge_router_json(config, "router-config.json")
+    if not router_config.get("enabled"):
+        return []
+    bip = _active_edge_router_bip(router_config)
+    if not bip:
+        return []
+    router_mac = f"{bip.get('bind_address') or '127.0.0.1'}:{int(bip.get('udp_port') or 47809)}"
+    status = _load_edge_router_json(config, "router-mstp-status.json")
+
+    for line in status.get("route_table") or []:
+        match = re.search(r"device\s+(\d+)\s+via\s+network\s+(\d+)\s+address\s+([0-9A-Fa-f]+)", str(line))
+        if match is not None and match.group(1) == target:
+            return ["--mac", router_mac, "--dnet", match.group(2), "--dadr", match.group(3).upper()]
+
+    for trunk in router_config.get("mstp_trunks") or []:
+        if not trunk.get("enabled"):
+            continue
+        dnet = str(trunk.get("network_number") or "").strip()
+        trunk_status = (status.get("trunks") or {}).get(trunk.get("id")) or {}
+        for mac, entry in (trunk_status.get("macs") or {}).items():
+            if str(entry.get("device_instance") or "").strip() == target:
+                try:
+                    dadr = f"{int(str(mac), 0):02X}"
+                except Exception:
+                    dadr = str(mac).strip().upper()
+                if dnet and dadr:
+                    return ["--mac", router_mac, "--dnet", dnet, "--dadr", dadr]
+    return []
+
+
+def _strip_bacnet_route_args(args: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    skip_next = False
+    route_flags = {"--mac", "--dnet", "--dadr"}
+    for item in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if item in route_flags:
+            skip_next = True
+            continue
+        cleaned.append(item)
+    return cleaned
+
+
+def prepare_bacnet_command(config: AgentConfig, args: list[str]) -> list[str]:
+    command_name = Path(str(args[0])).name if args else ""
+    if command_name not in {"bacrp", "bacrpm", "bacwp"} or len(args) < 2:
+        return args
+    route_args = _edge_router_authoritative_route(config, args[1])
+    if not route_args:
+        route_args = _edge_saved_native_bip_route(config, args[1])
+    if not route_args:
+        return args
+    prepared = _strip_bacnet_route_args(list(args))
+    prepared.extend(route_args)
+    return prepared
 
 
 def _runtime_busy_message(port: int) -> str:
@@ -305,8 +437,7 @@ def run_bacnet_discovery(config: AgentConfig, request: dict[str, Any]) -> tuple[
     port = resolved_bacnet_port(config)
     base_result = {"bacnet_discover": True, "port": port, "bacnet_router_profile": config.bacnet_router_profile}
 
-    env = os.environ.copy()
-    env["BACNET_IP_PORT"] = str(port)
+    env = bacnet_environment(config)
 
     try:
         lock = BacnetRuntimeLock(config, port)
@@ -707,10 +838,9 @@ def run_bacnet_read(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[
         result = _failure_result({"job_type": "bacnet_read", "property": BACNET_PRESENT_VALUE, "property_id": 85}, str(exc))
         return result, str(exc)
 
-    env = os.environ.copy()
     port = resolved_bacnet_port(config)
-    env["BACNET_IP_PORT"] = str(port)
-    args = build_bacnet_read_args(config, normalized)
+    env = bacnet_environment(config)
+    args = prepare_bacnet_command(config, build_bacnet_read_args(config, normalized))
     normalized["bacnet_port"] = port
     normalized["bacnet_router_profile"] = config.bacnet_router_profile
 
@@ -771,9 +901,8 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
         result = _failure_result({"job_type": "bacnet_read_bulk", "property": BACNET_PRESENT_VALUE, "property_id": 85}, str(exc))
         return result, str(exc)
 
-    env = os.environ.copy()
     port = resolved_bacnet_port(config)
-    env["BACNET_IP_PORT"] = str(port)
+    env = bacnet_environment(config)
     normalized["bacnet_port"] = port
     normalized["bacnet_router_profile"] = config.bacnet_router_profile
 
@@ -1004,6 +1133,7 @@ def _run_bacrp(
     env: dict[str, str],
     description: str,
 ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    args = prepare_bacnet_command(config, args)
     try:
         completed = subprocess.run(
             args,
@@ -1032,6 +1162,7 @@ def _run_command(
     env: dict[str, str],
     description: str,
 ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    args = prepare_bacnet_command(config, args)
     try:
         completed = subprocess.run(
             args,
@@ -1174,9 +1305,8 @@ def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tupl
         result = _failure_result({"job_type": "bacnet_load_points", "bacnet_port": resolved_bacnet_port(config)}, str(exc))
         return result, str(exc)
 
-    env = os.environ.copy()
     port = resolved_bacnet_port(config)
-    env["BACNET_IP_PORT"] = str(port)
+    env = bacnet_environment(config)
     normalized["bacnet_port"] = port
     normalized["bacnet_router_profile"] = config.bacnet_router_profile
     lock = BacnetRuntimeLock(config, port)
