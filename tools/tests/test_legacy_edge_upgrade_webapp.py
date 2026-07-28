@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 import json
 import shlex
 import socket
@@ -34,6 +35,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     load_env_defaults,
     parse_upgrade_request,
     repo_release_validation_command,
+    repo_commands,
     restart_ui_commands,
     rollback_commands,
     backup_commands,
@@ -529,7 +531,7 @@ def test_repo_release_validation_blocks_unexpected_untracked_source_or_config(tm
 def test_repo_release_validation_blocks_wrong_head(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     head = make_git_source(repo)
-    wrong_head = "844d93d013359d837619e991da8f4da7a5000472"
+    wrong_head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
     result = run_repo_release_validation(repo, wrong_head)
 
@@ -855,9 +857,17 @@ def test_parse_upgrade_request_defaults_git_ref_to_release_commit() -> None:
 
     request = parse_upgrade_request(body)
 
-    assert request.git_ref == DEFAULT_EDGE_UPDATE_REF == "844d93d013359d837619e991da8f4da7a5000472"
+    assert request.git_ref == DEFAULT_EDGE_UPDATE_REF == "63b18c961d095fdbac2bcbd645ee4a6d164fcf87"
     assert request.edge_release == "0.1.9"
     assert request.release_manifest_path.endswith("edge-0.1.9.json")
+
+
+def test_repo_commands_checkout_exact_019_agent_release_pointer() -> None:
+    request = replace(make_request(), git_ref=DEFAULT_EDGE_UPDATE_REF)
+    commands = {label: command for label, command, _sudo in repo_commands(request)}
+
+    assert f"git checkout {shlex.quote('63b18c961d095fdbac2bcbd645ee4a6d164fcf87')}" in commands["clone or update cloud repo"]
+    assert "844d93d013359d837619e991da8f4da7a5000472" not in commands["clone or update cloud repo"]
 
 
 def test_backup_commands_create_named_code_only_checkpoint() -> None:
@@ -913,7 +923,7 @@ def test_queued_gateway_update_defaults_git_ref_to_release_commit(monkeypatch: p
     )
 
     assert outcome == "completed"
-    assert captured["request"].git_ref == DEFAULT_EDGE_UPDATE_REF == "844d93d013359d837619e991da8f4da7a5000472"
+    assert captured["request"].git_ref == DEFAULT_EDGE_UPDATE_REF == "63b18c961d095fdbac2bcbd645ee4a6d164fcf87"
     with JOBS_LOCK:
         JOBS.pop("queued-default-ref-test", None)
 
