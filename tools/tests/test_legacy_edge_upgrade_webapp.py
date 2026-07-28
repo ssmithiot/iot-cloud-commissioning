@@ -23,12 +23,14 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     agent_config_text,
     apply_ui_files_script,
     auth_commands,
+    classify_bacnet_preflight,
     config_commands,
     apply_ui_commands,
     DEFAULT_EDGE_UPDATE_REF,
     create_update_zip,
     load_env_defaults,
     parse_upgrade_request,
+    parse_bacnet_route_settings,
     restart_ui_commands,
     rollback_commands,
     backup_commands,
@@ -111,6 +113,32 @@ def run_start_sh_update(path: Path) -> None:
     )
 
 
+def make_runner(job_id: str = "route-preflight-test") -> LegacyUpgradeRunner:
+    request = UpgradeRequest(**{**make_request().__dict__, "dry_run": True})
+    with JOBS_LOCK:
+        JOBS[job_id] = UpgradeJob(request=request)
+    return LegacyUpgradeRunner(job_id, request)
+
+
+def preflight_output(route_state: dict[str, str]) -> str:
+    return "\n".join(
+        [
+            f"ROUTE_DECISION={route_state['route_decision']}",
+            f"DETECTED_BACNET_IP_PORT={route_state['primary_bacnet_port']}",
+            f"DETECTED_BACNET_PORT_MODE={route_state['mode']}",
+            f"CONFIGURED_BACNET_PORTS={route_state['configured_bacnet_ports']}",
+            f"PREFERRED_ROUTE={route_state['preferred_route']}",
+            f"INTERNAL_EDGE_ROUTER_SERVICES={route_state['internal_edge_router_services']}",
+            f"ROUTE_FILES={route_state['route_files']}",
+            f"UPDATE_ALLOWED={route_state['update_allowed']}",
+            f"BACNET_CONFLICT={route_state['conflict']}",
+            "EDGE_AGENT_VERSION=0.1.9",
+            "SUDO_AVAILABLE=yes",
+            "BACKUP_PATH_WRITABLE=/home/swadmin",
+        ]
+    )
+
+
 def test_update_start_sh_preserves_existing_47809_route_byte_for_byte(tmp_path: Path) -> None:
     path = tmp_path / "start.sh"
     original = (
@@ -165,6 +193,100 @@ def test_update_start_sh_preserves_edge_router_enabled_fixture_byte_for_byte(tmp
     run_start_sh_update(path)
 
     assert path.read_text(encoding="utf-8") == original
+
+
+def test_bacnet_preflight_classifies_gw006_dual_port_preserve_existing() -> None:
+    start_sh = (
+        "export BACNET_IP_PORT=47814\n"
+        "export BACNET_IP_PORTS=47809,47814\n"
+        "export BACNET_PORT_MODE=dual-47809-first\n"
+    )
+
+    state = classify_bacnet_preflight(
+        parse_bacnet_route_settings(start_sh),
+        router_config_present=True,
+        legacy_router_config_present=True,
+        service_states={
+            "iot-cx-bacnet-router.service": "inactive/disabled",
+            "iot-cx-mstp-router.service": "inactive/disabled",
+            "edge-bacnet-ui.service": "active/enabled",
+            "iot-cx-agent.service": "active/enabled",
+        },
+    )
+
+    assert state == {
+        "configured": "true",
+        "confidence": "confirmed",
+        "route_decision": "preserve_existing",
+        "mode": "external_dual_port",
+        "primary_bacnet_port": "47814",
+        "configured_bacnet_ports": "47809,47814",
+        "preferred_route": "47809-first",
+        "internal_edge_router_services": "disabled",
+        "route_files": "preserve_unchanged",
+        "update_allowed": "true",
+        "conflict": "None",
+    }
+
+    runner = make_runner("gw006-route-preflight-test")
+    try:
+        runner.validate_inspection(preflight_output(state))
+        with JOBS_LOCK:
+            summary = JOBS["gw006-route-preflight-test"].summary
+        assert summary["BACnet decision"] == "Preserve existing"
+        assert summary["Configured ports"] == "47809, 47814"
+        assert summary["Primary/source setting"] == "47814"
+        assert summary["Preferred route order"] == "47809 first"
+        assert summary["Existing router config files"] == "Preserved unchanged"
+        assert summary["Conflict"] == "None"
+        assert "BACNET_IP_PORT is not necessarily" in summary["BACNET_IP_PORT note"]
+    finally:
+        with JOBS_LOCK:
+            JOBS.pop("gw006-route-preflight-test", None)
+
+
+def test_bacnet_preflight_preserves_both_route_files_without_active_conflict() -> None:
+    state = classify_bacnet_preflight(
+        parse_bacnet_route_settings("export BACNET_IP_PORT=47814\n"),
+        router_config_present=True,
+        legacy_router_config_present=True,
+        service_states={
+            "iot-cx-bacnet-router.service": "inactive/disabled",
+            "iot-cx-mstp-router.service": "inactive/disabled",
+        },
+    )
+
+    assert state["route_decision"] == "preserve_existing"
+    assert state["route_files"] == "preserve_unchanged"
+    assert state["update_allowed"] == "true"
+    assert state["conflict"] == "None"
+
+
+def test_bacnet_preflight_blocks_duplicate_listener_conflict() -> None:
+    state = classify_bacnet_preflight(
+        parse_bacnet_route_settings("export BACNET_IP_PORT=47814\n"),
+        listeners=[(47814, "edge-ui"), (47814, "router-mstp")],
+    )
+
+    assert state["route_decision"] == "ambiguous"
+    assert state["update_allowed"] == "false"
+    assert "duplicate listener on UDP 47814" in state["conflict"]
+
+    runner = make_runner("duplicate-listener-route-preflight-test")
+    try:
+        with pytest.raises(RuntimeError, match="Ambiguous BACnet route state"):
+            runner.validate_inspection(preflight_output(state))
+    finally:
+        with JOBS_LOCK:
+            JOBS.pop("duplicate-listener-route-preflight-test", None)
+
+
+def test_bacnet_preflight_blocks_invalid_primary_port() -> None:
+    state = classify_bacnet_preflight(parse_bacnet_route_settings("export BACNET_IP_PORT=not-a-port\n"))
+
+    assert state["route_decision"] == "ambiguous"
+    assert state["update_allowed"] == "false"
+    assert "invalid BACNET_IP_PORT=not-a-port" in state["conflict"]
 
 
 def test_update_start_sh_defaults_unconfigured_install_to_external_47814(tmp_path: Path) -> None:

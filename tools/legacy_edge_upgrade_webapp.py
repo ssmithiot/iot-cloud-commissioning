@@ -48,6 +48,7 @@ REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
 NESTED_UPLOAD_CHUNK_SIZE = 3000
+INTERNAL_EDGE_ROUTER_SERVICES = ("iot-cx-bacnet-router.service", "iot-cx-mstp-router.service")
 UI_PACKAGE_FILES = (
     "app.py",
     "edge_program_engine.py",
@@ -167,6 +168,92 @@ class Redactor:
         safe = re.sub(r"(EDGE_UI_PASSWORD=)'[^']*'", r"\1'***SET***'", safe)
         safe = re.sub(r"(EDGE_UI_PASSWORD=)[^\s]+", r"\1'***SET***'", safe)
         return safe
+
+
+def parse_bacnet_route_settings(text: str) -> dict[str, str]:
+    settings = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = re.match(r'(?:export\s+)?(BACNET_IP_PORT|BACNET_IP_PORTS|BACNET_PORT_MODE|BACNET_EDGE_PROGRAM_PORTS)=(.*)', stripped)
+        if match:
+            settings[match.group(1)] = match.group(2).strip().strip('"').strip("'")
+    return settings
+
+
+def _valid_bacnet_port(value: str) -> bool:
+    return value.isdigit() and 1 <= int(value) <= 65535
+
+
+def classify_bacnet_preflight(
+    settings: dict[str, str],
+    *,
+    router_config_present: bool = False,
+    legacy_router_config_present: bool = False,
+    service_states: dict[str, str] | None = None,
+    listeners: list[tuple[int, str]] | None = None,
+    serial_owners: list[tuple[str, str]] | None = None,
+) -> dict[str, str]:
+    service_states = service_states or {}
+    listeners = listeners or []
+    serial_owners = serial_owners or []
+    conflicts = []
+    primary_port = settings.get("BACNET_IP_PORT", "")
+    configured_list_ports = [value.strip() for value in settings.get("BACNET_IP_PORTS", "").split(",") if value.strip()]
+    port_values = configured_list_ports or ([primary_port] if primary_port else [])
+    if primary_port and not _valid_bacnet_port(primary_port):
+        conflicts.append(f"invalid BACNET_IP_PORT={primary_port}")
+    for index, value in enumerate(configured_list_ports, start=1):
+        if value and not _valid_bacnet_port(value):
+            conflicts.append(f"invalid BACNET_IP_PORTS[{index}]={value}")
+    active_internal = [
+        service
+        for service in INTERNAL_EDGE_ROUTER_SERVICES
+        if any(part in {"active", "enabled"} for part in re.split(r"[/,\s]+", service_states.get(service, "").lower()) if part)
+    ]
+    listener_owners: dict[int, set[str]] = {}
+    for port, owner in listeners:
+        listener_owners.setdefault(port, set()).add(owner or "unknown")
+    for port, owners in sorted(listener_owners.items()):
+        if len(owners) > 1:
+            conflicts.append(f"duplicate listener on UDP {port}: {', '.join(sorted(owners))}")
+    if len(active_internal) > 1:
+        conflicts.append(f"multiple internal router services active/enabled: {', '.join(active_internal)}")
+    serial_by_device: dict[str, set[str]] = {}
+    for device, owner in serial_owners:
+        serial_by_device.setdefault(device, set()).add(owner or "unknown")
+    for device, owners in sorted(serial_by_device.items()):
+        if len(owners) > 1:
+            conflicts.append(f"conflicting serial ownership on {device}: {', '.join(sorted(owners))}")
+    if conflicts:
+        decision = "ambiguous"
+        confidence = "ambiguous"
+        update_allowed = "false"
+    elif settings:
+        decision = "preserve_existing"
+        confidence = "confirmed"
+        update_allowed = "true"
+    else:
+        decision = "default_external_47814"
+        confidence = "confirmed"
+        update_allowed = "true"
+    mode = settings.get("BACNET_PORT_MODE", "external" if not settings else "unknown")
+    configured_ports = ",".join(dict.fromkeys(value for value in port_values if value)) or ("47814" if not settings else "none")
+    preferred_route = "47809-first" if mode == "dual-47809-first" or configured_ports.startswith("47809,") else "configured"
+    route_files = "preserve_unchanged" if router_config_present or legacy_router_config_present or settings else "none"
+    internal_services = "disabled" if not active_internal else "active_or_enabled"
+    return {
+        "configured": "true" if settings else "false",
+        "confidence": confidence,
+        "route_decision": decision,
+        "mode": "external_dual_port" if mode.startswith("dual-") else mode,
+        "primary_bacnet_port": primary_port or ("47814" if not settings else "none"),
+        "configured_bacnet_ports": configured_ports,
+        "preferred_route": preferred_route,
+        "internal_edge_router_services": internal_services,
+        "route_files": route_files,
+        "update_allowed": update_allowed,
+        "conflict": "; ".join(conflicts) if conflicts else "None",
+    }
 
 
 class LiveLog:
@@ -1008,6 +1095,7 @@ def apply_ui_files_command() -> str:
 def inspect_commands() -> list[tuple[str, str, bool]]:
     route_probe = r"""python3 - <<'PY'
 from pathlib import Path
+import subprocess
 import re
 start = Path('/home/swadmin/edge-bacnet-ui-v2/start.sh')
 router = Path('/home/swadmin/edge-bacnet-ui-v2/data/router-config.json')
@@ -1019,19 +1107,73 @@ for line in text.splitlines():
     match = re.match(r'(?:export\s+)?(BACNET_IP_PORT|BACNET_IP_PORTS|BACNET_PORT_MODE|BACNET_EDGE_PROGRAM_PORTS)=(.*)', stripped)
     if match:
         settings[match.group(1)] = match.group(2).strip().strip('"').strip("'")
+def valid_port(value):
+    return value.isdigit() and 1 <= int(value) <= 65535
+services = ('iot-cx-bacnet-router.service', 'iot-cx-mstp-router.service')
+service_states = {}
+for service in services:
+    active = subprocess.run(['systemctl', 'is-active', service], text=True, capture_output=True).stdout.strip()
+    enabled = subprocess.run(['systemctl', 'is-enabled', service], text=True, capture_output=True).stdout.strip()
+    service_states[service] = f'{active}/{enabled}' if active or enabled else 'unknown'
 port = settings.get('BACNET_IP_PORT', '')
-if port and not port.isdigit():
-    print(f'ROUTE_DECISION=ambiguous invalid BACNET_IP_PORT={port}')
+configured_list_ports = [value.strip() for value in settings.get('BACNET_IP_PORTS', '').split(',') if value.strip()]
+ports = configured_list_ports or ([port] if port else [])
+conflicts = []
+if port and not valid_port(port):
+    conflicts.append(f'invalid BACNET_IP_PORT={port}')
+for index, value in enumerate(configured_list_ports, start=1):
+    if not valid_port(value):
+        conflicts.append(f'invalid BACNET_IP_PORTS[{index}]={value}')
+listener_owners = {}
+try:
+    ss_output = subprocess.run(['sh', '-c', 'ss -H -lunp 2>/dev/null || ss -H -lun 2>/dev/null || true'], text=True, capture_output=True).stdout
+except Exception:
+    ss_output = ''
+for line in ss_output.splitlines():
+    match = re.search(r':([0-9]{2,5})\s', line + ' ')
+    if not match:
+        continue
+    listener_port = int(match.group(1))
+    if str(listener_port) not in set(ports):
+        continue
+    process_match = re.search(r'users:\(\("([^"]+)"', line)
+    owner = process_match.group(1) if process_match else line.strip()
+    listener_owners.setdefault(listener_port, set()).add(owner)
+for listener_port, owners in sorted(listener_owners.items()):
+    if len(owners) > 1:
+        conflicts.append(f'duplicate listener on UDP {listener_port}: {", ".join(sorted(owners))}')
+active_internal = [
+    service for service, state in service_states.items()
+    if 'active' in state.split('/')[0:1] or 'enabled' in state.split('/')[1:2]
+]
+if len(active_internal) > 1:
+    conflicts.append(f'multiple internal router services active/enabled: {", ".join(active_internal)}')
+mode = settings.get('BACNET_PORT_MODE', 'external' if not settings else 'unknown')
+configured_ports = ','.join(dict.fromkeys(value for value in ports if value)) or ('47814' if not settings else 'none')
+preferred_route = '47809-first' if mode == 'dual-47809-first' or configured_ports.startswith('47809,') else 'configured'
+if conflicts:
+    print(f'ROUTE_DECISION=ambiguous {"; ".join(conflicts)}')
 elif settings:
     print('ROUTE_DECISION=preserve_existing')
 else:
     print('ROUTE_DECISION=default_external_47814')
 print(f'DETECTED_BACNET_IP_PORT={port or "none"}')
-print(f'DETECTED_BACNET_PORT_MODE={settings.get("BACNET_PORT_MODE", "none")}')
+print(f'DETECTED_BACNET_PORT_MODE={mode}')
 print(f'DETECTED_BACNET_IP_PORTS={settings.get("BACNET_IP_PORTS", "none")}')
 print(f'DETECTED_EDGE_PROGRAM_PORTS={settings.get("BACNET_EDGE_PROGRAM_PORTS", "none")}')
 print(f'ROUTER_CONFIG_PRESENT={router.exists()}')
 print(f'LEGACY_ROUTER_CONFIG_PRESENT={legacy_router.exists()}')
+print(f'BACNET_CONFIGURED={str(bool(settings)).lower()}')
+print(f'BACNET_CONFIDENCE={"ambiguous" if conflicts else "confirmed"}')
+print(f'BACNET_MODE={"external_dual_port" if mode.startswith("dual-") else mode}')
+print(f'CONFIGURED_BACNET_PORTS={configured_ports}')
+print(f'PREFERRED_ROUTE={preferred_route}')
+print(f'INTERNAL_EDGE_ROUTER_SERVICES={"disabled" if not active_internal else "active_or_enabled"}')
+print(f'ROUTE_FILES={"preserve_unchanged" if router.exists() or legacy_router.exists() or settings else "none"}')
+print(f'UPDATE_ALLOWED={"false" if conflicts else "true"}')
+print(f'BACNET_CONFLICT={"; ".join(conflicts) if conflicts else "None"}')
+for service in services:
+    print(f'SERVICE_STATE_{service}={service_states.get(service, "unknown")}')
 if router.exists():
     print('INTERNAL_EDGE_ROUTER_CONFIG=router-config.json present; preserve')
 elif legacy_router.exists():
@@ -1624,9 +1766,22 @@ class LegacyUpgradeRunner:
         self.log.append("\nCheckpoint summary:\nLegacy edge-only candidate: YES\nProceed with copied-folder update path: YES\n")
 
     def write_preflight_summary(self, output: str) -> None:
-        route_decision = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("ROUTE_DECISION=")), "unknown")
+        fields = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        route_decision = fields.get("ROUTE_DECISION", "unknown")
+        decision_label = {
+            "preserve_existing": "Preserve existing",
+            "default_external_47814": "Default external 47814",
+        }.get(route_decision.split(" ", 1)[0], route_decision)
         port = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("DETECTED_BACNET_IP_PORT=")), "unknown")
         mode = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("DETECTED_BACNET_PORT_MODE=")), "unknown")
+        configured_ports = fields.get("CONFIGURED_BACNET_PORTS") or fields.get("DETECTED_BACNET_IP_PORTS", "unknown")
+        configured_ports_label = configured_ports.replace(",", ", ") if configured_ports not in {"unknown", "none"} else configured_ports
+        preferred_route = fields.get("PREFERRED_ROUTE", "unknown").replace("-", " ")
+        services = fields.get("INTERNAL_EDGE_ROUTER_SERVICES", "unknown")
+        services_label = "Disabled" if services == "disabled" else services.replace("_", " ")
+        route_files = fields.get("ROUTE_FILES", "unknown")
+        route_files_label = "Preserved unchanged" if route_files == "preserve_unchanged" else route_files.replace("_", " ")
+        conflict = fields.get("BACNET_CONFLICT", "unknown")
         agent_version = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("EDGE_AGENT_VERSION=")), "unknown")
         sudo_state = "yes" if "SUDO_AVAILABLE=yes" in output else "not confirmed"
         backup_path = "/home/swadmin" if "BACKUP_PATH_WRITABLE=/home/swadmin" in output else "not confirmed"
@@ -1640,10 +1795,16 @@ class LegacyUpgradeRunner:
                     "Detected current agent version": agent_version,
                     "Target UI version": DEFAULT_EDGE_RELEASE,
                     "Target agent version": DEFAULT_EDGE_RELEASE,
+                    "BACnet decision": decision_label,
+                    "Configured ports": configured_ports_label,
+                    "Primary/source setting": port,
+                    "Preferred route order": preferred_route,
+                    "Internal Edge router services": services_label,
+                    "Existing router config files": route_files_label,
+                    "Conflict": conflict,
                     "Detected BACnet route mode": mode,
                     "Detected external router port": port,
-                    "Internal Edge-router state": "preserve existing config if present; otherwise disabled",
-                    "Preservation/default decision": route_decision,
+                    "BACNET_IP_PORT note": "BACNET_IP_PORT is not necessarily the external router destination by itself; interpret BACNET_IP_PORTS and route mode together.",
                     "Package/manifest checksum status": release_package_status(self.request.release_manifest_path),
                     "Pre-upgrade backup status and path": backup_path,
                     "Sudo available": sudo_state,
