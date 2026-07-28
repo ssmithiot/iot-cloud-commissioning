@@ -46,6 +46,7 @@ DEFAULT_EDGE_UPDATE_REF = "63b18c961d095fdbac2bcbd645ee4a6d164fcf87"
 DEFAULT_EDGE_RELEASE = "0.1.9"
 DEFAULT_RELEASE_MANIFEST = str(Path(__file__).resolve().parent / "releases" / "manifests" / "edge-0.1.9.json")
 DEFAULT_EDGE_UI_COMMIT = "b4dc654793af17a2a440baa5142b8eee07e08880"
+DEFAULT_EDGE_UI_DATA_DIR = "/home/swadmin/edge-bacnet-ui-v2/data"
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
@@ -1253,7 +1254,7 @@ cloud_url: {request.cloud_url}
 tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
 tunnel_request_timeout_sec: 900
-edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data
+edge_ui_data_dir: {DEFAULT_EDGE_UI_DATA_DIR}
 
 bacnet_default_port: {port}
 heartbeat_interval_sec: 30
@@ -1268,6 +1269,91 @@ bacnet:
   lock_path: /tmp/iot-cloud-commissioning-bacnet-{port}.lock
   timeout_sec: 10
 """
+
+
+def edge_ui_data_dir_config_script(
+    config_path: str = "/etc/iot-cx-agent/agent.yaml",
+    default_path: str = DEFAULT_EDGE_UI_DATA_DIR,
+) -> str:
+    return f"""
+from pathlib import Path
+import re
+
+config_path = Path({config_path!r})
+default_path = {default_path!r}
+text = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+lines = text.splitlines()
+pattern = re.compile(r"^edge_ui_data_dir\\s*:(.*)$")
+existing_values = []
+for line in lines:
+    match = pattern.match(line)
+    if match:
+        existing_values.append(match.group(1).strip())
+
+resolved = next((value for value in existing_values if value), default_path)
+action = "preserve" if any(value for value in existing_values) else "add"
+new_lines = []
+wrote = False
+for line in lines:
+    if pattern.match(line):
+        if not wrote:
+            new_lines.append(f"edge_ui_data_dir: {{resolved}}")
+            wrote = True
+        continue
+    new_lines.append(line)
+if not wrote:
+    if new_lines and new_lines[-1].strip():
+        new_lines.append("")
+    new_lines.append(f"edge_ui_data_dir: {{resolved}}")
+config_path.write_text("\\n".join(new_lines) + "\\n", encoding="utf-8")
+print(f"EDGE_UI_DATA_DIR_ACTION={{action}}")
+print(f"EDGE_UI_DATA_DIR={{resolved}}")
+"""
+
+
+def edge_ui_data_dir_config_command() -> str:
+    script_b64 = shell_quote(b64(edge_ui_data_dir_config_script()))
+    script_path = "/tmp/iot-cx-ensure-edge-ui-data-dir.py"
+    return (
+        f"printf %s {script_b64} | base64 -d > {script_path} "
+        f"&& sudo -S -p '' python3 {script_path}; code=$?; rm -f {script_path}; exit $code"
+    )
+
+
+def edge_ui_data_dir_validation_command(
+    config_path: str = "/etc/iot-cx-agent/agent.yaml",
+    service_name: str = "iot-cx-agent.service",
+) -> str:
+    cfg = shell_quote(config_path)
+    service = shell_quote(service_name)
+    script = """set -eu
+cfg=__CONFIG_PATH__
+service=__SERVICE_NAME__
+value=$(awk -F: '/^edge_ui_data_dir:/{sub(/^[ \t]+/, "", $2); print $2; exit}' "$cfg" 2>/dev/null || true)
+echo "EDGE_UI_DATA_DIR=$value"
+if [ -z "$value" ]; then
+  echo "EDGE_UI_DATA_DIR_VALIDATION=Failed"
+  echo "edge_ui_data_dir is missing or blank" >&2
+  exit 1
+fi
+if [ ! -d "$value" ]; then
+  echo "EDGE_UI_DATA_DIR_VALIDATION=Failed"
+  echo "edge_ui_data_dir does not exist: $value" >&2
+  exit 1
+fi
+svc_user=$(systemctl show "$service" -p User --value 2>/dev/null || true)
+[ -n "$svc_user" ] || svc_user=root
+if [ "$svc_user" = root ]; then
+  test -x "$value" && test -r "$value" && test -w "$value"
+else
+  sudo -n -u "$svc_user" sh -c 'test -x "$1" && test -r "$1" && test -w "$1"' sh "$value"
+fi
+echo "EDGE_UI_DATA_DIR_VALIDATION=Passed"
+""".replace("__CONFIG_PATH__", cfg).replace("__SERVICE_NAME__", service)
+    return (
+        "sudo -S -p '' sh -c "
+        + shell_quote(script)
+    )
 
 
 def config_commands(request: UpgradeRequest, gateway_token: str, bacnet_default_port: str = "47814") -> list[tuple[str, str, bool]]:
@@ -1294,6 +1380,7 @@ def install_agent_commands(request: UpgradeRequest) -> list[tuple[str, str, bool
         ("upgrade pip", f"cd {repo}/edge-agent && .venv/bin/python -m pip install --upgrade pip", False),
         ("install requirements", f"cd {repo}/edge-agent && .venv/bin/python -m pip install -r requirements.txt", False),
         ("install agent package", f"cd {repo}/edge-agent && .venv/bin/python -m pip install -e .", False),
+        ("ensure Edge UI data dir config (add if missing, preserve existing)", edge_ui_data_dir_config_command(), True),
         ("skip data folder ownership check", "echo 'data folder ownership check skipped in legacy nested SSH mode'", False),
     ]
 
@@ -1321,6 +1408,7 @@ def final_commands(expected_bacnet_default_port: str = "47814") -> list[tuple[st
         ("verify supported BACnet tools", "command -v /home/swadmin/bacnet-stack/bin/bacrp && command -v /home/swadmin/bacnet-stack/bin/bacrpm && echo 'bacrp and bacrpm available'", False),
         ("verify BACnet config preservation", f"pre={expected_port}; post=$(awk '/^bacnet_default_port:/{{print $2; exit}}' /etc/iot-cx-agent/agent.yaml); grep -E 'bacnet_default_port:|default_port:|bacrp_path:|bacrpm_path:' /etc/iot-cx-agent/agent.yaml; echo \"BACNET_CONFIG_PRESERVATION=Passed\"; echo \"PRE_UPGRADE_AGENT_DEFAULT_PORT=$pre\"; echo \"POST_UPGRADE_AGENT_DEFAULT_PORT=$post\"; echo \"ROUTE_SETTINGS_CHANGED=No\"; test \"$post\" = \"$pre\"", False),
         ("verify tunnel relay timeout", "grep -E '^tunnel_request_timeout_sec:' /etc/iot-cx-agent/agent.yaml; test \"$(awk '/^tunnel_request_timeout_sec:/{print $2; exit}' /etc/iot-cx-agent/agent.yaml)\" = 900", False),
+        ("verify Edge UI data dir config", edge_ui_data_dir_validation_command(), True),
         ("agent final logs", "journalctl -u iot-cx-agent -n 60 --no-pager -l || true", False),
     ]
 

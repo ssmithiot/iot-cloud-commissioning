@@ -19,6 +19,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     LegacyUpgradeRunner,
     NESTED_UPLOAD_CHUNK_SIZE,
     Redactor,
+    UPDATE_AGENT_PHASES,
     UpgradeJob,
     UpgradeRequest,
     JOBS,
@@ -30,7 +31,10 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     apply_ui_commands,
     DEFAULT_EDGE_UPDATE_REF,
     create_update_zip,
+    edge_ui_data_dir_config_script,
+    edge_ui_data_dir_validation_command,
     final_commands,
+    install_agent_commands,
     inspect_commands,
     load_env_defaults,
     parse_upgrade_request,
@@ -470,6 +474,224 @@ def test_existing_gateway_is_not_converted_to_47814() -> None:
     assert "bacnet_default_port: 47809" in agent_yaml
     assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data" in agent_yaml
     assert "default_port: 47809" in agent_yaml
+
+
+def run_edge_ui_data_dir_config(path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-c", edge_ui_data_dir_config_script(str(path))],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+
+def test_edge_ui_data_dir_missing_key_is_added_with_default_path(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW062\nsite_id: GW062\ncloud_url: https://cloud.example\nGATEWAY_API_TOKEN: should-stay\n",
+        encoding="utf-8",
+    )
+
+    result = run_edge_ui_data_dir_config(config_path)
+
+    updated = config_path.read_text(encoding="utf-8")
+    assert "EDGE_UI_DATA_DIR_ACTION=add" in result.stdout
+    assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data\n" in updated
+    assert "gateway_id: GW062" in updated
+    assert "GATEWAY_API_TOKEN: should-stay" in updated
+
+
+def test_edge_ui_data_dir_correct_existing_value_is_preserved_without_duplication(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW062\nedge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data\nbacnet_default_port: 47814\n",
+        encoding="utf-8",
+    )
+
+    result = run_edge_ui_data_dir_config(config_path)
+
+    updated = config_path.read_text(encoding="utf-8")
+    assert "EDGE_UI_DATA_DIR_ACTION=preserve" in result.stdout
+    assert updated.count("edge_ui_data_dir:") == 1
+    assert "bacnet_default_port: 47814" in updated
+
+
+def test_edge_ui_data_dir_custom_non_empty_value_is_preserved(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text("edge_ui_data_dir: /custom/edge/data\nheartbeat_interval_sec: 30\n", encoding="utf-8")
+
+    run_edge_ui_data_dir_config(config_path)
+
+    updated = config_path.read_text(encoding="utf-8")
+    assert "edge_ui_data_dir: /custom/edge/data\n" in updated
+    assert "/home/swadmin/edge-bacnet-ui-v2/data" not in updated
+
+
+def test_edge_ui_data_dir_blank_value_is_replaced_without_duplicate_key(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text("edge_ui_data_dir:\nbacnet:\n  default_port: 47809\n", encoding="utf-8")
+
+    run_edge_ui_data_dir_config(config_path)
+
+    updated = config_path.read_text(encoding="utf-8")
+    assert updated.count("edge_ui_data_dir:") == 1
+    assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data\n" in updated
+    assert "default_port: 47809" in updated
+
+
+def test_edge_ui_data_dir_duplicate_keys_are_collapsed_preserving_custom_value(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW062\nedge_ui_data_dir:\nedge_ui_data_dir: /custom/data\nedge_ui_data_dir: /other/data\n",
+        encoding="utf-8",
+    )
+
+    run_edge_ui_data_dir_config(config_path)
+
+    updated = config_path.read_text(encoding="utf-8")
+    assert updated.count("edge_ui_data_dir:") == 1
+    assert "edge_ui_data_dir: /custom/data\n" in updated
+
+
+def test_agent_only_phase_selection_applies_config_fix_without_cloud_or_token_phases() -> None:
+    commands = install_agent_commands(make_request())
+    labels = [label for label, _command, _sudo in commands]
+    ensure_command = next(item for item in commands if item[0] == "ensure Edge UI data dir config (add if missing, preserve existing)")
+
+    assert 9 in UPDATE_AGENT_PHASES
+    assert 6 not in UPDATE_AGENT_PHASES
+    assert 8 not in UPDATE_AGENT_PHASES
+    assert "ensure Edge UI data dir config (add if missing, preserve existing)" in labels
+    assert ensure_command[2] is True
+    assert "edge_ui_data_dir" in edge_ui_data_dir_config_script()
+    assert "GATEWAY_API_TOKEN" not in "\n".join(command for _label, command, _sudo in commands)
+
+
+def test_edge_ui_data_dir_config_does_not_change_identity_tokens_bacnet_or_route_settings(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    original = """gateway_id: GW062
+site_id: SITE062
+cloud_url: https://cloud.example
+gateway_api_token: local-token
+bacnet_default_port: 47809
+tunnel_enabled: true
+heartbeat_interval_sec: 30
+bacnet:
+  default_port: 47809
+  bacrp_path: /custom/bacrp
+  bacrpm_path: /custom/bacrpm
+route_metadata:
+  profile: keep-me
+"""
+    config_path.write_text(original, encoding="utf-8")
+
+    run_edge_ui_data_dir_config(config_path)
+
+    updated = config_path.read_text(encoding="utf-8")
+    for line in original.splitlines():
+        assert line in updated
+    assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data" in updated
+
+
+def test_dry_run_displays_edge_ui_data_dir_plan_without_modifying_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text("gateway_id: GW062\n", encoding="utf-8")
+    request = replace(make_request(), dry_run=True)
+    job_id = "dry-run-edge-ui-data-dir"
+    with JOBS_LOCK:
+        JOBS[job_id] = UpgradeJob(request=request)
+    runner = LegacyUpgradeRunner(job_id, request)
+    try:
+        runner.run_commands([("ensure Edge UI data dir config (add if missing, preserve existing)", f"{sys.executable} -c {shlex.quote(edge_ui_data_dir_config_script(str(config_path)))}", False)])
+        with JOBS_LOCK:
+            log_text = JOBS[job_id].log
+    finally:
+        with JOBS_LOCK:
+            JOBS.pop(job_id, None)
+
+    assert config_path.read_text(encoding="utf-8") == "gateway_id: GW062\n"
+    assert "ensure Edge UI data dir config" in log_text
+
+
+def make_fake_runtime_bin(tmp_path: Path, *, service_user: str = "root", fail_inner_sudo: bool = False) -> Path:
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    (fakebin / "systemctl").write_text(
+        f"#!/bin/sh\nif [ \"$1\" = show ]; then printf '%s\\n' {shlex.quote(service_user)}; exit 0; fi\nexit 1\n",
+        encoding="utf-8",
+    )
+    (fakebin / "sudo").write_text(
+        f"""#!/bin/sh
+if [ "$1" = "-n" ]; then
+  {"exit 1" if fail_inner_sudo else "shift; if [ \"$1\" = \"-u\" ]; then shift 2; fi; exec \"$@\""}
+fi
+while [ "$1" = "-S" ] || [ "$1" = "-p" ] || [ "$1" = "" ]; do
+  if [ "$1" = "-p" ]; then shift 2; else shift; fi
+done
+exec "$@"
+""",
+        encoding="utf-8",
+    )
+    (fakebin / "systemctl").chmod(0o755)
+    (fakebin / "sudo").chmod(0o755)
+    return fakebin
+
+
+def run_edge_ui_data_dir_validation(config_path: Path, tmp_path: Path, *, service_user: str = "root", fail_inner_sudo: bool = False) -> subprocess.CompletedProcess[str]:
+    fakebin = make_fake_runtime_bin(tmp_path, service_user=service_user, fail_inner_sudo=fail_inner_sudo)
+    env = {"PATH": f"{fakebin}:{Path('/usr/bin')}:{Path('/bin')}"}
+    return subprocess.run(
+        edge_ui_data_dir_validation_command(str(config_path)),
+        shell=True,
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+
+def test_final_verification_passes_for_valid_accessible_edge_ui_data_dir(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(f"edge_ui_data_dir: {data_dir}\n", encoding="utf-8")
+
+    result = run_edge_ui_data_dir_validation(config_path, tmp_path)
+
+    assert result.returncode == 0
+    assert f"EDGE_UI_DATA_DIR={data_dir}" in result.stdout
+    assert "EDGE_UI_DATA_DIR_VALIDATION=Passed" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("config_text", "expected_error"),
+    [
+        ("gateway_id: GW062\n", "missing or blank"),
+        ("edge_ui_data_dir:\n", "missing or blank"),
+        ("edge_ui_data_dir: /does/not/exist\n", "does not exist"),
+    ],
+)
+def test_final_verification_fails_for_missing_blank_or_nonexistent_edge_ui_data_dir(tmp_path: Path, config_text: str, expected_error: str) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(config_text, encoding="utf-8")
+
+    result = run_edge_ui_data_dir_validation(config_path, tmp_path)
+
+    assert result.returncode != 0
+    assert "EDGE_UI_DATA_DIR_VALIDATION=Failed" in result.stdout
+    assert expected_error in result.stderr
+
+
+def test_final_verification_fails_for_inaccessible_service_user_path(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(f"edge_ui_data_dir: {data_dir}\n", encoding="utf-8")
+
+    result = run_edge_ui_data_dir_validation(config_path, tmp_path, service_user="swadmin", fail_inner_sudo=True)
+
+    assert result.returncode != 0
+    assert f"EDGE_UI_DATA_DIR={data_dir}" in result.stdout
 
 
 def test_repo_release_validation_allows_deploy_backups_runtime_folder(tmp_path: Path) -> None:
