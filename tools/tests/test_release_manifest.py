@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import tarfile
 
 import pytest
 
@@ -51,3 +52,33 @@ def test_edge_source_preflight_rejects_dirty_or_wrong_tag(tmp_path: Path, monkey
     monkeypatch.setattr("tools.release_preflight.git", fake_git)
     assert validate_edge_source(path, tmp_path) == "abc"
     assert calls
+
+
+def test_current_019_ui_artifact_contains_only_code_inventory(tmp_path: Path) -> None:
+    root = Path(__file__).resolve().parents[2]
+    artifact = root / "tools" / "releases" / "gw006-edge-ui-0.1.9-code.tar.gz"
+    with tarfile.open(artifact, "r:gz") as archive:
+        names = sorted(archive.getnames())
+        archive.extractall(tmp_path, filter="data")
+
+    required = {
+        "app.py",
+        "edge_program_engine.py",
+        "edge_trend_store.py",
+        "timed_override_store.py",
+        "router_config.py",
+        "README.md",
+        "requirements.txt",
+        "templates/edge_trends_disabled.html",
+        "static/css/sidebar_nav.css",
+        "deploy/iot-cx-edge-router-control.py",
+        "deploy/edge-bacnet-ui.service.example",
+        "deploy/iot-cx-bacnet-router.service.example",
+    }
+    assert required <= set(names)
+    assert (tmp_path / "templates" / "edge_trends_disabled.html").is_file()
+    forbidden_parts = {"data", ".git", ".local-backups", "__pycache__"}
+    assert not any(any(part in forbidden_parts for part in Path(name).parts) for name in names)
+    assert not any(name.endswith((".db", ".sqlite", ".pyc")) for name in names)
+    assert "start.sh" not in names
+    assert ".env" not in names

@@ -134,7 +134,7 @@ def write_manifest(path: Path, edge_ui_tag: str) -> Path:
                 "base_release": "0.1.8",
                 "edge_ui_tag": edge_ui_tag,
                 "artifact": "tools/releases/gw006-edge-ui-0.1.9-code.tar.gz",
-                "sha256": "f7acfbaad0d83a63c5b6fac2db80cae296ae07fe332d2d660dc92480dbe1a475",
+                "sha256": "a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683",
                 "preserves": ["data/", ".env", "start.sh", "gateway identity", "credentials"],
                 "rollback_release": "0.1.8",
             }
@@ -397,9 +397,9 @@ def test_ambiguous_route_text_no_longer_blocks_existing_upgrade() -> None:
 def test_final_deployment_blocks_ui_source_not_expected_commit(tmp_path: Path) -> None:
     source = tmp_path / "ui"
     head = make_git_source(source)
-    manifest = write_manifest(tmp_path / "manifest.json", "b4dc654793af17a2a440baa5142b8eee07e08880")
+    manifest = write_manifest(tmp_path / "manifest.json", "719d4a82ed972269d44db7c0638800b26e82002d")
 
-    assert head != "b4dc654793af17a2a440baa5142b8eee07e08880"
+    assert head != "719d4a82ed972269d44db7c0638800b26e82002d"
     with pytest.raises(RuntimeError, match="UI source validation failed"):
         validate_ui_source_for_deploy(str(source), str(manifest))
 
@@ -1226,7 +1226,7 @@ def test_create_update_zip_includes_019_runtime_inventory(tmp_path: Path, monkey
     (source / "start.sh").write_text("site startup", encoding="utf-8")
     (source / ".local-backups").mkdir()
     (source / ".local-backups" / "app.py").write_text("backup", encoding="utf-8")
-    monkeypatch.setattr(legacy_webapp, "validate_ui_source_for_deploy", lambda _source, _manifest: "b4dc654")
+    monkeypatch.setattr(legacy_webapp, "validate_ui_source_for_deploy", lambda _source, _manifest: "719d4a8")
 
     zip_path = create_update_zip(str(source), "manifest.json")
 
