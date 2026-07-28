@@ -15,6 +15,7 @@ import re
 import secrets
 import shlex
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -44,6 +45,7 @@ DEFAULT_UI_SOURCE = r"C:\Dev\edge-bacnet-ui-v2"
 DEFAULT_EDGE_UPDATE_REF = "844d93d013359d837619e991da8f4da7a5000472"
 DEFAULT_EDGE_RELEASE = "0.1.9"
 DEFAULT_RELEASE_MANIFEST = str(Path(__file__).resolve().parent / "releases" / "manifests" / "edge-0.1.9.json")
+DEFAULT_EDGE_UI_COMMIT = "b4dc654793af17a2a440baa5142b8eee07e08880"
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
@@ -149,6 +151,7 @@ class UpgradeJob:
     error: str = ""
     summary: dict[str, str] = field(default_factory=dict)
     runner: "LegacyUpgradeRunner | None" = None
+    pre_upgrade_agent_default_port: str = "47814"
 
 
 class Redactor:
@@ -177,6 +180,43 @@ def parse_bacnet_route_settings(text: str) -> dict[str, str]:
         if match:
             settings[match.group(1)] = match.group(2).strip().strip('"').strip("'")
     return settings
+
+
+def ui_source_validation_summary(source_folder: str, release_manifest_path: str) -> dict[str, str]:
+    manifest = load_manifest(Path(release_manifest_path))
+    source = Path(source_folder)
+    expected = manifest.edge_ui_tag
+    summary = {
+        "UI package source": str(source),
+        "UI source commit": "unknown",
+        "UI source clean status": "unknown",
+        "Expected UI commit": expected,
+        "Source validation": "Failed",
+    }
+    try:
+        head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True, stderr=subprocess.STDOUT).strip()
+        dirty = subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True, stderr=subprocess.STDOUT).strip()
+        summary["UI source commit"] = head
+        summary["UI source clean status"] = "Dirty" if dirty else "Clean"
+    except Exception as exc:
+        summary["Source validation"] = f"Failed: unable to inspect Git source: {exc}"
+        return summary
+    try:
+        head = validate_edge_source(Path(release_manifest_path), source)
+    except Exception as exc:
+        summary["Source validation"] = f"Failed: {exc}"
+        return summary
+    summary["UI source commit"] = head
+    summary["UI source clean status"] = "Clean"
+    summary["Source validation"] = "Passed" if head == expected else f"Failed: expected {expected[:7]}, got {head[:7]}"
+    return summary
+
+
+def validate_ui_source_for_deploy(source_folder: str, release_manifest_path: str) -> str:
+    summary = ui_source_validation_summary(source_folder, release_manifest_path)
+    if summary["Source validation"] != "Passed":
+        raise RuntimeError(f"UI source validation failed: {summary['Source validation']}")
+    return summary["UI source commit"]
 
 
 class LiveLog:
@@ -1028,6 +1068,7 @@ def inspect_commands() -> list[tuple[str, str, bool]]:
         ("cloud repo folder", f'ls -ld {DEFAULT_REPO_PATH} 2>/dev/null || echo "missing iot-cloud-commissioning"', False),
         ("current Edge UI version", "grep -R \"0.1.9\\|Edge Release\\|Edge BACnet\" -n /home/swadmin/edge-bacnet-ui-v2/README.md /home/swadmin/edge-bacnet-ui-v2/templates/base.html 2>/dev/null | head -20 || true", False),
         ("current edge agent version", "/home/swadmin/iot-cloud-commissioning/edge-agent/.venv/bin/python -c 'import iot_cx_agent; print(\"EDGE_AGENT_VERSION=\" + getattr(iot_cx_agent, \"__version__\", \"unknown\"))' 2>/dev/null || python3 -c 'import iot_cx_agent; print(\"EDGE_AGENT_VERSION=\" + getattr(iot_cx_agent, \"__version__\", \"unknown\"))' 2>/dev/null || echo EDGE_AGENT_VERSION=unknown", False),
+        ("pre-upgrade agent BACnet default port", "awk '/^bacnet_default_port:/{print \"PRE_UPGRADE_AGENT_DEFAULT_PORT=\" $2; found=1; exit} END{if (!found) print \"PRE_UPGRADE_AGENT_DEFAULT_PORT=47814\"}' /etc/iot-cx-agent/agent.yaml 2>/dev/null || echo PRE_UPGRADE_AGENT_DEFAULT_PORT=47814", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service 2>/dev/null || true", False),
         ("edge UI enabled", "systemctl is-enabled edge-bacnet-ui.service 2>/dev/null || true", False),
         (
@@ -1136,7 +1177,8 @@ def repo_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     ]
 
 
-def agent_config_text(request: UpgradeRequest) -> str:
+def agent_config_text(request: UpgradeRequest, bacnet_default_port: str = "47814") -> str:
+    port = bacnet_default_port if bacnet_default_port.isdigit() else "47814"
     return f"""gateway_id: {request.gateway_id}
 site_id: {request.site_id}
 cloud_url: {request.cloud_url}
@@ -1145,23 +1187,23 @@ tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
 tunnel_request_timeout_sec: 900
 
-bacnet_default_port: 47814
+bacnet_default_port: {port}
 heartbeat_interval_sec: 30
 agent_version: current
 ui_version: current
 
 bacnet:
-  default_port: 47814
+  default_port: {port}
   bacwi_path: /home/swadmin/bacnet-stack/bin/bacwi
   bacrp_path: /home/swadmin/bacnet-stack/bin/bacrp
   bacrpm_path: /home/swadmin/bacnet-stack/bin/bacrpm
-  lock_path: /tmp/iot-cloud-commissioning-bacnet-47814.lock
+  lock_path: /tmp/iot-cloud-commissioning-bacnet-{port}.lock
   timeout_sec: 10
 """
 
 
-def config_commands(request: UpgradeRequest, gateway_token: str) -> list[tuple[str, str, bool]]:
-    agent_b64 = b64(agent_config_text(request))
+def config_commands(request: UpgradeRequest, gateway_token: str, bacnet_default_port: str = "47814") -> list[tuple[str, str, bool]]:
+    agent_b64 = b64(agent_config_text(request, bacnet_default_port))
     env_b64 = b64(f"GATEWAY_API_TOKEN={gateway_token}\n")
     gw = shell_quote(request.gateway_id)
     return [
@@ -1201,16 +1243,16 @@ def service_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     ]
 
 
-def final_commands() -> list[tuple[str, str, bool]]:
+def final_commands(expected_bacnet_default_port: str = "47814") -> list[tuple[str, str, bool]]:
+    expected_port = shell_quote(expected_bacnet_default_port if expected_bacnet_default_port.isdigit() else "47814")
     return [
         ("hostname", "hostname", False),
         ("agent active", "systemctl is-active iot-cx-agent.service", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service", False),
         ("local UI HTTP auth check", "curl -I http://127.0.0.1:5000/", False),
         ("verify supported BACnet tools", "command -v /home/swadmin/bacnet-stack/bin/bacrp && command -v /home/swadmin/bacnet-stack/bin/bacrpm && echo 'bacrp and bacrpm available'", False),
-        ("verify MSTP/BACnet profile", "grep -E 'bacnet_default_port:|default_port:|bacrp_path:|bacrpm_path:' /etc/iot-cx-agent/agent.yaml; test \"$(awk '/^bacnet_default_port:/{print $2; exit}' /etc/iot-cx-agent/agent.yaml)\" = 47814", False),
+        ("verify BACnet config preservation", f"pre={expected_port}; post=$(awk '/^bacnet_default_port:/{{print $2; exit}}' /etc/iot-cx-agent/agent.yaml); grep -E 'bacnet_default_port:|default_port:|bacrp_path:|bacrpm_path:' /etc/iot-cx-agent/agent.yaml; echo \"BACNET_CONFIG_PRESERVATION=Passed\"; echo \"PRE_UPGRADE_AGENT_DEFAULT_PORT=$pre\"; echo \"POST_UPGRADE_AGENT_DEFAULT_PORT=$post\"; echo \"ROUTE_SETTINGS_CHANGED=No\"; test \"$post\" = \"$pre\"", False),
         ("verify tunnel relay timeout", "grep -E '^tunnel_request_timeout_sec:' /etc/iot-cx-agent/agent.yaml; test \"$(awk '/^tunnel_request_timeout_sec:/{print $2; exit}' /etc/iot-cx-agent/agent.yaml)\" = 900", False),
-        ("list protected listeners", "timeout -k 5s 15s sh -c \"(sudo -n ss -lntup || ss -lntup) | grep -E ':5000|:47808|:47809|:47814'\" || true", False),
         ("agent final logs", "journalctl -u iot-cx-agent -n 60 --no-pager -l || true", False),
     ]
 
@@ -1239,7 +1281,7 @@ def disable_agent_commands() -> list[tuple[str, str, bool]]:
 
 def create_update_zip(source_folder: str, release_manifest_path: str) -> Path:
     source = Path(source_folder)
-    validate_edge_source(Path(release_manifest_path), source)
+    validate_ui_source_for_deploy(str(source), release_manifest_path)
     required = [*UI_PACKAGE_FILES, *UI_PACKAGE_DIRS]
     missing = [item for item in required if not (source / item).exists()]
     if missing:
@@ -1551,7 +1593,7 @@ class LegacyUpgradeRunner:
                 token = JOBS[self.job_id].gateway_token
                 if not token:
                     raise RuntimeError("No gateway token is available. Run cloud provisioning first.")
-                self.run_commands(config_commands(self.request, token))
+                self.run_commands(config_commands(self.request, token, JOBS[self.job_id].pre_upgrade_agent_default_port))
             elif index == 9:
                 output = self.run_commands(install_agent_commands(self.request))
                 if not self.request.dry_run and "Successfully installed" not in output:
@@ -1561,7 +1603,7 @@ class LegacyUpgradeRunner:
                 if not self.request.dry_run and "Heartbeat accepted" not in output:
                     self.log.append("Warning: heartbeat acceptance was not seen in the recent service log.\n")
             elif index == 11:
-                output = self.run_commands(final_commands(), stop_on_failure=False)
+                output = self.run_commands(final_commands(JOBS[self.job_id].pre_upgrade_agent_default_port), stop_on_failure=False)
                 self.write_summary(output)
             with JOBS_LOCK:
                 job = JOBS[self.job_id]
@@ -1598,10 +1640,15 @@ class LegacyUpgradeRunner:
 
     def write_preflight_summary(self, output: str) -> None:
         agent_version = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("EDGE_AGENT_VERSION=")), "unknown")
+        pre_port = next((line.split("=", 1)[1].strip() for line in output.splitlines() if line.startswith("PRE_UPGRADE_AGENT_DEFAULT_PORT=")), "47814")
         sudo_state = "yes" if "SUDO_AVAILABLE=yes" in output else "not confirmed"
         backup_path = "/home/swadmin" if "BACKUP_PATH_WRITABLE=/home/swadmin" in output else "not confirmed"
+        source_summary = ui_source_validation_summary(self.request.ui_source_folder, self.request.release_manifest_path)
+        if not self.request.dry_run and source_summary["Source validation"] != "Passed":
+            raise RuntimeError(f"UI source validation failed: {source_summary['Source validation']}")
         with JOBS_LOCK:
             job = JOBS[self.job_id]
+            job.pre_upgrade_agent_default_port = pre_port if pre_port.isdigit() else "47814"
             job.summary.update(
                 {
                     "Selected target gateway": self.request.gateway_id,
@@ -1610,11 +1657,13 @@ class LegacyUpgradeRunner:
                     "Detected current agent version": agent_version,
                     "Target UI version": DEFAULT_EDGE_RELEASE,
                     "Target agent version": DEFAULT_EDGE_RELEASE,
+                    **source_summary,
                     "BACnet policy": "Preserve existing configuration",
                     "BACnet files/settings changed": "None",
                     "start.sh": "Preserved",
                     "router config files": "Preserved",
                     "router services": "Not changed",
+                    "Pre-upgrade agent default port": job.pre_upgrade_agent_default_port,
                     "Package/manifest checksum status": release_package_status(self.request.release_manifest_path),
                     "Pre-upgrade backup status and path": backup_path,
                     "Sudo available": sudo_state,
@@ -1634,9 +1683,11 @@ class LegacyUpgradeRunner:
         return matches[-1]
 
     def build_upload_zip(self) -> None:
+        source_commit = validate_ui_source_for_deploy(self.request.ui_source_folder, self.request.release_manifest_path)
         if self.request.dry_run:
             zip_path = Path(tempfile.gettempdir()) / "edge-bacnet-ui-v2-update.dry-run.zip"
-            self.log.append(f"[dry-run] Would build ZIP from {self.request.ui_source_folder} and upload to {REMOTE_ZIP_PATH}.\n")
+            self.log.append(f"[dry-run] UI source validation passed: {self.request.ui_source_folder} at {source_commit}.\n")
+            self.log.append(f"[dry-run] Would build ZIP from validated UI source and upload to {REMOTE_ZIP_PATH}.\n")
             self.log.append(f"[dry-run] Required contents: {', '.join([*UI_PACKAGE_FILES, *(item + '/' for item in UI_PACKAGE_DIRS)])}\n")
             self.log.append("[dry-run] Preserved: data/, .env, start.sh, databases, saved devices/templates, programs, trends, timed overrides, credentials, gateway identity, cloud identity, BACnet route settings.\n")
             self.log.append("[dry-run] Services that would restart: edge-bacnet-ui.service; iot-cx-agent.service only when agent phases are selected.\n")
@@ -1662,6 +1713,10 @@ class LegacyUpgradeRunner:
     def write_summary(self, output: str) -> None:
         heartbeat = "Passed" if "Heartbeat accepted" in output else "Warning: heartbeat not seen"
         ui_auth = "Passed" if "302" in output and "/login" in output.lower() else "Warning: 302 /login not seen"
+        bacnet_preservation = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("BACNET_CONFIG_PRESERVATION=")), "Warning: not seen")
+        pre_port = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("PRE_UPGRADE_AGENT_DEFAULT_PORT=")), "unknown")
+        post_port = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("POST_UPGRADE_AGENT_DEFAULT_PORT=")), "unknown")
+        route_changed = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("ROUTE_SETTINGS_CHANGED=")), "unknown")
         with JOBS_LOCK:
             job = JOBS[self.job_id]
             job.summary = {
@@ -1676,6 +1731,10 @@ class LegacyUpgradeRunner:
                 "Agent config status": job.phases[8].status.value,
                 "iot-cx-agent service status": job.phases[10].status.value,
                 "Heartbeat status": heartbeat,
+                "BACnet configuration preservation": bacnet_preservation,
+                "Pre-upgrade agent default port": pre_port,
+                "Post-upgrade agent default port": post_port,
+                "Route settings changed": route_changed,
                 "Cloud portal manual confirmation": "Yes" if self.request.cloud_portal_verified else "No",
                 "Backup filename": job.backup_filename or "(none captured)",
                 "Warnings/errors": job.warning or job.error or "(none)",

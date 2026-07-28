@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import socket
 import subprocess
 import sys
@@ -27,6 +28,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     apply_ui_commands,
     DEFAULT_EDGE_UPDATE_REF,
     create_update_zip,
+    final_commands,
     inspect_commands,
     load_env_defaults,
     parse_upgrade_request,
@@ -38,6 +40,8 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     sudo_systemctl_timeout,
     start_sh_update_script,
     update_start_sh_command,
+    ui_source_validation_summary,
+    validate_ui_source_for_deploy,
 )
 
 
@@ -110,6 +114,41 @@ def run_start_sh_update(path: Path) -> None:
         [sys.executable, "-c", start_sh_update_script("admin", "ui-secret", str(path))],
         check=True,
     )
+
+
+def write_manifest(path: Path, edge_ui_tag: str) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "edge_release": "0.1.9",
+                "base_release": "0.1.8",
+                "edge_ui_tag": edge_ui_tag,
+                "artifact": "tools/releases/gw006-edge-ui-0.1.9-code.tar.gz",
+                "sha256": "f7acfbaad0d83a63c5b6fac2db80cae296ae07fe332d2d660dc92480dbe1a475",
+                "preserves": ["data/", ".env", "start.sh", "gateway identity", "credentials"],
+                "rollback_release": "0.1.8",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def make_git_source(path: Path) -> str:
+    path.mkdir()
+    subprocess.run(["git", "init"], cwd=path, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
+    (path / "app.py").write_text("print('ui')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-m", "ui"], cwd=path, check=True, stdout=subprocess.DEVNULL)
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=path, text=True).strip()
+
+
+def decoded_agent_yaml(commands: list[tuple[str, str, bool]]) -> str:
+    command = next(command for label, command, _sudo in commands if label == "write agent.yaml")
+    encoded = command.split("printf %s ", 1)[1].split(" | base64", 1)[0].strip("'")
+    return base64.b64decode(encoded).decode("utf-8")
 
 
 def make_runner(job_id: str = "route-preflight-test") -> LegacyUpgradeRunner:
@@ -295,6 +334,86 @@ def test_ambiguous_route_text_no_longer_blocks_existing_upgrade() -> None:
     finally:
         with JOBS_LOCK:
             JOBS.pop("ambiguous-text-is-ignored-test", None)
+
+
+def test_final_deployment_blocks_ui_source_not_expected_commit(tmp_path: Path) -> None:
+    source = tmp_path / "ui"
+    head = make_git_source(source)
+    manifest = write_manifest(tmp_path / "manifest.json", "b4dc654793af17a2a440baa5142b8eee07e08880")
+
+    assert head != "b4dc654793af17a2a440baa5142b8eee07e08880"
+    with pytest.raises(RuntimeError, match="UI source validation failed"):
+        validate_ui_source_for_deploy(str(source), str(manifest))
+
+
+def test_dirty_ui_source_is_blocked(tmp_path: Path) -> None:
+    source = tmp_path / "ui"
+    head = make_git_source(source)
+    manifest = write_manifest(tmp_path / "manifest.json", head)
+    (source / "app.py").write_text("dirty\n", encoding="utf-8")
+
+    summary = ui_source_validation_summary(str(source), str(manifest))
+
+    assert summary["UI source commit"] == head
+    assert summary["UI source clean status"] == "Dirty"
+    assert summary["Expected UI commit"] == head
+    assert summary["Source validation"].startswith("Failed")
+    assert "dirty" in summary["Source validation"]
+    with pytest.raises(RuntimeError, match="dirty"):
+        validate_ui_source_for_deploy(str(source), str(manifest))
+
+
+def test_valid_clean_expected_ui_source_is_accepted(tmp_path: Path) -> None:
+    source = tmp_path / "ui"
+    head = make_git_source(source)
+    manifest = write_manifest(tmp_path / "manifest.json", head)
+
+    summary = ui_source_validation_summary(str(source), str(manifest))
+
+    assert validate_ui_source_for_deploy(str(source), str(manifest)) == head
+    assert summary["UI package source"] == str(source)
+    assert summary["UI source commit"] == head
+    assert summary["UI source clean status"] == "Clean"
+    assert summary["Expected UI commit"] == head
+    assert summary["Source validation"] == "Passed"
+
+
+def test_existing_47809_agent_default_remains_47809() -> None:
+    config = agent_config_text(make_request(), "47809")
+    final = "\n".join(command for _label, command, _sudo in final_commands("47809"))
+
+    assert "bacnet_default_port: 47809" in config
+    assert "default_port: 47809" in config
+    assert "bacnet-47809.lock" in config
+    assert "pre=47809" in final
+    assert "= 47814" not in final
+
+
+def test_existing_47814_agent_default_remains_47814() -> None:
+    config = agent_config_text(make_request(), "47814")
+    final = "\n".join(command for _label, command, _sudo in final_commands("47814"))
+
+    assert "bacnet_default_port: 47814" in config
+    assert "default_port: 47814" in config
+    assert "pre=47814" in final
+
+
+def test_fresh_agent_install_defaults_to_47814() -> None:
+    config = agent_config_text(make_request())
+    agent_yaml = decoded_agent_yaml(config_commands(make_request(), "token"))
+
+    assert "bacnet_default_port: 47814" in config
+    assert "default_port: 47814" in config
+    assert "bacnet-47814.lock" in config
+    assert "bacnet_default_port: 47814" in agent_yaml
+
+
+def test_existing_gateway_is_not_converted_to_47814() -> None:
+    agent_yaml = decoded_agent_yaml(config_commands(make_request(), "token", "47809"))
+
+    assert "47814" not in agent_yaml
+    assert "bacnet_default_port: 47809" in agent_yaml
+    assert "default_port: 47809" in agent_yaml
 
 
 def test_update_start_sh_defaults_unconfigured_install_to_external_47814(tmp_path: Path) -> None:
@@ -560,7 +679,7 @@ def test_create_update_zip_includes_019_runtime_inventory(tmp_path: Path, monkey
     (source / "start.sh").write_text("site startup", encoding="utf-8")
     (source / ".local-backups").mkdir()
     (source / ".local-backups" / "app.py").write_text("backup", encoding="utf-8")
-    monkeypatch.setattr(legacy_webapp, "validate_edge_source", lambda _manifest, _source: "b4dc654")
+    monkeypatch.setattr(legacy_webapp, "validate_ui_source_for_deploy", lambda _source, _manifest: "b4dc654")
 
     zip_path = create_update_zip(str(source), "manifest.json")
 
