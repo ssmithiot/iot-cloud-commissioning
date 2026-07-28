@@ -56,7 +56,8 @@ APP_SCRIPT = r"""
   const trendChartThemeStorageKey = "iot-cloud-trend-chart-theme";
   const trendChartRangeStorageKey = "iot-cloud-trend-chart-range";
   const edgeResourceHealthMinimumVersion = "0.1.6";
-  const edgeUiReleaseVersion = "0.1.7";
+  const edgeAgentReleaseVersion = "0.1.9";
+  const edgeUiReleaseVersion = "0.1.9";
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
   const pointTableColumns = [
@@ -1541,12 +1542,31 @@ APP_SCRIPT = r"""
     return !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);
   }
 
-  function gatewayRequiresUpdate(gateway) {
-    return gatewayNeedsUiRelease(gateway) || edgeAppVersion(gateway) === "Update required" || gatewayNeedsResourceHealthUpdate(gateway);
+  function gatewayNeedsAgentRelease(gateway) {
+    return !versionAtLeast(gateway.agent_version, edgeAgentReleaseVersion);
   }
 
   function gatewayNeedsUiRelease(gateway) {
     return !versionAtLeast(gateway.ui_version, edgeUiReleaseVersion);
+  }
+
+  function gatewayRequiresUpdate(gateway) {
+    return gatewayNeedsAgentRelease(gateway) || gatewayNeedsUiRelease(gateway) || edgeAppVersion(gateway) === "Update required" || gatewayNeedsResourceHealthUpdate(gateway);
+  }
+
+  function gatewayReleaseReason(gateway) {
+    const agentNeedsRelease = gatewayNeedsAgentRelease(gateway) || edgeAppVersion(gateway) === "Update required" || gatewayNeedsResourceHealthUpdate(gateway);
+    const uiNeedsRelease = gatewayNeedsUiRelease(gateway);
+    if (agentNeedsRelease && uiNeedsRelease) {
+      return "Update required";
+    }
+    if (gatewayNeedsUiRelease(gateway)) {
+      return "UI update required";
+    }
+    if (agentNeedsRelease) {
+      return "Agent update required";
+    }
+    return "Up to date";
   }
 
   function gatewayUpdateState(gatewayId) {
@@ -1560,16 +1580,11 @@ APP_SCRIPT = r"""
       return `<strong>Update ${escapeHtml(update.status)}</strong>`;
     }
     const actionLabel = update?.status === "failed" ? "Retry UI" : "Update UI";
-    if (gatewayNeedsUiRelease(gateway)) {
-      return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Edge UI ${edgeUiReleaseVersion} required (reported ${escapeHtml(gateway.ui_version || "unknown")})</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+    const releaseReason = gatewayReleaseReason(gateway);
+    if (releaseReason === "Up to date") {
+      return `<strong>Up to date</strong><small>Agent ${escapeHtml(gateway.agent_version || "?")} · UI ${escapeHtml(gateway.ui_version || "?")}</small>`;
     }
-    if (gatewayNeedsResourceHealthUpdate(gateway)) {
-      return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Health update required (${edgeResourceHealthMinimumVersion}+)</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
-    }
-    if (version !== "Update required") {
-      return `<strong>${escapeHtml(version)}</strong>`;
-    }
-    return `<strong>Update required</strong> <button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+    return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">${escapeHtml(releaseReason)} · Release ${edgeUiReleaseVersion} required (Agent ${escapeHtml(gateway.agent_version || "unknown")} · UI ${escapeHtml(gateway.ui_version || "unknown")})</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
   }
 
   async function refreshGatewayUpdates() {

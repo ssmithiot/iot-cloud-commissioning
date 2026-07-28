@@ -421,7 +421,12 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'data-select-update="${escapeHtml(gateway.gateway_id)}"' in response.text
     assert "queueGatewayUpdates" in response.text
     assert 'const edgeResourceHealthMinimumVersion = "0.1.6";' in response.text
+    assert 'const edgeAgentReleaseVersion = "0.1.9";' in response.text
+    assert 'const edgeUiReleaseVersion = "0.1.9";' in response.text
     assert "return !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);" in response.text
+    assert "gatewayNeedsAgentRelease(gateway)" in response.text
+    assert "gatewayNeedsUiRelease(gateway)" in response.text
+    assert "gatewayReleaseReason(gateway)" in response.text
     assert 'version.toLowerCase() !== "current"' in response.text
     assert 'data-sort="version">Edge App</button>' in response.text
     assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
@@ -433,6 +438,19 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert "cacheDashboardGateways(gateways)" in response.text
     assert "Gateway refresh failed; showing last known list." in response.text
     assert "window.setInterval(() =>" in response.text
+
+
+def test_dashboard_release_comparison_states_are_019() -> None:
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert 'const edgeAgentReleaseVersion = "0.1.9";' in response.text
+    assert 'const edgeUiReleaseVersion = "0.1.9";' in response.text
+    assert 'return "Update required";' in response.text
+    assert 'return "UI update required";' in response.text
+    assert 'return "Agent update required";' in response.text
+    assert 'return "Up to date";' in response.text
+    assert "Release ${edgeUiReleaseVersion} required" in response.text
 
 
 def test_gateway_workspace_contains_discovery_progress_ui() -> None:
@@ -766,7 +784,7 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     assert request["gateway_id"] == "GW001"
     assert request["status"] == "queued"
     assert request["update_scope"] == "ui_only"
-    assert request["target_ui_version"] == "0.1.7"
+    assert request["target_ui_version"] == "0.1.9"
 
     listed = client.get("/api/admin/gateway-updates", headers=admin_headers())
     assert listed.status_code == 200
@@ -786,7 +804,7 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     with SessionLocal() as db:
         edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
         assert edge_node is not None
-        assert edge_node.ui_version == "0.1.7"
+        assert edge_node.ui_version == "0.1.9"
         assert edge_node.agent_version == "0.1.0"
         assert edge_node.site_id == "demo-site"
 
