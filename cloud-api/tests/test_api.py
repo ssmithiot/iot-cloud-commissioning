@@ -424,16 +424,15 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'const edgeAgentReleaseVersion = "0.1.9";' in response.text
     assert 'const edgeUiReleaseVersion = "0.1.9";' in response.text
     assert 'const edgeReleaseUpdateScope = "full_non_provisioning";' in response.text
-    assert "return !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);" in response.text
-    assert "gatewayNeedsAgentRelease(gateway)" in response.text
-    assert "gatewayNeedsUiRelease(gateway)" in response.text
+    assert 'if (value.toLowerCase() === "current") return { current: true, known: true };' in response.text
+    assert "gatewayReleaseStatus(gateway).updateRequired" in response.text
+    assert "const releaseStatus = gatewayReleaseStatus(gateway);" in response.text
     assert "gatewayReleaseReason(gateway)" in response.text
     assert "Mode: Full non-provisioning update" in response.text
     assert "Provisioning: No" in response.text
     assert "BACnet configuration preserved" in response.text
     assert "target_agent_version: edgeAgentReleaseVersion" in response.text
     assert "target_ui_version: edgeUiReleaseVersion" in response.text
-    assert 'version.toLowerCase() !== "current"' in response.text
     assert 'data-sort="version">Edge App</button>' in response.text
     assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
     assert 'colspan="10"' in response.text
@@ -452,11 +451,13 @@ def test_dashboard_release_comparison_states_are_019() -> None:
     assert response.status_code == 200
     assert 'const edgeAgentReleaseVersion = "0.1.9";' in response.text
     assert 'const edgeUiReleaseVersion = "0.1.9";' in response.text
-    assert 'return "Update required";' in response.text
-    assert 'return "UI update required";' in response.text
-    assert 'return "Agent update required";' in response.text
-    assert 'return "Up to date";' in response.text
-    assert "Release: ${edgeUiReleaseVersion}" in response.text
+    assert 'reason = "Update required";' in response.text
+    assert 'reason = "UI update required";' in response.text
+    assert 'reason = "Agent update required";' in response.text
+    assert 'reason = "Full update required";' in response.text
+    assert 'let reason = "Up to date";' in response.text
+    assert "Release: ${escapeHtml(releaseStatus.requiredUiVersion)}" in response.text
+    assert "<small>${escapeHtml(releaseStatus.reason)}</small>" in response.text
 
 
 def test_gateway_workspace_contains_discovery_progress_ui() -> None:
@@ -858,6 +859,49 @@ def test_gateway_update_explicit_ui_only_recovery_remains_available() -> None:
         assert edge_node is not None
         assert edge_node.ui_version == "0.1.9"
         assert edge_node.agent_version == "0.1.0"
+
+
+@pytest.mark.parametrize(
+    ("agent_version", "ui_version", "expected_status", "update_required"),
+    [
+        ("0.1.9", "0.1.9", "Up to date", False),
+        ("0.1.9", "current", "Up to date", False),
+        ("0.1.9", "0.1.8", "UI update required", True),
+        ("0.1.8", "0.1.9", "Agent update required", True),
+        ("0.1.8", "0.1.8", "Full update required", True),
+        ("0.1.7", "0.1.7", "Full update required", True),
+        ("", "0.1.9", "Update required", True),
+        ("0.1.9", "", "Update required", True),
+    ],
+)
+def test_gateway_release_status_is_consistent_on_dashboard_refresh(
+    agent_version: str,
+    ui_version: str,
+    expected_status: str,
+    update_required: bool,
+) -> None:
+    create_gateway_token("GW001")
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
+        assert edge_node is not None
+        edge_node.agent_version = agent_version
+        edge_node.ui_version = ui_version
+        db.commit()
+
+    first = client.get("/api/ui/gateways", headers=admin_headers())
+    second = client.get("/api/ui/gateways", headers=admin_headers())
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    for response in (first, second):
+        gateway = response.json()[0]
+        assert gateway["agent_version"] == agent_version
+        assert gateway["ui_version"] == ui_version
+        assert gateway["required_agent_version"] == "0.1.9"
+        assert gateway["required_ui_version"] == "0.1.9"
+        assert gateway["gateway_release_status"] == expected_status
+        assert gateway["gateway_release_reason"] == expected_status
+        assert gateway["gateway_update_required"] is update_required
 
 
 @pytest.mark.parametrize(

@@ -347,6 +347,11 @@ class GatewayOut(BaseModel):
     direct_connect_available: bool | None = None
     direct_connect_host: str | None = None
     direct_connect_port: int | None = None
+    required_agent_version: str | None = None
+    required_ui_version: str | None = None
+    gateway_release_status: str | None = None
+    gateway_release_reason: str | None = None
+    gateway_update_required: bool | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

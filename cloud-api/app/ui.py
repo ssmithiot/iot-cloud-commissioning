@@ -1526,48 +1526,63 @@ APP_SCRIPT = r"""
 
   function edgeAppVersion(gateway) {
     const version = String(gateway.agent_version || "").trim();
-    return version && version.toLowerCase() !== "current" ? version : "Update required";
+    return version || "unknown";
   }
 
   function versionAtLeast(actual, required) {
-    const actualParts = String(actual || "").split(".").map((part) => Number(part));
+    const value = String(actual || "").trim();
+    if (value.toLowerCase() === "current") return { current: true, known: true };
+    const actualParts = value.split(".").map((part) => Number(part));
     const requiredParts = required.split(".").map((part) => Number(part));
-    if (actualParts.length !== 3 || actualParts.some((part) => !Number.isInteger(part))) return false;
+    if (actualParts.length !== 3 || actualParts.some((part) => !Number.isInteger(part))) return { current: false, known: false };
     for (let index = 0; index < requiredParts.length; index += 1) {
-      if (actualParts[index] !== requiredParts[index]) return actualParts[index] > requiredParts[index];
+      if (actualParts[index] !== requiredParts[index]) return { current: actualParts[index] > requiredParts[index], known: true };
     }
-    return true;
+    return { current: true, known: true };
   }
 
   function gatewayNeedsResourceHealthUpdate(gateway) {
-    return !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);
+    return !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion).current;
   }
 
-  function gatewayNeedsAgentRelease(gateway) {
-    return !versionAtLeast(gateway.agent_version, edgeAgentReleaseVersion);
-  }
-
-  function gatewayNeedsUiRelease(gateway) {
-    return !versionAtLeast(gateway.ui_version, edgeUiReleaseVersion);
+  function gatewayReleaseStatus(gateway) {
+    const apiStatus = String(gateway.gateway_release_status || gateway.gateway_release_reason || "").trim();
+    if (apiStatus) {
+      return {
+        reason: apiStatus,
+        updateRequired: gateway.gateway_update_required !== false,
+        requiredAgentVersion: gateway.required_agent_version || edgeAgentReleaseVersion,
+        requiredUiVersion: gateway.required_ui_version || edgeUiReleaseVersion
+      };
+    }
+    const agent = versionAtLeast(gateway.agent_version, edgeAgentReleaseVersion);
+    const ui = versionAtLeast(gateway.ui_version, edgeUiReleaseVersion);
+    let reason = "Up to date";
+    if (!agent.current || !ui.current) {
+      if (!agent.known || !ui.known) {
+        reason = "Update required";
+      } else if (!agent.current && !ui.current) {
+        reason = "Full update required";
+      } else if (!ui.current) {
+        reason = "UI update required";
+      } else {
+        reason = "Agent update required";
+      }
+    }
+    return {
+      reason,
+      updateRequired: reason !== "Up to date",
+      requiredAgentVersion: edgeAgentReleaseVersion,
+      requiredUiVersion: edgeUiReleaseVersion
+    };
   }
 
   function gatewayRequiresUpdate(gateway) {
-    return gatewayNeedsAgentRelease(gateway) || gatewayNeedsUiRelease(gateway) || edgeAppVersion(gateway) === "Update required" || gatewayNeedsResourceHealthUpdate(gateway);
+    return gatewayReleaseStatus(gateway).updateRequired;
   }
 
   function gatewayReleaseReason(gateway) {
-    const agentNeedsRelease = gatewayNeedsAgentRelease(gateway) || edgeAppVersion(gateway) === "Update required" || gatewayNeedsResourceHealthUpdate(gateway);
-    const uiNeedsRelease = gatewayNeedsUiRelease(gateway);
-    if (agentNeedsRelease && uiNeedsRelease) {
-      return "Update required";
-    }
-    if (gatewayNeedsUiRelease(gateway)) {
-      return "UI update required";
-    }
-    if (agentNeedsRelease) {
-      return "Agent update required";
-    }
-    return "Up to date";
+    return gatewayReleaseStatus(gateway).reason;
   }
 
   function gatewayUpdateState(gatewayId) {
@@ -1581,11 +1596,12 @@ APP_SCRIPT = r"""
       return `<strong>Update ${escapeHtml(update.status)}</strong>`;
     }
     const actionLabel = update?.status === "failed" ? "Retry UI" : "Update UI";
-    const releaseReason = gatewayReleaseReason(gateway);
+    const releaseStatus = gatewayReleaseStatus(gateway);
+    const releaseReason = releaseStatus.reason;
     if (releaseReason === "Up to date") {
       return `<strong>Up to date</strong><small>Agent ${escapeHtml(gateway.agent_version || "?")} · UI ${escapeHtml(gateway.ui_version || "?")}</small>`;
     }
-    return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">${escapeHtml(releaseReason)} · Release: ${edgeUiReleaseVersion} · Mode: Full non-provisioning update · Agent: ${edgeAgentReleaseVersion} · UI: ${edgeUiReleaseVersion} · Provisioning: No · BACnet configuration preserved</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+    return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">${escapeHtml(releaseReason)} · Release: ${escapeHtml(releaseStatus.requiredUiVersion)} · Mode: Full non-provisioning update · Agent: ${escapeHtml(releaseStatus.requiredAgentVersion)} · UI: ${escapeHtml(releaseStatus.requiredUiVersion)} · Provisioning: No · BACnet configuration preserved</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
   }
 
   async function refreshGatewayUpdates() {
@@ -2034,6 +2050,7 @@ APP_SCRIPT = r"""
     }
     const encoded = encodeURIComponent(gateway.gateway_id);
     const duplicateWarning = duplicateIdentityWarning(gateway);
+    const releaseStatus = gatewayReleaseStatus(gateway);
     panel.innerHTML = `
       <div class="inspector-head">
         <div>
@@ -2052,7 +2069,7 @@ APP_SCRIPT = r"""
         ${duplicateWarning ? `<dt>Identity</dt><dd class="status-warn">${escapeHtml(duplicateWarning)}</dd>` : ""}
         <dt>Trend</dt><dd id="gateway-heartbeat-trend" class="heartbeat-trend">Loading recent heartbeat trend...</dd>
         <dt>Weather</dt><dd id="gateway-weather">Loading weather...</dd>
-        <dt>Agent/UI</dt><dd>${escapeHtml(gateway.agent_version || "?")} / ${escapeHtml(gateway.ui_version || "?")}</dd>
+        <dt>Agent/UI</dt><dd>${escapeHtml(gateway.agent_version || "?")} / ${escapeHtml(gateway.ui_version || "?")}<br><small>${escapeHtml(releaseStatus.reason)}</small></dd>
         <dt>Notes</dt><dd>${escapeHtml(gateway.network_status_notes || "No network notes")}</dd>
       </dl>
       <div class="inspector-actions">

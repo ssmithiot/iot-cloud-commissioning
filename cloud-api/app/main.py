@@ -357,6 +357,7 @@ def _gateway_out(edge_node: EdgeNode, now: datetime | None = None, db: Session |
         "direct_connect_available": direct_connect.available,
         "direct_connect_host": direct_connect.host,
         "direct_connect_port": direct_connect.port,
+        **_gateway_release_status(edge_node.agent_version, edge_node.ui_version),
         **_effective_status(edge_node, now),
     }
 
@@ -414,6 +415,8 @@ def _scoped_gateway_statement(db: Session, auth: AdminAuthContext):
 
 
 EDGE_RELEASE_VERSION = "0.1.9"
+EDGE_AGENT_RELEASE_VERSION = EDGE_RELEASE_VERSION
+EDGE_UI_RELEASE_VERSION = EDGE_RELEASE_VERSION
 FULL_NON_PROVISIONING_PUBLIC_SCOPE = "full_non_provisioning"
 FULL_NON_PROVISIONING_STORED_SCOPE = "edge_release"
 
@@ -440,6 +443,44 @@ def _gateway_update_target_ui_version(update: GatewayUpdateRequest) -> str | Non
     if update.target_ui_version:
         return update.target_ui_version
     return EDGE_RELEASE_VERSION if _gateway_update_public_scope(update) == FULL_NON_PROVISIONING_PUBLIC_SCOPE else None
+
+
+def _version_at_least(actual: str | None, required: str) -> tuple[bool, bool]:
+    value = (actual or "").strip()
+    if value.lower() == "current":
+        return True, True
+    actual_parts = value.split(".")
+    required_parts = required.split(".")
+    if len(actual_parts) != 3:
+        return False, False
+    try:
+        actual_numbers = [int(part) for part in actual_parts]
+        required_numbers = [int(part) for part in required_parts]
+    except ValueError:
+        return False, False
+    return actual_numbers >= required_numbers, True
+
+
+def _gateway_release_status(agent_version: str | None, ui_version: str | None) -> dict[str, object]:
+    agent_current, agent_known = _version_at_least(agent_version, EDGE_AGENT_RELEASE_VERSION)
+    ui_current, ui_known = _version_at_least(ui_version, EDGE_UI_RELEASE_VERSION)
+    if agent_current and ui_current:
+        reason = "Up to date"
+    elif not agent_known or not ui_known:
+        reason = "Update required"
+    elif not agent_current and not ui_current:
+        reason = "Full update required"
+    elif not ui_current:
+        reason = "UI update required"
+    else:
+        reason = "Agent update required"
+    return {
+        "gateway_release_status": reason,
+        "gateway_release_reason": reason,
+        "gateway_update_required": reason != "Up to date",
+        "required_agent_version": EDGE_AGENT_RELEASE_VERSION,
+        "required_ui_version": EDGE_UI_RELEASE_VERSION,
+    }
 
 
 def _gateway_update_out(update: GatewayUpdateRequest, edge_node: EdgeNode) -> dict[str, object]:
