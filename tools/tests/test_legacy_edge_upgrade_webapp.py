@@ -33,6 +33,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     inspect_commands,
     load_env_defaults,
     parse_upgrade_request,
+    repo_release_validation_command,
     restart_ui_commands,
     rollback_commands,
     backup_commands,
@@ -144,6 +145,14 @@ def make_git_source(path: Path) -> str:
     subprocess.run(["git", "add", "app.py"], cwd=path, check=True)
     subprocess.run(["git", "commit", "-m", "ui"], cwd=path, check=True, stdout=subprocess.DEVNULL)
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=path, text=True).strip()
+
+
+def run_repo_release_validation(repo: Path, expected_commit: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", repo_release_validation_command(str(repo), expected_commit)],
+        capture_output=True,
+        text=True,
+    )
 
 
 def decoded_agent_yaml(commands: list[tuple[str, str, bool]]) -> str:
@@ -455,6 +464,76 @@ def test_existing_gateway_is_not_converted_to_47814() -> None:
     assert "47814" not in agent_yaml
     assert "bacnet_default_port: 47809" in agent_yaml
     assert "default_port: 47809" in agent_yaml
+
+
+def test_repo_release_validation_allows_deploy_backups_runtime_folder(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    head = make_git_source(repo)
+    (repo / "deploy-backups").mkdir()
+    (repo / "deploy-backups" / "backup.tar.gz").write_text("runtime backup\n", encoding="utf-8")
+
+    result = run_repo_release_validation(repo, head)
+
+    assert result.returncode == 0
+    assert f"RELEASE_COMMIT={head}" in result.stdout
+    assert "TRACKED_REPO_STATUS=clean" in result.stdout
+    assert "IGNORED_RUNTIME_PATHS=deploy-backups/" in result.stdout
+    assert "REPO_RELEASE_VALIDATION=Passed" in result.stdout
+
+
+def test_repo_release_validation_allows_local_backups_runtime_folder(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    head = make_git_source(repo)
+    (repo / ".local-backups").mkdir()
+    (repo / ".local-backups" / "app.py").write_text("runtime backup\n", encoding="utf-8")
+
+    result = run_repo_release_validation(repo, head)
+
+    assert result.returncode == 0
+    assert "TRACKED_REPO_STATUS=clean" in result.stdout
+    assert "IGNORED_RUNTIME_PATHS=.local-backups/" in result.stdout
+    assert "REPO_RELEASE_VALIDATION=Passed" in result.stdout
+
+
+def test_repo_release_validation_blocks_modified_tracked_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    head = make_git_source(repo)
+    (repo / "app.py").write_text("modified\n", encoding="utf-8")
+
+    result = run_repo_release_validation(repo, head)
+
+    assert result.returncode != 0
+    assert "TRACKED_REPO_STATUS=dirty" in result.stdout
+    assert "TRACKED_REPO_CHANGES= M app.py" in result.stdout
+    assert "REPO_RELEASE_VALIDATION=Failed" in result.stdout
+
+
+@pytest.mark.parametrize("path", ["unexpected.py", "config.yaml"])
+def test_repo_release_validation_blocks_unexpected_untracked_source_or_config(tmp_path: Path, path: str) -> None:
+    repo = tmp_path / "repo"
+    head = make_git_source(repo)
+    (repo / path).write_text("unexpected\n", encoding="utf-8")
+
+    result = run_repo_release_validation(repo, head)
+
+    assert result.returncode != 0
+    assert "TRACKED_REPO_STATUS=clean" in result.stdout
+    assert f"UNEXPECTED_UNTRACKED_PATHS={path}" in result.stdout
+    assert "REPO_RELEASE_VALIDATION=Failed" in result.stdout
+
+
+def test_repo_release_validation_blocks_wrong_head(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    head = make_git_source(repo)
+    wrong_head = "844d93d013359d837619e991da8f4da7a5000472"
+
+    result = run_repo_release_validation(repo, wrong_head)
+
+    assert head != wrong_head
+    assert result.returncode != 0
+    assert f"RELEASE_COMMIT={head}" in result.stdout
+    assert "REPO_RELEASE_VALIDATION=Failed" in result.stdout
+    assert f"Expected release commit {wrong_head}" in result.stderr
 
 
 def test_update_start_sh_defaults_unconfigured_install_to_external_47814(tmp_path: Path) -> None:

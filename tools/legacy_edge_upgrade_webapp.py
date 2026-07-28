@@ -1158,6 +1158,65 @@ def restart_ui_commands() -> list[tuple[str, str, bool]]:
     ]
 
 
+def repo_release_validation_command(repo_path: str, expected_commit: str) -> str:
+    script = r"""
+import subprocess
+import sys
+
+expected = sys.argv[1]
+head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+print(f"RELEASE_COMMIT={head}")
+if head != expected:
+    print("REPO_RELEASE_VALIDATION=Failed")
+    raise SystemExit(f"Expected release commit {expected}, found {head}")
+
+status = subprocess.check_output(["git", "status", "--porcelain=v1", "--untracked-files=all"], text=True).splitlines()
+tracked = [line for line in status if not line.startswith("?? ")]
+if tracked:
+    print("TRACKED_REPO_STATUS=dirty")
+    print("TRACKED_REPO_CHANGES=" + "\\n".join(tracked))
+    print("REPO_RELEASE_VALIDATION=Failed")
+    raise SystemExit("Tracked repository changes are present")
+
+print("TRACKED_REPO_STATUS=clean")
+
+def runtime_label(path):
+    if path == "deploy-backups" or path.startswith("deploy-backups/"):
+        return "deploy-backups/"
+    if path == ".local-backups" or path.startswith(".local-backups/"):
+        return ".local-backups/"
+    if path == "gw-recovery" or path.startswith("gw-recovery/"):
+        return "gw-recovery/"
+    if "__pycache__" in path.split("/"):
+        return "__pycache__/"
+    if path.endswith(".pyc"):
+        return "*.pyc"
+    return None
+
+ignored = []
+unexpected = []
+for line in status:
+    if not line.startswith("?? "):
+        continue
+    path = line[3:]
+    label = runtime_label(path)
+    if label is None:
+        unexpected.append(path)
+    elif label not in ignored:
+        ignored.append(label)
+
+if unexpected:
+    print("IGNORED_RUNTIME_PATHS=" + (",".join(ignored) if ignored else "None"))
+    print("UNEXPECTED_UNTRACKED_PATHS=" + "\\n".join(unexpected))
+    print("REPO_RELEASE_VALIDATION=Failed")
+    raise SystemExit("Unexpected untracked repository paths are present")
+
+print("IGNORED_RUNTIME_PATHS=" + (",".join(ignored) if ignored else "None"))
+print("REPO_RELEASE_VALIDATION=Passed")
+"""
+    return f"cd {shell_quote(repo_path)} && python3 -c {shell_quote(script)} {shell_quote(expected_commit)}"
+
+
 def repo_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     repo = shell_quote(request.remote_repo)
     ref = shell_quote(request.git_ref)
@@ -1181,8 +1240,7 @@ def repo_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
             f"""cd /home/swadmin && if [ -d {repo}/.git ]; then cd {repo} && git remote set-url origin {shell_quote(REMOTE_REPO_URL)} && git fetch origin --tags; else git clone {shell_quote(REMOTE_REPO_URL)} {repo}; cd {repo}; git fetch origin --tags; fi && git checkout {ref} && (git pull --ff-only origin {ref} 2>/dev/null || true)""",
             False,
         ),
-        ("repo release commit", f"cd {repo} && git log --oneline -1 && printf 'RELEASE_COMMIT=' && git rev-parse HEAD", False),
-        ("repo status clean", f"cd {repo} && git status --porcelain=v1 && test -z \"$(git status --porcelain=v1)\"", False),
+        ("repo release validation", repo_release_validation_command(request.remote_repo, request.git_ref), False),
     ]
 
 
