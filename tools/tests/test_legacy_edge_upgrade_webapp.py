@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shlex
 import socket
 import subprocess
 import sys
@@ -259,7 +260,7 @@ def test_existing_install_preflight_reports_preservation_policy() -> None:
             JOBS.pop("existing-policy-preflight-test", None)
 
 
-def test_existing_route_start_sh_remains_byte_for_byte_even_when_auth_differs(tmp_path: Path) -> None:
+def test_existing_route_start_sh_updates_auth_without_changing_route_lines(tmp_path: Path) -> None:
     path = tmp_path / "start.sh"
     original = (
         "#!/usr/bin/env bash\n"
@@ -278,7 +279,47 @@ def test_existing_route_start_sh_remains_byte_for_byte_even_when_auth_differs(tm
         check=True,
     )
 
-    assert path.read_text(encoding="utf-8") == original
+    updated = path.read_text(encoding="utf-8")
+    assert "export BACNET_IP_PORT=47814\n" in updated
+    assert "export BACNET_IP_PORTS=47809,47814\n" in updated
+    assert "export BACNET_PORT_MODE=dual-47809-first\n" in updated
+    assert "export AUTH_ENABLED=1\n" in updated
+    assert "export EDGE_UI_USERNAME=new-admin\n" in updated
+    assert "export EDGE_UI_PASSWORD='new-secret'\n" in updated
+    assert "old-secret" not in updated
+
+
+def test_existing_47814_route_missing_auth_gets_auth_inserted(tmp_path: Path) -> None:
+    path = tmp_path / "start.sh"
+    original_route = "export BACNET_IP_PORT=47814\n"
+    path.write_text("#!/usr/bin/env bash\n" + original_route + "python3 app.py\n", encoding="utf-8")
+
+    run_start_sh_update(path)
+
+    updated = path.read_text(encoding="utf-8")
+    assert original_route in updated
+    assert "export AUTH_ENABLED=1\n" in updated
+    assert "export EDGE_UI_USERNAME=admin\n" in updated
+    assert "export EDGE_UI_PASSWORD='ui-secret'\n" in updated
+
+
+@pytest.mark.parametrize(
+    "route_lines",
+    [
+        ["export BACNET_IP_PORT=47809", "export BACNET_PORT_MODE=bac-rtr"],
+        ["export BACNET_IP_PORT=47814", "export BACNET_IP_PORTS=47809,47814", "export BACNET_PORT_MODE=dual-47809-first"],
+    ],
+)
+def test_existing_route_lines_remain_unchanged_when_auth_is_inserted(tmp_path: Path, route_lines: list[str]) -> None:
+    path = tmp_path / "start.sh"
+    original = "#!/usr/bin/env bash\n" + "\n".join(route_lines) + "\npython3 app.py\n"
+    path.write_text(original, encoding="utf-8")
+
+    run_start_sh_update(path)
+
+    updated_lines = path.read_text(encoding="utf-8").splitlines()
+    for route_line in route_lines:
+        assert route_line in updated_lines
 
 
 def test_router_config_files_remain_untouched_by_ui_apply() -> None:
@@ -428,6 +469,11 @@ def test_update_start_sh_defaults_unconfigured_install_to_external_47814(tmp_pat
     assert "EDGE_BACNET_ROUTER_ENABLED=1" not in updated
 
 
+def safe_auth_verify_command() -> str:
+    commands = auth_commands(make_request())
+    return next(command for label, command, _sudo in commands if label == "verify safe start.sh auth")
+
+
 def test_auth_commands_include_safe_verification() -> None:
     commands = auth_commands(make_request())
     labels = [label for label, _command, _sudo in commands]
@@ -435,9 +481,61 @@ def test_auth_commands_include_safe_verification() -> None:
     assert "write local edge UI adapter token" in labels
     assert "write edge agent adapter token" in labels
     assert "verify safe start.sh auth" in labels
-    verify_command = commands[-1][1]
+    verify_command = safe_auth_verify_command()
     assert "sed -E" in verify_command
     assert "***SET***" in verify_command
+    assert "BACNET_IP_PORTS" in verify_command
+    assert "BACNET_PORT_MODE" in verify_command
+
+
+def test_verify_safe_start_sh_auth_command_has_balanced_shell_quotes() -> None:
+    verify_command = safe_auth_verify_command()
+
+    shlex.split(verify_command)
+    subprocess.run(["bash", "-n", "-c", verify_command], check=True)
+    assert "<<" not in verify_command
+    assert verify_command.count("'") % 2 == 0
+
+
+def test_verify_safe_start_sh_auth_command_redacts_password(tmp_path: Path) -> None:
+    start_sh = tmp_path / "start.sh"
+    start_sh.write_text(
+        "\n".join(
+            [
+                "export BACNET_IP_PORT=47814",
+                "export BACNET_IP_PORTS=47809,47814",
+                "export BACNET_PORT_MODE=dual-47809-first",
+                "export EDGE_UI_PASSWORD='super-secret'",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    command = safe_auth_verify_command().replace("/home/swadmin/edge-bacnet-ui-v2/start.sh", shlex.quote(str(start_sh)))
+
+    completed = subprocess.run(["bash", "-c", command], check=True, capture_output=True, text=True)
+
+    assert "super-secret" not in completed.stdout
+    assert "EDGE_UI_PASSWORD=***SET***" in completed.stdout
+
+
+def test_targeted_dry_run_phase_5_confirm_ui_auth_completes() -> None:
+    request = UpgradeRequest(**{**make_request().__dict__, "dry_run": True, "selected_phases": (4,)})
+    job_id = "targeted-phase-5-auth-dry-run"
+    with JOBS_LOCK:
+        JOBS[job_id] = UpgradeJob(request=request)
+    runner = LegacyUpgradeRunner(job_id, request)
+    try:
+        runner.run_phase(4)
+
+        with JOBS_LOCK:
+            job = JOBS[job_id]
+            assert job.phases[4].status == legacy_webapp.PhaseStatus.PASSED
+            assert job.status == "waiting"
+            assert "verify safe start.sh auth" in job.log
+    finally:
+        with JOBS_LOCK:
+            JOBS.pop(job_id, None)
 
 
 def test_apply_ui_commands_preserves_start_script_and_installs_engine() -> None:
@@ -577,6 +675,52 @@ def test_parse_upgrade_request_allows_final_update_only_when_confirmed() -> None
 
     assert request.dry_run is False
     assert request.final_update_confirmed is True
+
+
+def test_parse_upgrade_request_allows_targeted_real_run_auth_restart_final_only() -> None:
+    body = (
+        "gateway_id=GW010&cloud_url=https%3A%2F%2Fiot-cloud-api-dev.onrender.com"
+        "&admin_api_token=admin-secret-token&cradlepoint_host=10.0.0.10"
+        "&cradlepoint_password=cp-secret&gateway_password=gw-secret"
+        "&ui_password=ui-secret&final_update_confirmed=1"
+        "&selected_phases=4&selected_phases=5&selected_phases=11"
+    ).encode("utf-8")
+
+    request = parse_upgrade_request(body)
+
+    assert request.dry_run is False
+    assert request.final_update_confirmed is True
+    assert request.selected_phases == (4, 5, 11)
+
+
+def test_parse_upgrade_request_allows_standard_update_agent_real_run_phases() -> None:
+    body = (
+        "gateway_id=GW010&cloud_url=https%3A%2F%2Fiot-cloud-api-dev.onrender.com"
+        "&admin_api_token=admin-secret-token&cradlepoint_host=10.0.0.10"
+        "&cradlepoint_password=cp-secret&gateway_password=gw-secret"
+        "&ui_password=ui-secret&final_update_confirmed=1"
+        "&selected_phases=0&selected_phases=1&selected_phases=2&selected_phases=3"
+        "&selected_phases=4&selected_phases=5&selected_phases=7"
+        "&selected_phases=9&selected_phases=10&selected_phases=11"
+    ).encode("utf-8")
+
+    request = parse_upgrade_request(body)
+
+    assert request.dry_run is False
+    assert request.selected_phases == (0, 1, 2, 3, 4, 5, 7, 9, 10, 11)
+
+
+def test_parse_upgrade_request_rejects_other_targeted_real_run_phases() -> None:
+    body = (
+        "gateway_id=GW010&cloud_url=https%3A%2F%2Fiot-cloud-api-dev.onrender.com"
+        "&admin_api_token=admin-secret-token&cradlepoint_host=10.0.0.10"
+        "&cradlepoint_password=cp-secret&gateway_password=gw-secret"
+        "&ui_password=ui-secret&final_update_confirmed=1"
+        "&selected_phases=4&selected_phases=6"
+    ).encode("utf-8")
+
+    with pytest.raises(ValueError, match="Confirm UI auth, Restart local UI, Final verification"):
+        parse_upgrade_request(body)
 
 
 def test_form_page_shows_019_pilot_preflight_requirements() -> None:

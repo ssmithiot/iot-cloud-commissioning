@@ -93,6 +93,12 @@ PHASES = [
     "Install/start service",
     "Final verification",
 ]
+TARGETED_REAL_RUN_PHASES = (4, 5, 11)
+STANDARD_REAL_RUN_PHASE_SETS = (
+    tuple(range(len(PHASES))),
+    UPDATE_AGENT_PHASES,
+    UI_ONLY_PHASES,
+)
 
 
 class PhaseStatus(str, Enum):
@@ -788,6 +794,11 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         raise ValueError("Local BACnet UI password cannot contain a single quote for this legacy update flow.")
     final_update_confirmed = parse_bool(fields, "final_update_confirmed")
     dry_run = parse_bool(fields, "dry_run") or not final_update_confirmed
+    if final_update_confirmed and selected_phases and selected_phases not in STANDARD_REAL_RUN_PHASE_SETS:
+        invalid_targeted_phases = sorted(set(selected_phases) - set(TARGETED_REAL_RUN_PHASES))
+        if invalid_targeted_phases:
+            allowed_names = ", ".join(PHASES[index] for index in TARGETED_REAL_RUN_PHASES)
+            raise ValueError(f"Targeted real-run phase selection may include only: {allowed_names}.")
     request = UpgradeRequest(
         gateway_id=gateway_id,
         site_id=value(fields, "site_id") or gateway_id,
@@ -984,8 +995,6 @@ has_route_config = any(
     for line in lines
     for marker in route_markers
 )
-if has_route_config:
-    raise SystemExit(0)
 seen = set()
 out = []
 for line in lines:
@@ -1135,7 +1144,7 @@ def auth_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         ("write edge agent adapter token", f"sudo -S -p '' sh -c {shell_quote(agent_env_script)}", True),
         (
             "verify safe start.sh auth",
-            r"""grep -nE 'BACNET_IP_PORT|AUTH_ENABLED|EDGE_UI_USERNAME|EDGE_UI_PASSWORD|RPM_BLOCK_SIZE|RPM_VIEW_BLOCK_SIZE|DEFAULT_SCAN_LIMIT|MAX_OBJECTS' /home/swadmin/edge-bacnet-ui-v2/start.sh | sed -E "s/(EDGE_UI_PASSWORD=).*/\1'***SET***'/" """,
+            r"""grep -nE 'BACNET_IP_PORT|BACNET_IP_PORTS|BACNET_PORT_MODE|AUTH_ENABLED|EDGE_UI_USERNAME|EDGE_UI_PASSWORD|RPM_BLOCK_SIZE|RPM_VIEW_BLOCK_SIZE|DEFAULT_SCAN_LIMIT|MAX_OBJECTS' /home/swadmin/edge-bacnet-ui-v2/start.sh | sed -E 's#^(.*EDGE_UI_PASSWORD=).*$#\1***SET***#'""",
             False,
         ),
     ]
