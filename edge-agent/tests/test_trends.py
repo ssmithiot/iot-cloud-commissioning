@@ -8,8 +8,9 @@ import sqlite3
 import pytest
 import requests
 
-from iot_cx_agent.config import AgentConfig
+from iot_cx_agent.config import AgentConfig, load_config
 from iot_cx_agent.db import initialize_database, pending_trend_samples, queue_trend_sample, trend_upload_attempt_count
+import iot_cx_agent.main as agent_main
 from iot_cx_agent.main import run_once
 from iot_cx_agent.trends import sample_configured_trends, sample_local_edge_trends, upload_pending_trend_samples
 
@@ -150,6 +151,57 @@ def fetch_rows(db_path: Path, table: str) -> list[sqlite3.Row]:
         return conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
 
 
+def test_config_defaults_local_edge_trends_to_disabled_when_absent(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        """
+gateway_id: GW001
+site_id: demo-site
+cloud_url: https://cloud.example.test
+gateway_api_token: token
+edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data
+""",
+        encoding="utf-8",
+    )
+
+    agent_config = load_config(config_path)
+
+    assert agent_config.edge_ui_data_dir == Path("/home/swadmin/edge-bacnet-ui-v2/data")
+    assert agent_config.local_edge_trends_enabled is False
+
+
+def test_config_parses_explicit_local_edge_trends_flag(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        """
+gateway_id: GW001
+site_id: demo-site
+cloud_url: https://cloud.example.test
+gateway_api_token: token
+local_edge_trends_enabled: true
+""",
+        encoding="utf-8",
+    )
+
+    assert load_config(config_path).local_edge_trends_enabled is True
+
+
+def test_config_string_false_keeps_local_edge_trends_disabled(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        """
+gateway_id: GW001
+site_id: demo-site
+cloud_url: https://cloud.example.test
+gateway_api_token: token
+local_edge_trends_enabled: "false"
+""",
+        encoding="utf-8",
+    )
+
+    assert load_config(config_path).local_edge_trends_enabled is False
+
+
 def latest_started_at(db_path: Path, group_id: int) -> str:
     with sqlite3.connect(db_path) as conn:
         row = conn.execute("SELECT MAX(started_at) FROM trend_runs WHERE group_id=?", (group_id,)).fetchone()
@@ -271,7 +323,7 @@ def test_sampling_logs_safe_route_diagnostics(tmp_path: Path, monkeypatch, caplo
 def test_enabled_local_group_is_discovered_and_first_run_due(tmp_path: Path, monkeypatch) -> None:
     db_path = edge_trends_db(tmp_path)
     add_local_group(db_path)
-    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent)
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent, local_edge_trends_enabled=True)
 
     calls: list[dict[str, object]] = []
 
@@ -294,7 +346,7 @@ def test_enabled_local_group_is_discovered_and_first_run_due(tmp_path: Path, mon
 def test_disabled_local_group_is_skipped(tmp_path: Path, monkeypatch) -> None:
     db_path = edge_trends_db(tmp_path)
     add_local_group(db_path, enabled=False)
-    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent)
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent, local_edge_trends_enabled=True)
 
     monkeypatch.setattr("iot_cx_agent.trends.run_bacnet_read_bulk", lambda *args, **kwargs: pytest.fail("disabled group ran"))
 
@@ -305,7 +357,7 @@ def test_disabled_local_group_is_skipped(tmp_path: Path, monkeypatch) -> None:
 def test_sixty_second_group_is_not_rerun_early_and_runs_after_interval(tmp_path: Path, monkeypatch) -> None:
     db_path = edge_trends_db(tmp_path)
     group_id = add_local_group(db_path, interval_sec=60)
-    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent)
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent, local_edge_trends_enabled=True)
     calls = 0
 
     def fake_bulk(agent_config: AgentConfig, request: dict[str, object]) -> tuple[dict[str, object], str | None]:
@@ -328,7 +380,7 @@ def test_sixty_second_group_is_not_rerun_early_and_runs_after_interval(tmp_path:
 
 def test_group_added_after_startup_is_discovered_on_next_cycle(tmp_path: Path, monkeypatch) -> None:
     db_path = edge_trends_db(tmp_path)
-    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent)
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent, local_edge_trends_enabled=True)
     monkeypatch.setattr(
         "iot_cx_agent.trends.run_bacnet_read_bulk",
         lambda agent_config, request: (
@@ -352,7 +404,7 @@ def test_local_sampler_persists_good_missing_and_error_samples_and_outbox(tmp_pa
             (1104, "analog-value", 9),
         ],
     )
-    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent)
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent, local_edge_trends_enabled=True)
 
     def fake_bulk(agent_config: AgentConfig, request: dict[str, object]) -> tuple[dict[str, object], str | None]:
         point_ids = [str(point["saved_point_id"]) for point in request["points"]]
@@ -385,7 +437,7 @@ def test_local_sampler_persists_good_missing_and_error_samples_and_outbox(tmp_pa
 def test_trend_viewer_query_reads_written_local_rows(tmp_path: Path, monkeypatch) -> None:
     db_path = edge_trends_db(tmp_path)
     group_id = add_local_group(db_path)
-    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent)
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent, local_edge_trends_enabled=True)
     monkeypatch.setattr(
         "iot_cx_agent.trends.run_bacnet_read_bulk",
         lambda agent_config, request: (
@@ -415,7 +467,7 @@ def test_trend_viewer_query_reads_written_local_rows(tmp_path: Path, monkeypatch
 def test_local_sampling_does_not_depend_on_cloud_trend_configs(tmp_path: Path, monkeypatch) -> None:
     db_path = edge_trends_db(tmp_path)
     add_local_group(db_path)
-    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent, gateway_api_token="token")
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent, gateway_api_token="token", local_edge_trends_enabled=True)
     initialize_database(agent_config.sqlite_path)
 
     monkeypatch.setattr("iot_cx_agent.main.send_heartbeat", lambda *args, **kwargs: Response())
@@ -426,6 +478,72 @@ def test_local_sampling_does_not_depend_on_cloud_trend_configs(tmp_path: Path, m
 
     assert run_once(agent_config) is True
     assert len(fetch_rows(db_path, "trend_samples")) == 1
+
+
+def test_local_sampler_not_invoked_when_flag_is_absent(tmp_path: Path, monkeypatch, caplog) -> None:
+    agent_config = config(tmp_path)
+    initialize_database(agent_config.sqlite_path)
+
+    monkeypatch.setattr("iot_cx_agent.main.send_heartbeat", lambda *args, **kwargs: Response())
+    monkeypatch.setattr("iot_cx_agent.main.sample_local_edge_trends", lambda *args, **kwargs: pytest.fail("local sampler invoked"))
+    monkeypatch.setattr("iot_cx_agent.main.sample_configured_trends", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("iot_cx_agent.main.upload_pending_trend_samples", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("iot_cx_agent.main.process_next_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent_main, "_local_edge_trends_disabled_logged", False)
+
+    with caplog.at_level(logging.INFO, logger="iot-cx-agent"):
+        assert run_once(agent_config) is True
+        assert run_once(agent_config) is True
+
+    assert caplog.text.count("Local Edge trend sampling disabled") == 1
+
+
+def test_local_sampler_not_invoked_when_flag_is_false(tmp_path: Path, monkeypatch) -> None:
+    db_path = edge_trends_db(tmp_path)
+    add_local_group(db_path)
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent, local_edge_trends_enabled=False)
+    initialize_database(agent_config.sqlite_path)
+
+    monkeypatch.setattr("iot_cx_agent.main.send_heartbeat", lambda *args, **kwargs: Response())
+    monkeypatch.setattr("iot_cx_agent.main.sample_local_edge_trends", lambda *args, **kwargs: pytest.fail("local sampler invoked"))
+    monkeypatch.setattr("iot_cx_agent.main.sample_configured_trends", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("iot_cx_agent.main.upload_pending_trend_samples", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("iot_cx_agent.main.process_next_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent_main, "_local_edge_trends_disabled_logged", False)
+
+    assert run_once(agent_config) is True
+    assert fetch_rows(db_path, "trend_runs") == []
+    assert fetch_rows(db_path, "trend_samples") == []
+
+
+def test_edge_ui_data_dir_does_not_implicitly_enable_local_sampling(tmp_path: Path, monkeypatch) -> None:
+    db_path = edge_trends_db(tmp_path)
+    add_local_group(db_path, enabled=True)
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent)
+
+    monkeypatch.setattr("iot_cx_agent.trends.run_bacnet_read_bulk", lambda *args, **kwargs: pytest.fail("BACnet command ran"))
+
+    assert sample_local_edge_trends(agent_config) == 0
+    assert fetch_rows(db_path, "trend_runs") == []
+    assert fetch_rows(db_path, "trend_samples") == []
+
+
+def test_enabled_local_ui_group_does_not_issue_bacnet_while_disabled(tmp_path: Path, monkeypatch) -> None:
+    db_path = edge_trends_db(tmp_path)
+    add_local_group(db_path, enabled=True)
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent)
+    initialize_database(agent_config.sqlite_path)
+
+    monkeypatch.setattr("iot_cx_agent.main.send_heartbeat", lambda *args, **kwargs: Response())
+    monkeypatch.setattr("iot_cx_agent.trends.run_bacnet_read_bulk", lambda *args, **kwargs: pytest.fail("BACnet command ran"))
+    monkeypatch.setattr("iot_cx_agent.main.sample_configured_trends", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("iot_cx_agent.main.upload_pending_trend_samples", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("iot_cx_agent.main.process_next_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(agent_main, "_local_edge_trends_disabled_logged", False)
+
+    assert run_once(agent_config) is True
+    assert fetch_rows(db_path, "trend_runs") == []
+    assert fetch_rows(db_path, "trend_samples") == []
 
 
 def test_cloud_sampler_remains_unchanged(tmp_path: Path, monkeypatch) -> None:

@@ -47,6 +47,7 @@ class AgentConfig:
     bacnet_lock_stale_sec: float = 120.0
     heartbeat_interval_sec: int = 30
     edge_ui_data_dir: Path | None = None
+    local_edge_trends_enabled: bool = False
     trend_upload_batch_size: int = 100
     trend_queue_max_pending_samples: int = 10_000
     trend_upload_retry_base_sec: int = 30
@@ -110,6 +111,19 @@ def _positive_int(raw_value: object, source: str, *, minimum: int = 1) -> int:
     if value < minimum:
         raise ValueError(f"{source} must be an integer greater than or equal to {minimum}")
     return value
+
+
+def _bool_flag(raw_value: object, source: str) -> bool:
+    if isinstance(raw_value, bool):
+        return raw_value
+    if raw_value in (None, ""):
+        return False
+    value = str(raw_value).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{source} must be true or false")
 
 
 def normalize_bacnet_router_profile(raw_profile: object | None) -> str:
@@ -183,6 +197,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         bacnet_lock_stale_sec=float(bacnet.get("lock_stale_sec", 120)),
         heartbeat_interval_sec=int(raw.get("heartbeat_interval_sec", 30)),
         edge_ui_data_dir=Path(raw["edge_ui_data_dir"]) if raw.get("edge_ui_data_dir") else None,
+        local_edge_trends_enabled=_bool_flag(raw.get("local_edge_trends_enabled", False), "local_edge_trends_enabled"),
         trend_upload_batch_size=_positive_int(raw.get("trend_upload_batch_size", 100), "trend_upload_batch_size"),
         trend_queue_max_pending_samples=_positive_int(raw.get("trend_queue_max_pending_samples", 10_000), "trend_queue_max_pending_samples"),
         trend_upload_retry_base_sec=_positive_int(raw.get("trend_upload_retry_base_sec", 30), "trend_upload_retry_base_sec"),

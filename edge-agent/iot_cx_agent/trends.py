@@ -139,6 +139,8 @@ def _log_route_diagnostics(result: dict[str, object], prefix: str = "Trend BACne
 
 def sample_local_edge_trends(config: AgentConfig) -> int:
     """Sample enabled Edge UI local trend groups into the UI-owned trend DB."""
+    if not config.local_edge_trends_enabled:
+        return 0
     db_path = _edge_trends_db(config)
     if db_path is None:
         logger.info("Local Edge trend sampling skipped: edge_ui_data_dir is not configured")

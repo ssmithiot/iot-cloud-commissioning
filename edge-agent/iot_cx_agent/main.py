@@ -17,6 +17,7 @@ from iot_cx_agent.trends import sample_configured_trends, sample_local_edge_tren
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("iot-cx-agent")
+_local_edge_trends_disabled_logged = False
 
 
 def run_once(config: AgentConfig) -> bool:
@@ -60,7 +61,7 @@ def run_once(config: AgentConfig) -> bool:
 
     if sqlite_db_ok:
         try:
-            sample_local_edge_trends(config)
+            maybe_sample_local_edge_trends(config)
             sample_configured_trends(config)
             upload_pending_trend_samples(config)
         except requests.RequestException as exc:
@@ -69,6 +70,16 @@ def run_once(config: AgentConfig) -> bool:
             logger.exception("Trend sampling failed")
         process_next_job(config)
     return heartbeat_success
+
+
+def maybe_sample_local_edge_trends(config: AgentConfig) -> int:
+    global _local_edge_trends_disabled_logged
+    if not config.local_edge_trends_enabled:
+        if not _local_edge_trends_disabled_logged:
+            logger.info("Local Edge trend sampling disabled")
+            _local_edge_trends_disabled_logged = True
+        return 0
+    return sample_local_edge_trends(config)
 
 
 def safe_record_heartbeat_attempt(config_path: Path, **kwargs: object) -> None:

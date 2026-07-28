@@ -1256,7 +1256,7 @@ cloud_url: {request.cloud_url}
 tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
 tunnel_request_timeout_sec: 900
-edge_ui_data_dir: {DEFAULT_EDGE_UI_DATA_DIR}
+local_edge_trends_enabled: false
 
 bacnet_default_port: {port}
 heartbeat_interval_sec: 30
@@ -1372,7 +1372,7 @@ def config_commands(request: UpgradeRequest, gateway_token: str, bacnet_default_
         ("write agent.yaml", f"printf %s {shell_quote(agent_b64)} | base64 -d > /tmp/agent.yaml && sudo -S -p '' install -m 0644 -o root -g root /tmp/agent.yaml /etc/iot-cx-agent/agent.yaml && rm -f /tmp/agent.yaml", True),
         ("write edge-agent.env", f"printf %s {shell_quote(env_b64)} | base64 -d > /tmp/edge-agent.env && sudo -S -p '' install -m 0600 -o root -g root /tmp/edge-agent.env /etc/iot-cx-agent/edge-agent.env && rm -f /tmp/edge-agent.env", True),
         ("fix agent data ownership", "sudo -S -p '' install -d -m 0750 -o swadmin -g swadmin /var/lib/iot-cx-agent", True),
-        ("safe config verification", "grep -E 'gateway_id:|site_id:|cloud_url:|local_ui_url:|edge_ui_data_dir:|bacnet_default_port:' /etc/iot-cx-agent/agent.yaml && sudo -S -p '' test -s /etc/iot-cx-agent/edge-agent.env && echo 'GATEWAY_API_TOKEN=***SET***' && ls -ld /var/lib/iot-cx-agent", True),
+        ("safe config verification", "grep -E 'gateway_id:|site_id:|cloud_url:|local_ui_url:|local_edge_trends_enabled:|bacnet_default_port:' /etc/iot-cx-agent/agent.yaml && sudo -S -p '' test -s /etc/iot-cx-agent/edge-agent.env && echo 'GATEWAY_API_TOKEN=***SET***' && ls -ld /var/lib/iot-cx-agent", True),
     ]
 
 
@@ -1384,7 +1384,6 @@ def install_agent_commands(request: UpgradeRequest) -> list[tuple[str, str, bool
         ("upgrade pip", f"cd {repo}/edge-agent && .venv/bin/python -m pip install --upgrade pip", False),
         ("install requirements", f"cd {repo}/edge-agent && .venv/bin/python -m pip install -r requirements.txt", False),
         ("install agent package", f"cd {repo}/edge-agent && .venv/bin/python -m pip install -e .", False),
-        ("ensure Edge UI data dir config (add if missing, preserve existing)", edge_ui_data_dir_config_command(), True),
         ("skip data folder ownership check", "echo 'data folder ownership check skipped in legacy nested SSH mode'", False),
     ]
 
@@ -1412,7 +1411,6 @@ def final_commands(expected_bacnet_default_port: str = "47814") -> list[tuple[st
         ("verify supported BACnet tools", "command -v /home/swadmin/bacnet-stack/bin/bacrp && command -v /home/swadmin/bacnet-stack/bin/bacrpm && echo 'bacrp and bacrpm available'", False),
         ("verify BACnet config preservation", f"pre={expected_port}; post=$(awk '/^bacnet_default_port:/{{print $2; exit}}' /etc/iot-cx-agent/agent.yaml); grep -E 'bacnet_default_port:|default_port:|bacrp_path:|bacrpm_path:' /etc/iot-cx-agent/agent.yaml; echo \"BACNET_CONFIG_PRESERVATION=Passed\"; echo \"PRE_UPGRADE_AGENT_DEFAULT_PORT=$pre\"; echo \"POST_UPGRADE_AGENT_DEFAULT_PORT=$post\"; echo \"ROUTE_SETTINGS_CHANGED=No\"; test \"$post\" = \"$pre\"", False),
         ("verify tunnel relay timeout", "grep -E '^tunnel_request_timeout_sec:' /etc/iot-cx-agent/agent.yaml; test \"$(awk '/^tunnel_request_timeout_sec:/{print $2; exit}' /etc/iot-cx-agent/agent.yaml)\" = 900", False),
-        ("verify Edge UI data dir config", edge_ui_data_dir_validation_command(), True),
         ("agent final logs", "journalctl -u iot-cx-agent -n 60 --no-pager -l || true", False),
     ]
 

@@ -441,7 +441,8 @@ def test_existing_47809_agent_default_remains_47809() -> None:
     final = "\n".join(command for _label, command, _sudo in final_commands("47809"))
 
     assert "bacnet_default_port: 47809" in config
-    assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data" in config
+    assert "edge_ui_data_dir:" not in config
+    assert "local_edge_trends_enabled: false" in config
     assert "default_port: 47809" in config
     assert "bacnet-47809.lock" in config
     assert "pre=47809" in final
@@ -453,7 +454,8 @@ def test_existing_47814_agent_default_remains_47814() -> None:
     final = "\n".join(command for _label, command, _sudo in final_commands("47814"))
 
     assert "bacnet_default_port: 47814" in config
-    assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data" in config
+    assert "edge_ui_data_dir:" not in config
+    assert "local_edge_trends_enabled: false" in config
     assert "default_port: 47814" in config
     assert "pre=47814" in final
 
@@ -466,7 +468,8 @@ def test_fresh_agent_install_defaults_to_47814() -> None:
     assert "default_port: 47814" in config
     assert "bacnet-47814.lock" in config
     assert "bacnet_default_port: 47814" in agent_yaml
-    assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data" in agent_yaml
+    assert "edge_ui_data_dir:" not in agent_yaml
+    assert "local_edge_trends_enabled: false" in agent_yaml
 
 
 def test_existing_gateway_is_not_converted_to_47814() -> None:
@@ -474,7 +477,8 @@ def test_existing_gateway_is_not_converted_to_47814() -> None:
 
     assert "47814" not in agent_yaml
     assert "bacnet_default_port: 47809" in agent_yaml
-    assert "edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data" in agent_yaml
+    assert "edge_ui_data_dir:" not in agent_yaml
+    assert "local_edge_trends_enabled: false" in agent_yaml
     assert "default_port: 47809" in agent_yaml
 
 
@@ -556,18 +560,16 @@ def test_edge_ui_data_dir_duplicate_keys_are_collapsed_preserving_custom_value(t
     assert "edge_ui_data_dir: /custom/data\n" in updated
 
 
-def test_agent_only_phase_selection_applies_config_fix_without_cloud_or_token_phases() -> None:
+def test_agent_only_phase_selection_does_not_require_edge_ui_data_dir_config_fix() -> None:
     commands = install_agent_commands(make_request())
     labels = [label for label, _command, _sudo in commands]
-    ensure_command = next(item for item in commands if item[0] == "ensure Edge UI data dir config (add if missing, preserve existing)")
 
     assert 9 in UPDATE_AGENT_PHASES
     assert 6 not in UPDATE_AGENT_PHASES
     assert 8 not in UPDATE_AGENT_PHASES
-    assert "ensure Edge UI data dir config (add if missing, preserve existing)" in labels
-    assert ensure_command[2] is True
-    assert "edge_ui_data_dir" in edge_ui_data_dir_config_script()
+    assert "ensure Edge UI data dir config (add if missing, preserve existing)" not in labels
     assert "GATEWAY_API_TOKEN" not in "\n".join(command for _label, command, _sudo in commands)
+    assert "local_edge_trends_enabled" not in "\n".join(command for _label, command, _sudo in commands)
 
 
 def test_edge_ui_data_dir_config_command_is_nested_ssh_safe_and_finite() -> None:
@@ -630,7 +632,7 @@ def test_dry_run_displays_edge_ui_data_dir_plan_without_modifying_config(tmp_pat
     assert "ensure Edge UI data dir config" in log_text
 
 
-def test_phase_10_config_timeout_fails_phase_and_skips_agent_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_phase_10_install_agent_skips_edge_ui_data_dir_config_fix(monkeypatch: pytest.MonkeyPatch) -> None:
     request = replace(make_request(), dry_run=False)
     job_id = "edge-ui-data-dir-timeout"
     with JOBS_LOCK:
@@ -640,20 +642,17 @@ def test_phase_10_config_timeout_fails_phase_and_skips_agent_restart(monkeypatch
 
     def fake_run_commands(command_list, *, stop_on_failure=True):
         labels.extend(label for label, _command, _sudo in command_list)
-        if any(label == "ensure Edge UI data dir config (add if missing, preserve existing)" for label, _command, _sudo in command_list):
-            raise RuntimeError("ensure Edge UI data dir config (add if missing, preserve existing) failed with exit code 124")
         return "ok\n"
 
     monkeypatch.setattr(runner, "run_commands", fake_run_commands)
-    with pytest.raises(RuntimeError, match="exit code 124"):
-        runner.run_phase(9)
+    runner.run_phase(9)
 
-    assert "ensure Edge UI data dir config (add if missing, preserve existing)" in labels
+    assert "ensure Edge UI data dir config (add if missing, preserve existing)" not in labels
     assert "restart agent service" not in labels
     with JOBS_LOCK:
         job = JOBS.pop(job_id)
-    assert job.status == "failed"
-    assert job.phases[9].status == legacy_webapp.PhaseStatus.FAILED
+    assert job.status == "waiting"
+    assert job.phases[9].status == legacy_webapp.PhaseStatus.PASSED
     assert job.phases[10].status == legacy_webapp.PhaseStatus.NOT_STARTED
 
 
@@ -694,17 +693,12 @@ def run_edge_ui_data_dir_validation(config_path: Path, tmp_path: Path, *, servic
     )
 
 
-def test_final_verification_passes_for_valid_accessible_edge_ui_data_dir(tmp_path: Path) -> None:
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    config_path = tmp_path / "agent.yaml"
-    config_path.write_text(f"edge_ui_data_dir: {data_dir}\n", encoding="utf-8")
+def test_final_verification_no_longer_requires_edge_ui_data_dir() -> None:
+    labels = [label for label, _command, _sudo in final_commands("47814")]
+    commands = "\n".join(command for _label, command, _sudo in final_commands("47814"))
 
-    result = run_edge_ui_data_dir_validation(config_path, tmp_path)
-
-    assert result.returncode == 0
-    assert f"EDGE_UI_DATA_DIR={data_dir}" in result.stdout
-    assert "EDGE_UI_DATA_DIR_VALIDATION=Passed" in result.stdout
+    assert "verify Edge UI data dir config" not in labels
+    assert "edge_ui_data_dir" not in commands
 
 
 @pytest.mark.parametrize(
@@ -715,7 +709,7 @@ def test_final_verification_passes_for_valid_accessible_edge_ui_data_dir(tmp_pat
         ("edge_ui_data_dir: /does/not/exist\n", "does not exist"),
     ],
 )
-def test_final_verification_fails_for_missing_blank_or_nonexistent_edge_ui_data_dir(tmp_path: Path, config_text: str, expected_error: str) -> None:
+def test_legacy_edge_ui_data_dir_validation_helper_still_reports_invalid_paths(tmp_path: Path, config_text: str, expected_error: str) -> None:
     config_path = tmp_path / "agent.yaml"
     config_path.write_text(config_text, encoding="utf-8")
 
