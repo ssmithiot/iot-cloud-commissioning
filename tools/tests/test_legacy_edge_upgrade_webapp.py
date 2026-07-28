@@ -636,7 +636,14 @@ def test_parse_upgrade_request_defaults_git_ref_to_release_commit() -> None:
 def test_backup_commands_create_named_code_only_checkpoint() -> None:
     joined = "\n".join(command for _label, command, _sudo in backup_commands("0.1.8"))
     assert "/home/swadmin/gw-recovery/0.1.8/pre-update-code.tar.gz" in joined
+    assert "-T /home/swadmin/gw-recovery/0.1.8/included.txt" in joined
     assert "preserves=data/.env/start.sh/site-data" in joined
+
+
+def test_full_backup_behavior_remains_unchanged() -> None:
+    commands = {label: command for label, command, _sudo in backup_commands("0.1.9")}
+
+    assert commands["create UI backup"] == 'cd /home/swadmin && tar -czf "edge-bacnet-ui-v2.backup.$(date +%Y%m%d-%H%M%S).tar.gz" edge-bacnet-ui-v2'
 
 
 def test_queued_gateway_update_defaults_git_ref_to_release_commit(monkeypatch: pytest.MonkeyPatch) -> None:

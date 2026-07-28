@@ -1875,7 +1875,7 @@ class LegacyEdgeUpgradeHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/rollback-code":
                 edge_release = value(fields, "edge_release")
-                threading.Thread(target=run_job_commands, args=(job_id, [(f"code-only checkpoint {index + 1}", command, index in {1, 6, 7}) for index, command in enumerate(code_restore_commands(edge_release))], "Restore Edge UI code-only checkpoint"), daemon=True).start()
+                threading.Thread(target=run_job_commands, args=(job_id, [(f"code-only checkpoint {index + 1}", command, index in {1, 7, 8}) for index, command in enumerate(code_restore_commands(edge_release))], "Restore Edge UI code-only checkpoint"), daemon=True).start()
                 self.respond_json({"ok": True, "scope": "code-only; data/start.sh/credentials/site settings preserved"})
                 return
             if parsed.path == "/api/list-code-checkpoints":
