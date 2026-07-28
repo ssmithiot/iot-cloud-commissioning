@@ -58,6 +58,7 @@ APP_SCRIPT = r"""
   const edgeResourceHealthMinimumVersion = "0.1.6";
   const edgeAgentReleaseVersion = "0.1.9";
   const edgeUiReleaseVersion = "0.1.9";
+  const edgeReleaseUpdateScope = "full_non_provisioning";
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
   const pointTableColumns = [
@@ -1584,7 +1585,7 @@ APP_SCRIPT = r"""
     if (releaseReason === "Up to date") {
       return `<strong>Up to date</strong><small>Agent ${escapeHtml(gateway.agent_version || "?")} · UI ${escapeHtml(gateway.ui_version || "?")}</small>`;
     }
-    return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">${escapeHtml(releaseReason)} · Release ${edgeUiReleaseVersion} required (Agent ${escapeHtml(gateway.agent_version || "unknown")} · UI ${escapeHtml(gateway.ui_version || "unknown")})</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+    return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">${escapeHtml(releaseReason)} · Release: ${edgeUiReleaseVersion} · Mode: Full non-provisioning update · Agent: ${edgeAgentReleaseVersion} · UI: ${edgeUiReleaseVersion} · Provisioning: No · BACnet configuration preserved</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
   }
 
   async function refreshGatewayUpdates() {
@@ -1624,11 +1625,16 @@ APP_SCRIPT = r"""
     try {
       await api("/api/ui/gateway-updates", {
         method: "POST",
-        body: JSON.stringify({ gateway_ids: ids, update_scope: "ui_only", target_ui_version: edgeUiReleaseVersion })
+        body: JSON.stringify({
+          gateway_ids: ids,
+          update_scope: edgeReleaseUpdateScope,
+          target_agent_version: edgeAgentReleaseVersion,
+          target_ui_version: edgeUiReleaseVersion
+        })
       });
       selectedGatewayUpdateIds.clear();
       await refreshGatewayUpdates();
-      setText("status", `Queued ${ids.length} Edge UI ${edgeUiReleaseVersion} update${ids.length === 1 ? "" : "s"}. The legacy updater will run UI-only phases.`);
+      setText("status", `Queued ${ids.length} Edge ${edgeUiReleaseVersion} full non-provisioning update${ids.length === 1 ? "" : "s"}. Provisioning: No. BACnet configuration preserved.`);
       renderGatewayList();
     } catch (error) {
       setText("status", errorMessage(error), true);

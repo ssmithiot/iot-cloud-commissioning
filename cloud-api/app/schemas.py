@@ -378,7 +378,8 @@ class GatewayHeartbeatTrendOut(BaseModel):
 
 class GatewayUpdateRequestIn(BaseModel):
     gateway_ids: list[str] = Field(min_length=1, max_length=100)
-    update_scope: Literal["ui_only", "agent"] = "ui_only"
+    update_scope: Literal["ui_only", "agent", "full_non_provisioning"] = "full_non_provisioning"
+    target_agent_version: str | None = Field(default="0.1.9", min_length=1, max_length=80)
     target_ui_version: str | None = Field(default="0.1.9", min_length=1, max_length=80)
 
 
@@ -397,7 +398,11 @@ class GatewayUpdateRequestOut(BaseModel):
     agent_version: str
     ui_version: str
     update_scope: str
+    target_agent_version: str | None
     target_ui_version: str | None
+    provisioning: bool
+    token_writing: bool
+    bacnet_configuration_preserved: bool
     status: str
     requested_by: str | None
     requested_at: datetime

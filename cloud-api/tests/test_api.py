@@ -29,7 +29,7 @@ from app.auth import hash_gateway_token
 from app.config import Settings
 from app.database import Base, SessionLocal, engine
 from app.main import app
-from app.models import EdgeHeartbeat, EdgeNode, GatewayCredential, OperatorUser, Site, utc_now
+from app.models import EdgeHeartbeat, EdgeNode, GatewayCredential, GatewayUpdateRequest, OperatorUser, Site, utc_now
 from scripts.create_gateway_credential import DEFAULT_SCOPES, create_gateway_credential
 
 
@@ -423,10 +423,16 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'const edgeResourceHealthMinimumVersion = "0.1.6";' in response.text
     assert 'const edgeAgentReleaseVersion = "0.1.9";' in response.text
     assert 'const edgeUiReleaseVersion = "0.1.9";' in response.text
+    assert 'const edgeReleaseUpdateScope = "full_non_provisioning";' in response.text
     assert "return !versionAtLeast(gateway.agent_version, edgeResourceHealthMinimumVersion);" in response.text
     assert "gatewayNeedsAgentRelease(gateway)" in response.text
     assert "gatewayNeedsUiRelease(gateway)" in response.text
     assert "gatewayReleaseReason(gateway)" in response.text
+    assert "Mode: Full non-provisioning update" in response.text
+    assert "Provisioning: No" in response.text
+    assert "BACnet configuration preserved" in response.text
+    assert "target_agent_version: edgeAgentReleaseVersion" in response.text
+    assert "target_ui_version: edgeUiReleaseVersion" in response.text
     assert 'version.toLowerCase() !== "current"' in response.text
     assert 'data-sort="version">Edge App</button>' in response.text
     assert '<td>${gatewayVersionCell(gateway)}</td>' in response.text
@@ -450,7 +456,7 @@ def test_dashboard_release_comparison_states_are_019() -> None:
     assert 'return "UI update required";' in response.text
     assert 'return "Agent update required";' in response.text
     assert 'return "Up to date";' in response.text
-    assert "Release ${edgeUiReleaseVersion} required" in response.text
+    assert "Release: ${edgeUiReleaseVersion}" in response.text
 
 
 def test_gateway_workspace_contains_discovery_progress_ui() -> None:
@@ -783,16 +789,29 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     request = queued.json()[0]
     assert request["gateway_id"] == "GW001"
     assert request["status"] == "queued"
-    assert request["update_scope"] == "ui_only"
+    assert request["update_scope"] == "full_non_provisioning"
+    assert request["target_agent_version"] == "0.1.9"
     assert request["target_ui_version"] == "0.1.9"
+    assert request["provisioning"] is False
+    assert request["token_writing"] is False
+    assert request["bacnet_configuration_preserved"] is True
 
     listed = client.get("/api/admin/gateway-updates", headers=admin_headers())
     assert listed.status_code == 200
     assert listed.json()[0]["request_id"] == request["request_id"]
+    assert listed.json()[0]["update_scope"] == "full_non_provisioning"
+    assert listed.json()[0]["target_agent_version"] == "0.1.9"
+    assert listed.json()[0]["target_ui_version"] == "0.1.9"
 
     claimed = client.post(f"/api/admin/gateway-updates/{request['request_id']}/claim", headers=admin_headers())
     assert claimed.status_code == 200
     assert claimed.json()["status"] == "running"
+    assert claimed.json()["update_scope"] == "full_non_provisioning"
+    assert claimed.json()["target_agent_version"] == "0.1.9"
+    assert claimed.json()["target_ui_version"] == "0.1.9"
+    assert claimed.json()["provisioning"] is False
+    assert claimed.json()["token_writing"] is False
+    assert claimed.json()["bacnet_configuration_preserved"] is True
 
     completed = client.post(
         f"/api/admin/gateway-updates/{request['request_id']}/complete",
@@ -805,8 +824,80 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
         edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
         assert edge_node is not None
         assert edge_node.ui_version == "0.1.9"
-        assert edge_node.agent_version == "0.1.0"
+        assert edge_node.agent_version == "0.1.9"
         assert edge_node.site_id == "demo-site"
+
+
+def test_gateway_update_explicit_ui_only_recovery_remains_available() -> None:
+    create_gateway_token("GW001")
+
+    queued = client.post(
+        "/api/ui/gateway-updates",
+        headers=admin_headers(),
+        json={"gateway_ids": ["GW001"], "update_scope": "ui_only", "target_ui_version": "0.1.9"},
+    )
+
+    assert queued.status_code == 200
+    request = queued.json()[0]
+    assert request["update_scope"] == "ui_only"
+    assert request["target_agent_version"] is None
+    assert request["target_ui_version"] == "0.1.9"
+    assert request["provisioning"] is False
+    assert request["token_writing"] is False
+    assert request["bacnet_configuration_preserved"] is False
+
+    completed = client.post(
+        f"/api/admin/gateway-updates/{request['request_id']}/complete",
+        headers=admin_headers(),
+        json={"status": "completed"},
+    )
+
+    assert completed.status_code == 200
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
+        assert edge_node is not None
+        assert edge_node.ui_version == "0.1.9"
+        assert edge_node.agent_version == "0.1.0"
+
+
+@pytest.mark.parametrize(
+    ("agent_version", "ui_version"),
+    [
+        ("0.1.8", "0.1.8"),
+        ("0.1.9", "0.1.8"),
+        ("0.1.8", "0.1.9"),
+        ("0.1.7", "0.1.7"),
+    ],
+)
+def test_gateway_update_default_full_non_provisioning_for_rollout_versions(agent_version: str, ui_version: str) -> None:
+    create_gateway_token("GW001")
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
+        assert edge_node is not None
+        edge_node.agent_version = agent_version
+        edge_node.ui_version = ui_version
+        db.commit()
+
+    queued = client.post(
+        "/api/ui/gateway-updates",
+        headers=admin_headers(),
+        json={"gateway_ids": ["GW001"]},
+    )
+
+    assert queued.status_code == 200
+    request = queued.json()[0]
+    assert request["update_scope"] == "full_non_provisioning"
+    assert request["target_agent_version"] == "0.1.9"
+    assert request["target_ui_version"] == "0.1.9"
+    assert request["provisioning"] is False
+    assert request["token_writing"] is False
+    assert request["bacnet_configuration_preserved"] is True
+    with SessionLocal() as db:
+        stored = db.scalar(select(GatewayUpdateRequest).where(GatewayUpdateRequest.gateway_id == "GW001"))
+        assert stored is not None
+        assert stored.update_scope == "full_non_provisioning"
+        assert stored.target_agent_version == "0.1.9"
+        assert stored.target_ui_version == "0.1.9"
 
 
 def test_configure_gateway_redirects_to_cloud_tunnel() -> None:

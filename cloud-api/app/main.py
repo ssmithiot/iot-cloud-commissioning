@@ -425,7 +425,11 @@ def _gateway_update_out(update: GatewayUpdateRequest, edge_node: EdgeNode) -> di
         "agent_version": edge_node.agent_version,
         "ui_version": edge_node.ui_version,
         "update_scope": update.update_scope,
+        "target_agent_version": update.target_agent_version,
         "target_ui_version": update.target_ui_version,
+        "provisioning": False,
+        "token_writing": False,
+        "bacnet_configuration_preserved": update.update_scope == "full_non_provisioning",
         "status": update.status,
         "requested_by": update.requested_by,
         "requested_at": update.requested_at,
@@ -1720,7 +1724,12 @@ def ui_request_gateway_updates(
                 gateway_id=gateway_id,
                 requested_by=auth.email or "admin-token",
                 update_scope=payload.update_scope,
-                target_ui_version=payload.target_ui_version if payload.update_scope == "ui_only" else None,
+                target_agent_version=payload.target_agent_version
+                if payload.update_scope in {"agent", "full_non_provisioning"}
+                else None,
+                target_ui_version=payload.target_ui_version
+                if payload.update_scope in {"ui_only", "full_non_provisioning"}
+                else None,
                 status="queued",
                 requested_at=now,
             )
@@ -3199,11 +3208,17 @@ def admin_complete_gateway_update(
     update.error_message = payload.error_message
     update.completed_at = utc_now()
     if payload.status == "completed" and update.update_scope == "ui_only" and update.target_ui_version:
-        # A successful UI-only deployment updates only this release marker.
-        # Gateway/site identity, address, IP, tokens, and agent settings are
-        # intentionally outside this workflow.
         edge_node = _get_gateway_with_site_or_404(db, update.gateway_id)
         edge_node.ui_version = update.target_ui_version
+    if payload.status == "completed" and update.update_scope == "full_non_provisioning":
+        # A successful non-provisioning deployment updates only release markers.
+        # Gateway identity, tokens, BACnet settings, and routing are preserved
+        # by the gateway updater workflow and intentionally untouched here.
+        edge_node = _get_gateway_with_site_or_404(db, update.gateway_id)
+        if update.target_agent_version:
+            edge_node.agent_version = update.target_agent_version
+        if update.target_ui_version:
+            edge_node.ui_version = update.target_ui_version
     db.commit()
     return _gateway_update_out(update, _get_gateway_with_site_or_404(db, update.gateway_id))
 
