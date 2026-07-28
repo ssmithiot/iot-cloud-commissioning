@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import os
 import socket
 import subprocess
 import sys
@@ -24,16 +23,13 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     agent_config_text,
     apply_ui_files_script,
     auth_commands,
-    bacnet_route_probe_command,
-    bacnet_route_probe_script,
-    classify_bacnet_preflight,
     config_commands,
     apply_ui_commands,
     DEFAULT_EDGE_UPDATE_REF,
     create_update_zip,
+    inspect_commands,
     load_env_defaults,
     parse_upgrade_request,
-    parse_bacnet_route_settings,
     restart_ui_commands,
     rollback_commands,
     backup_commands,
@@ -123,18 +119,11 @@ def make_runner(job_id: str = "route-preflight-test") -> LegacyUpgradeRunner:
     return LegacyUpgradeRunner(job_id, request)
 
 
-def preflight_output(route_state: dict[str, str]) -> str:
+def existing_install_preflight_output() -> str:
     return "\n".join(
         [
-            f"ROUTE_DECISION={route_state['route_decision']}",
-            f"DETECTED_BACNET_IP_PORT={route_state['primary_bacnet_port']}",
-            f"DETECTED_BACNET_PORT_MODE={route_state['mode']}",
-            f"CONFIGURED_BACNET_PORTS={route_state['configured_bacnet_ports']}",
-            f"PREFERRED_ROUTE={route_state['preferred_route']}",
-            f"INTERNAL_EDGE_ROUTER_SERVICES={route_state['internal_edge_router_services']}",
-            f"ROUTE_FILES={route_state['route_files']}",
-            f"UPDATE_ALLOWED={route_state['update_allowed']}",
-            f"BACNET_CONFLICT={route_state['conflict']}",
+            "drwxr-xr-x 10 swadmin swadmin 4096 Jul 28 /home/swadmin/edge-bacnet-ui-v2",
+            "fatal: not a git repository (or any of the parent directories): .git",
             "EDGE_AGENT_VERSION=0.1.9",
             "SUDO_AVAILABLE=yes",
             "BACKUP_PATH_WRITABLE=/home/swadmin",
@@ -198,162 +187,114 @@ def test_update_start_sh_preserves_edge_router_enabled_fixture_byte_for_byte(tmp
     assert path.read_text(encoding="utf-8") == original
 
 
-def test_bacnet_preflight_classifies_gw006_dual_port_preserve_existing() -> None:
-    start_sh = (
+def test_existing_install_skips_route_detection_entirely() -> None:
+    commands = inspect_commands()
+    labels = [label for label, _command, _sudo in commands]
+    joined_commands = "\n".join(command for _label, command, _sudo in commands)
+
+    assert "BACnet route detection" not in labels
+    assert "ROUTE_DECISION" not in joined_commands
+    assert "bacnet_route_probe" not in joined_commands
+    assert "python3 - <<" not in joined_commands
+    assert "ss -H" not in joined_commands
+    assert "pgrep" not in joined_commands
+    assert "iot-cx-bacnet-router.service" not in joined_commands
+    assert "iot-cx-mstp-router.service" not in joined_commands
+
+
+def test_existing_install_preflight_reports_preservation_policy() -> None:
+    runner = make_runner("existing-policy-preflight-test")
+    try:
+        runner.validate_inspection(existing_install_preflight_output())
+        with JOBS_LOCK:
+            summary = JOBS["existing-policy-preflight-test"].summary
+        assert summary["BACnet policy"] == "Preserve existing configuration"
+        assert summary["BACnet files/settings changed"] == "None"
+        assert summary["start.sh"] == "Preserved"
+        assert summary["router config files"] == "Preserved"
+        assert summary["router services"] == "Not changed"
+        assert "BACnet decision" not in summary
+        assert "Detected external router port" not in summary
+    finally:
+        with JOBS_LOCK:
+            JOBS.pop("existing-policy-preflight-test", None)
+
+
+def test_existing_route_start_sh_remains_byte_for_byte_even_when_auth_differs(tmp_path: Path) -> None:
+    path = tmp_path / "start.sh"
+    original = (
+        "#!/usr/bin/env bash\n"
         "export BACNET_IP_PORT=47814\n"
         "export BACNET_IP_PORTS=47809,47814\n"
         "export BACNET_PORT_MODE=dual-47809-first\n"
+        "export AUTH_ENABLED=0\n"
+        "export EDGE_UI_USERNAME=old-admin\n"
+        "export EDGE_UI_PASSWORD='old-secret'\n"
+        "python3 app.py\n"
+    )
+    path.write_text(original, encoding="utf-8")
+
+    subprocess.run(
+        [sys.executable, "-c", start_sh_update_script("new-admin", "new-secret", str(path))],
+        check=True,
     )
 
-    state = classify_bacnet_preflight(
-        parse_bacnet_route_settings(start_sh),
-        router_config_present=True,
-        legacy_router_config_present=True,
-        service_states={
-            "iot-cx-bacnet-router.service": "inactive/disabled",
-            "iot-cx-mstp-router.service": "inactive/disabled",
-            "edge-bacnet-ui.service": "active/enabled",
-            "iot-cx-agent.service": "active/enabled",
-        },
-    )
+    assert path.read_text(encoding="utf-8") == original
 
-    assert state == {
-        "configured": "true",
-        "confidence": "confirmed",
-        "route_decision": "preserve_existing",
-        "mode": "external_dual_port",
-        "primary_bacnet_port": "47814",
-        "configured_bacnet_ports": "47809,47814",
-        "preferred_route": "47809-first",
-        "internal_edge_router_services": "disabled",
-        "route_files": "preserve_unchanged",
-        "update_allowed": "true",
-        "conflict": "None",
-    }
 
-    runner = make_runner("gw006-route-preflight-test")
+def test_router_config_files_remain_untouched_by_ui_apply() -> None:
+    apply_command = next(command for label, command, _sudo in apply_ui_commands(make_request()) if label == "apply code-only UI files")
+
+    assert "router-config.json" not in apply_command
+    assert "edge_bacnet_router.json" not in apply_command
+    assert "/data" not in apply_command
+
+
+def test_router_services_are_not_queried_or_changed_by_preflight() -> None:
+    commands = inspect_commands()
+    joined_commands = "\n".join(command for _label, command, _sudo in commands)
+
+    assert "iot-cx-bacnet-router.service" not in joined_commands
+    assert "iot-cx-mstp-router.service" not in joined_commands
+    assert "systemctl list-unit-files" not in joined_commands
+
+
+def test_fresh_install_fixture_receives_external_47814_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "start.sh"
+    path.write_text("#!/usr/bin/env bash\npython3 app.py\n", encoding="utf-8")
+
+    run_start_sh_update(path)
+
+    updated = path.read_text(encoding="utf-8")
+    assert "export BACNET_IP_PORT=47814\n" in updated
+    assert "export BACNET_PORT_MODE=external\n" in updated
+    assert "EDGE_BACNET_ROUTER_ENABLED=1" not in updated
+
+
+@pytest.mark.parametrize("port", ["47809", "47814"])
+def test_existing_47809_and_47814_fixtures_pass_without_route_inspection(port: str) -> None:
+    runner = make_runner(f"existing-{port}-preflight-test")
     try:
-        runner.validate_inspection(preflight_output(state))
+        runner.validate_inspection(existing_install_preflight_output() + f"\n1:export BACNET_IP_PORT={port}")
         with JOBS_LOCK:
-            summary = JOBS["gw006-route-preflight-test"].summary
-        assert summary["BACnet decision"] == "Preserve existing"
-        assert summary["Configured ports"] == "47809, 47814"
-        assert summary["Primary/source setting"] == "47814"
-        assert summary["Preferred route order"] == "47809 first"
-        assert summary["Existing router config files"] == "Preserved unchanged"
-        assert summary["Conflict"] == "None"
-        assert summary["Update allowed"] == "Yes"
-        assert "BACNET_IP_PORT is not necessarily" in summary["BACNET_IP_PORT note"]
+            summary = JOBS[f"existing-{port}-preflight-test"].summary
+        assert summary["BACnet policy"] == "Preserve existing configuration"
+        assert summary["BACnet files/settings changed"] == "None"
     finally:
         with JOBS_LOCK:
-            JOBS.pop("gw006-route-preflight-test", None)
+            JOBS.pop(f"existing-{port}-preflight-test", None)
 
 
-def test_bacnet_preflight_preserves_both_route_files_without_active_conflict() -> None:
-    state = classify_bacnet_preflight(
-        parse_bacnet_route_settings("export BACNET_IP_PORT=47814\n"),
-        router_config_present=True,
-        legacy_router_config_present=True,
-        service_states={
-            "iot-cx-bacnet-router.service": "inactive/disabled",
-            "iot-cx-mstp-router.service": "inactive/disabled",
-        },
-    )
-
-    assert state["route_decision"] == "preserve_existing"
-    assert state["route_files"] == "preserve_unchanged"
-    assert state["update_allowed"] == "true"
-    assert state["conflict"] == "None"
-
-
-def test_bacnet_preflight_blocks_duplicate_listener_conflict() -> None:
-    state = classify_bacnet_preflight(
-        parse_bacnet_route_settings("export BACNET_IP_PORT=47814\n"),
-        listeners=[(47814, "edge-ui"), (47814, "router-mstp")],
-    )
-
-    assert state["route_decision"] == "ambiguous"
-    assert state["update_allowed"] == "false"
-    assert "duplicate listener on UDP 47814" in state["conflict"]
-
-    runner = make_runner("duplicate-listener-route-preflight-test")
+def test_ambiguous_route_text_no_longer_blocks_existing_upgrade() -> None:
+    runner = make_runner("ambiguous-text-is-ignored-test")
     try:
-        with pytest.raises(RuntimeError, match="Ambiguous BACnet route state"):
-            runner.validate_inspection(preflight_output(state))
+        runner.validate_inspection(existing_install_preflight_output() + "\nROUTE_DECISION=ambiguous legacy text")
+        with JOBS_LOCK:
+            summary = JOBS["ambiguous-text-is-ignored-test"].summary
+        assert summary["BACnet policy"] == "Preserve existing configuration"
     finally:
         with JOBS_LOCK:
-            JOBS.pop("duplicate-listener-route-preflight-test", None)
-
-
-def test_bacnet_preflight_blocks_invalid_primary_port() -> None:
-    state = classify_bacnet_preflight(parse_bacnet_route_settings("export BACNET_IP_PORT=not-a-port\n"))
-
-    assert state["route_decision"] == "ambiguous"
-    assert state["update_allowed"] == "false"
-    assert "invalid BACNET_IP_PORT=not-a-port" in state["conflict"]
-
-
-def test_bacnet_route_detection_command_contains_no_interactive_heredoc() -> None:
-    command = bacnet_route_probe_command()
-
-    assert "\n" not in command
-    assert "<<" not in command
-    assert "python3 - <<" not in command
-    assert "base64 -d" in command
-    assert "timeout 30s" in command
-
-
-def test_bacnet_route_detection_inspections_are_bounded() -> None:
-    script = bacnet_route_probe_script()
-
-    assert "INSPECTION_TIMEOUT_SEC = 5" in script
-    assert "DETECTOR_TIMEOUT_SEC = 30" in script
-    assert "['timeout', f'{INSPECTION_TIMEOUT_SEC}s', *command]" in script
-    assert "['systemctl', 'is-active', service]" in script
-    assert "['systemctl', 'is-enabled', service]" in script
-    assert "ss -H -lunp" in script
-    assert "['pgrep', '-af'," in script
-    assert "sudo" not in script
-
-
-def test_bacnet_route_detection_command_executes_and_emits_parseable_output() -> None:
-    command = bacnet_route_probe_command()
-    completed = subprocess.run(command, shell=True, text=True, capture_output=True, timeout=10)
-
-    assert completed.returncode == 0
-    output = completed.stdout
-    assert "detection_status=" in output
-    assert "ROUTE_DECISION=" in output
-    assert "UPDATE_ALLOWED=" in output
-
-
-def test_bacnet_route_detection_timed_out_inspection_blocks_safely(tmp_path: Path) -> None:
-    fake_timeout = tmp_path / "timeout"
-    fake_timeout.write_text(
-        "#!/usr/bin/env sh\n"
-        "case \"$*\" in\n"
-        "  *systemctl*|*ss\\ -*|*pgrep*) exit 124 ;;\n"
-        "  *) shift; exec \"$@\" ;;\n"
-        "esac\n",
-        encoding="utf-8",
-    )
-    fake_timeout.chmod(0o755)
-
-    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
-    completed = subprocess.run(
-        [sys.executable, "-c", bacnet_route_probe_script()],
-        text=True,
-        capture_output=True,
-        timeout=10,
-        env=env,
-    )
-
-    assert completed.returncode == 0
-    output = completed.stdout
-    assert "detection_status=failed" in output
-    assert "reason=iot-cx-bacnet-router.service active state timeout after 5s" in output
-    assert "ROUTE_DECISION=ambiguous" in output
-    assert "UPDATE_ALLOWED=false" in output
+            JOBS.pop("ambiguous-text-is-ignored-test", None)
 
 
 def test_update_start_sh_defaults_unconfigured_install_to_external_47814(tmp_path: Path) -> None:

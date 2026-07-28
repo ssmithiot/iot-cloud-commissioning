@@ -48,7 +48,6 @@ REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
 NESTED_UPLOAD_CHUNK_SIZE = 3000
-INTERNAL_EDGE_ROUTER_SERVICES = ("iot-cx-bacnet-router.service", "iot-cx-mstp-router.service")
 UI_PACKAGE_FILES = (
     "app.py",
     "edge_program_engine.py",
@@ -178,82 +177,6 @@ def parse_bacnet_route_settings(text: str) -> dict[str, str]:
         if match:
             settings[match.group(1)] = match.group(2).strip().strip('"').strip("'")
     return settings
-
-
-def _valid_bacnet_port(value: str) -> bool:
-    return value.isdigit() and 1 <= int(value) <= 65535
-
-
-def classify_bacnet_preflight(
-    settings: dict[str, str],
-    *,
-    router_config_present: bool = False,
-    legacy_router_config_present: bool = False,
-    service_states: dict[str, str] | None = None,
-    listeners: list[tuple[int, str]] | None = None,
-    serial_owners: list[tuple[str, str]] | None = None,
-) -> dict[str, str]:
-    service_states = service_states or {}
-    listeners = listeners or []
-    serial_owners = serial_owners or []
-    conflicts = []
-    primary_port = settings.get("BACNET_IP_PORT", "")
-    configured_list_ports = [value.strip() for value in settings.get("BACNET_IP_PORTS", "").split(",") if value.strip()]
-    port_values = configured_list_ports or ([primary_port] if primary_port else [])
-    if primary_port and not _valid_bacnet_port(primary_port):
-        conflicts.append(f"invalid BACNET_IP_PORT={primary_port}")
-    for index, value in enumerate(configured_list_ports, start=1):
-        if value and not _valid_bacnet_port(value):
-            conflicts.append(f"invalid BACNET_IP_PORTS[{index}]={value}")
-    active_internal = [
-        service
-        for service in INTERNAL_EDGE_ROUTER_SERVICES
-        if any(part in {"active", "enabled"} for part in re.split(r"[/,\s]+", service_states.get(service, "").lower()) if part)
-    ]
-    listener_owners: dict[int, set[str]] = {}
-    for port, owner in listeners:
-        listener_owners.setdefault(port, set()).add(owner or "unknown")
-    for port, owners in sorted(listener_owners.items()):
-        if len(owners) > 1:
-            conflicts.append(f"duplicate listener on UDP {port}: {', '.join(sorted(owners))}")
-    if len(active_internal) > 1:
-        conflicts.append(f"multiple internal router services active/enabled: {', '.join(active_internal)}")
-    serial_by_device: dict[str, set[str]] = {}
-    for device, owner in serial_owners:
-        serial_by_device.setdefault(device, set()).add(owner or "unknown")
-    for device, owners in sorted(serial_by_device.items()):
-        if len(owners) > 1:
-            conflicts.append(f"conflicting serial ownership on {device}: {', '.join(sorted(owners))}")
-    if conflicts:
-        decision = "ambiguous"
-        confidence = "ambiguous"
-        update_allowed = "false"
-    elif settings:
-        decision = "preserve_existing"
-        confidence = "confirmed"
-        update_allowed = "true"
-    else:
-        decision = "default_external_47814"
-        confidence = "confirmed"
-        update_allowed = "true"
-    mode = settings.get("BACNET_PORT_MODE", "external" if not settings else "unknown")
-    configured_ports = ",".join(dict.fromkeys(value for value in port_values if value)) or ("47814" if not settings else "none")
-    preferred_route = "47809-first" if mode == "dual-47809-first" or configured_ports.startswith("47809,") else "configured"
-    route_files = "preserve_unchanged" if router_config_present or legacy_router_config_present or settings else "none"
-    internal_services = "disabled" if not active_internal else "active_or_enabled"
-    return {
-        "configured": "true" if settings else "false",
-        "confidence": confidence,
-        "route_decision": decision,
-        "mode": "external_dual_port" if mode.startswith("dual-") else mode,
-        "primary_bacnet_port": primary_port or ("47814" if not settings else "none"),
-        "configured_bacnet_ports": configured_ports,
-        "preferred_route": preferred_route,
-        "internal_edge_router_services": internal_services,
-        "route_files": route_files,
-        "update_allowed": update_allowed,
-        "conflict": "; ".join(conflicts) if conflicts else "None",
-    }
 
 
 class LiveLog:
@@ -723,7 +646,7 @@ function renderPhases(items) {{
 
 function renderSummary(items) {{
   const entries = Object.entries(items || {{}});
-  summary.innerHTML = entries.length ? entries.map(([key, value]) => `<div><b>${{key}}</b><span>${{value}}</span></div>`).join("") : "<div><b>Preflight</b><span>Run preflight to populate target identity, SSH route, versions, BACnet decision, backup, validation and rollback status.</span></div>";
+  summary.innerHTML = entries.length ? entries.map(([key, value]) => `<div><b>${{key}}</b><span>${{value}}</span></div>`).join("") : "<div><b>Preflight</b><span>Run preflight to populate target identity, SSH route, versions, BACnet policy, backup, validation and rollback status.</span></div>";
 }}
 
 async function poll() {{
@@ -1021,6 +944,8 @@ has_route_config = any(
     for line in lines
     for marker in route_markers
 )
+if has_route_config:
+    raise SystemExit(0)
 seen = set()
 out = []
 for line in lines:
@@ -1092,153 +1017,7 @@ def apply_ui_files_command() -> str:
     return "python3 -c " + shell_quote(script)
 
 
-def bacnet_route_probe_script() -> str:
-    return r"""
-from pathlib import Path
-import subprocess
-import re
-
-INSPECTION_TIMEOUT_SEC = 5
-DETECTOR_TIMEOUT_SEC = 30
-inspection_failures = []
-
-
-def run_bounded(label, command):
-    try:
-        completed = subprocess.run(
-            ['timeout', f'{INSPECTION_TIMEOUT_SEC}s', *command],
-            text=True,
-            capture_output=True,
-            timeout=INSPECTION_TIMEOUT_SEC + 2,
-        )
-    except subprocess.TimeoutExpired:
-        inspection_failures.append(f'{label} timeout after {INSPECTION_TIMEOUT_SEC}s')
-        return ''
-    except Exception as exc:
-        inspection_failures.append(f'{label} failed: {exc}')
-        return ''
-    if completed.returncode == 124:
-        inspection_failures.append(f'{label} timeout after {INSPECTION_TIMEOUT_SEC}s')
-        return completed.stdout
-    if completed.returncode not in (0, 1, 3):
-        stderr = completed.stderr.strip()
-        inspection_failures.append(f'{label} failed with exit code {completed.returncode}' + (f': {stderr}' if stderr else ''))
-    return completed.stdout
-
-
-start = Path('/home/swadmin/edge-bacnet-ui-v2/start.sh')
-router = Path('/home/swadmin/edge-bacnet-ui-v2/data/router-config.json')
-legacy_router = Path('/home/swadmin/edge-bacnet-ui-v2/data/edge_bacnet_router.json')
-text = start.read_text(errors='replace') if start.exists() else ''
-settings = {}
-for line in text.splitlines():
-    stripped = line.strip()
-    match = re.match(r'(?:export\s+)?(BACNET_IP_PORT|BACNET_IP_PORTS|BACNET_PORT_MODE|BACNET_EDGE_PROGRAM_PORTS)=(.*)', stripped)
-    if match:
-        settings[match.group(1)] = match.group(2).strip().strip('"').strip("'")
-def valid_port(value):
-    return value.isdigit() and 1 <= int(value) <= 65535
-services = ('iot-cx-bacnet-router.service', 'iot-cx-mstp-router.service')
-service_states = {}
-for service in services:
-    active = run_bounded(f'{service} active state', ['systemctl', 'is-active', service]).strip()
-    enabled = run_bounded(f'{service} enabled state', ['systemctl', 'is-enabled', service]).strip()
-    service_states[service] = f'{active}/{enabled}' if active or enabled else 'unknown'
-port = settings.get('BACNET_IP_PORT', '')
-configured_list_ports = [value.strip() for value in settings.get('BACNET_IP_PORTS', '').split(',') if value.strip()]
-ports = configured_list_ports or ([port] if port else [])
-conflicts = []
-if port and not valid_port(port):
-    conflicts.append(f'invalid BACNET_IP_PORT={port}')
-for index, value in enumerate(configured_list_ports, start=1):
-    if not valid_port(value):
-        conflicts.append(f'invalid BACNET_IP_PORTS[{index}]={value}')
-listener_owners = {}
-ss_output = run_bounded('UDP listener inspection', ['sh', '-c', 'ss -H -lunp 2>/dev/null || ss -H -lun 2>/dev/null || true'])
-for line in ss_output.splitlines():
-    match = re.search(r':([0-9]{2,5})\s', line + ' ')
-    if not match:
-        continue
-    listener_port = int(match.group(1))
-    if str(listener_port) not in set(ports):
-        continue
-    process_match = re.search(r'users:\(\("([^"]+)"', line)
-    owner = process_match.group(1) if process_match else line.strip()
-    listener_owners.setdefault(listener_port, set()).add(owner)
-for listener_port, owners in sorted(listener_owners.items()):
-    if len(owners) > 1:
-        conflicts.append(f'duplicate listener on UDP {listener_port}: {", ".join(sorted(owners))}')
-active_internal = [
-    service for service, state in service_states.items()
-    if 'active' in state.split('/')[0:1] or 'enabled' in state.split('/')[1:2]
-]
-if len(active_internal) > 1:
-    conflicts.append(f'multiple internal router services active/enabled: {", ".join(active_internal)}')
-serial_owners = {}
-process_output = run_bounded('serial owner inspection', ['pgrep', '-af', r'bacnet|router|mstp|485|ttyUSB|ttyACM'])
-for line in process_output.splitlines():
-    device_match = re.search(r'(/dev/(?:ttyUSB|ttyACM|serial/by-id/)[^\s]+)', line)
-    if not device_match:
-        continue
-    process = line.split(None, 1)[1] if len(line.split(None, 1)) > 1 else line
-    serial_owners.setdefault(device_match.group(1), set()).add(process[:80])
-for device, owners in sorted(serial_owners.items()):
-    if len(owners) > 1:
-        conflicts.append(f'conflicting serial ownership on {device}: {", ".join(sorted(owners))}')
-if inspection_failures:
-    conflicts.extend(inspection_failures)
-mode = settings.get('BACNET_PORT_MODE', 'external' if not settings else 'unknown')
-configured_ports = ','.join(dict.fromkeys(value for value in ports if value)) or ('47814' if not settings else 'none')
-preferred_route = '47809-first' if mode == 'dual-47809-first' or configured_ports.startswith('47809,') else 'configured'
-print(f'detection_status={"failed" if inspection_failures else "ok"}')
-print(f'reason={"; ".join(inspection_failures) if inspection_failures else "none"}')
-if conflicts:
-    print(f'ROUTE_DECISION=ambiguous {"; ".join(conflicts)}')
-elif settings:
-    print('ROUTE_DECISION=preserve_existing')
-else:
-    print('ROUTE_DECISION=default_external_47814')
-print(f'DETECTED_BACNET_IP_PORT={port or "none"}')
-print(f'DETECTED_BACNET_PORT_MODE={mode}')
-print(f'DETECTED_BACNET_IP_PORTS={settings.get("BACNET_IP_PORTS", "none")}')
-print(f'DETECTED_EDGE_PROGRAM_PORTS={settings.get("BACNET_EDGE_PROGRAM_PORTS", "none")}')
-print(f'ROUTER_CONFIG_PRESENT={router.exists()}')
-print(f'LEGACY_ROUTER_CONFIG_PRESENT={legacy_router.exists()}')
-print(f'BACNET_CONFIGURED={str(bool(settings)).lower()}')
-print(f'BACNET_CONFIDENCE={"ambiguous" if conflicts else "confirmed"}')
-print(f'BACNET_MODE={"external_dual_port" if mode.startswith("dual-") else mode}')
-print(f'CONFIGURED_BACNET_PORTS={configured_ports}')
-print(f'PREFERRED_ROUTE={preferred_route}')
-print(f'INTERNAL_EDGE_ROUTER_SERVICES={"disabled" if not active_internal else "active_or_enabled"}')
-print(f'ROUTE_FILES={"preserve_unchanged" if router.exists() or legacy_router.exists() or settings else "none"}')
-print(f'UPDATE_ALLOWED={"false" if conflicts else "true"}')
-print(f'BACNET_CONFLICT={"; ".join(conflicts) if conflicts else "None"}')
-for service in services:
-    print(f'SERVICE_STATE_{service}={service_states.get(service, "unknown")}')
-if router.exists():
-    print('INTERNAL_EDGE_ROUTER_CONFIG=router-config.json present; preserve')
-elif legacy_router.exists():
-    print('INTERNAL_EDGE_ROUTER_CONFIG=edge_bacnet_router.json present; preserve')
-else:
-    print('INTERNAL_EDGE_ROUTER_CONFIG=none; fresh default disabled')
-"""
-
-
-def bacnet_route_probe_command() -> str:
-    encoded = b64(bacnet_route_probe_script())
-    detector_timeout_sec = 30
-    inner = f"printf %s {shell_quote(encoded)} | base64 -d | python3 -c 'exec(__import__(\"sys\").stdin.read())'"
-    script = (
-        f"timeout {detector_timeout_sec}s sh -c {shell_quote(inner)}; "
-        "code=$?; "
-        f"if [ \"$code\" -eq 124 ]; then printf '%s\\n' 'detection_status=failed' 'reason=detector timeout after {detector_timeout_sec}s' 'ROUTE_DECISION=ambiguous detector timeout after {detector_timeout_sec}s' 'UPDATE_ALLOWED=false' 'BACNET_CONFLICT=detector timeout after {detector_timeout_sec}s'; "
-        "elif [ \"$code\" -ne 0 ]; then printf '%s\\n' 'detection_status=failed' \"reason=detector exited with code $code\" \"ROUTE_DECISION=ambiguous detector exited with code $code\" 'UPDATE_ALLOWED=false' \"BACNET_CONFLICT=detector exited with code $code\"; fi"
-    )
-    return script
-
-
 def inspect_commands() -> list[tuple[str, str, bool]]:
-    route_probe = bacnet_route_probe_command()
     return [
         ("hostname", "hostname", False),
         ("network addresses", "ip -br addr", False),
@@ -1249,8 +1028,6 @@ def inspect_commands() -> list[tuple[str, str, bool]]:
         ("cloud repo folder", f'ls -ld {DEFAULT_REPO_PATH} 2>/dev/null || echo "missing iot-cloud-commissioning"', False),
         ("current Edge UI version", "grep -R \"0.1.9\\|Edge Release\\|Edge BACnet\" -n /home/swadmin/edge-bacnet-ui-v2/README.md /home/swadmin/edge-bacnet-ui-v2/templates/base.html 2>/dev/null | head -20 || true", False),
         ("current edge agent version", "/home/swadmin/iot-cloud-commissioning/edge-agent/.venv/bin/python -c 'import iot_cx_agent; print(\"EDGE_AGENT_VERSION=\" + getattr(iot_cx_agent, \"__version__\", \"unknown\"))' 2>/dev/null || python3 -c 'import iot_cx_agent; print(\"EDGE_AGENT_VERSION=\" + getattr(iot_cx_agent, \"__version__\", \"unknown\"))' 2>/dev/null || echo EDGE_AGENT_VERSION=unknown", False),
-        ("BACnet route detection", route_probe, False),
-        ("unit files", "systemctl list-unit-files | grep -Ei 'iot|cx|bacnet|edge' || true", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service 2>/dev/null || true", False),
         ("edge UI enabled", "systemctl is-enabled edge-bacnet-ui.service 2>/dev/null || true", False),
         (
@@ -1263,7 +1040,7 @@ def inspect_commands() -> list[tuple[str, str, bool]]:
         ("edge UI git log", f"git -C {REMOTE_UI_PATH} log --oneline -5 || true", False),
         (
             "safe start.sh inspection",
-            r"""grep -nE 'BACNET_IP_PORT|AUTH_ENABLED|EDGE_UI_USERNAME|EDGE_UI_PASSWORD|RPM_BLOCK_SIZE|RPM_VIEW_BLOCK_SIZE|DEFAULT_SCAN_LIMIT|MAX_OBJECTS' /home/swadmin/edge-bacnet-ui-v2/start.sh | sed -E "s/(EDGE_UI_PASSWORD=).*/\1'***SET***'/" || true""",
+            r"""timeout 5s grep -nE 'BACNET_IP_PORT|BACNET_IP_PORTS|BACNET_PORT_MODE|AUTH_ENABLED|EDGE_UI_USERNAME|EDGE_UI_PASSWORD|RPM_BLOCK_SIZE|RPM_VIEW_BLOCK_SIZE|DEFAULT_SCAN_LIMIT|MAX_OBJECTS' /home/swadmin/edge-bacnet-ui-v2/start.sh | sed -E "s/(EDGE_UI_PASSWORD=).*/\1'***SET***'/" || true""",
             False,
         ),
     ]
@@ -1312,7 +1089,7 @@ def auth_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     )
     return [
         ("backup start.sh", 'cd /home/swadmin/edge-bacnet-ui-v2 && cp start.sh "start.sh.bak.$(date +%Y%m%d-%H%M%S)"', False),
-        ("update start.sh auth and BACnet port", update_start_sh_command(request.ui_username, request.ui_password), False),
+        ("preserve existing start.sh or default fresh start.sh", update_start_sh_command(request.ui_username, request.ui_password), False),
         ("write local edge UI adapter token", f"printf %s {shell_quote(token_b64)} | base64 -d > /home/swadmin/edge-bacnet-ui-v2/.edge-agent-write-token && chmod 600 /home/swadmin/edge-bacnet-ui-v2/.edge-agent-write-token", False),
         ("write edge agent adapter token", f"sudo -S -p '' sh -c {shell_quote(agent_env_script)}", True),
         (
@@ -1807,8 +1584,6 @@ class LegacyUpgradeRunner:
 
     def validate_inspection(self, output: str) -> None:
         if self.request.dry_run:
-            if "ROUTE_DECISION=ambiguous" in output:
-                raise RuntimeError("Ambiguous BACnet route state. Resolve the reported route conflict before enabling Update.")
             self.write_preflight_summary(output)
             return
         lower = output.lower()
@@ -1818,30 +1593,10 @@ class LegacyUpgradeRunner:
             raise RuntimeError("One or more BACnet tools are missing. Continue only after explicit field approval.")
         if "not a git repository" not in lower and "fatal:" not in lower:
             raise RuntimeError("edge-bacnet-ui-v2 appears to be a git repo. Do not use copied-folder legacy path without approval.")
-        if "ROUTE_DECISION=ambiguous" in output:
-            raise RuntimeError("Ambiguous BACnet route state. Resolve the reported route conflict before enabling Update.")
         self.write_preflight_summary(output)
         self.log.append("\nCheckpoint summary:\nLegacy edge-only candidate: YES\nProceed with copied-folder update path: YES\n")
 
     def write_preflight_summary(self, output: str) -> None:
-        fields = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
-        route_decision = fields.get("ROUTE_DECISION", "unknown")
-        decision_label = {
-            "preserve_existing": "Preserve existing",
-            "default_external_47814": "Default external 47814",
-        }.get(route_decision.split(" ", 1)[0], route_decision)
-        port = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("DETECTED_BACNET_IP_PORT=")), "unknown")
-        mode = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("DETECTED_BACNET_PORT_MODE=")), "unknown")
-        configured_ports = fields.get("CONFIGURED_BACNET_PORTS") or fields.get("DETECTED_BACNET_IP_PORTS", "unknown")
-        configured_ports_label = configured_ports.replace(",", ", ") if configured_ports not in {"unknown", "none"} else configured_ports
-        preferred_route = fields.get("PREFERRED_ROUTE", "unknown").replace("-", " ")
-        services = fields.get("INTERNAL_EDGE_ROUTER_SERVICES", "unknown")
-        services_label = "Disabled" if services == "disabled" else services.replace("_", " ")
-        route_files = fields.get("ROUTE_FILES", "unknown")
-        route_files_label = "Preserved unchanged" if route_files == "preserve_unchanged" else route_files.replace("_", " ")
-        conflict = fields.get("BACNET_CONFLICT", "unknown")
-        update_allowed = fields.get("UPDATE_ALLOWED", "unknown")
-        update_allowed_label = {"true": "Yes", "false": "No"}.get(update_allowed, update_allowed)
         agent_version = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("EDGE_AGENT_VERSION=")), "unknown")
         sudo_state = "yes" if "SUDO_AVAILABLE=yes" in output else "not confirmed"
         backup_path = "/home/swadmin" if "BACKUP_PATH_WRITABLE=/home/swadmin" in output else "not confirmed"
@@ -1855,17 +1610,11 @@ class LegacyUpgradeRunner:
                     "Detected current agent version": agent_version,
                     "Target UI version": DEFAULT_EDGE_RELEASE,
                     "Target agent version": DEFAULT_EDGE_RELEASE,
-                    "BACnet decision": decision_label,
-                    "Configured ports": configured_ports_label,
-                    "Primary/source setting": port,
-                    "Preferred route order": preferred_route,
-                    "Internal Edge router services": services_label,
-                    "Existing router config files": route_files_label,
-                    "Conflict": conflict,
-                    "Update allowed": update_allowed_label,
-                    "Detected BACnet route mode": mode,
-                    "Detected external router port": port,
-                    "BACNET_IP_PORT note": "BACNET_IP_PORT is not necessarily the external router destination by itself; interpret BACNET_IP_PORTS and route mode together.",
+                    "BACnet policy": "Preserve existing configuration",
+                    "BACnet files/settings changed": "None",
+                    "start.sh": "Preserved",
+                    "router config files": "Preserved",
+                    "router services": "Not changed",
                     "Package/manifest checksum status": release_package_status(self.request.release_manifest_path),
                     "Pre-upgrade backup status and path": backup_path,
                     "Sudo available": sudo_state,
