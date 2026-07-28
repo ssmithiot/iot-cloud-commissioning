@@ -691,6 +691,7 @@ def test_phase_10_install_agent_skips_edge_ui_data_dir_config_fix(monkeypatch: p
 def make_fake_runtime_bin(tmp_path: Path, *, service_user: str = "root", fail_inner_sudo: bool = False) -> Path:
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir()
+    sudo_inner = 'exit 1' if fail_inner_sudo else 'shift; if [ "$1" = "-u" ]; then shift 2; fi; exec "$@"'
     (fakebin / "systemctl").write_text(
         f"#!/bin/sh\nif [ \"$1\" = show ]; then printf '%s\\n' {shlex.quote(service_user)}; exit 0; fi\nexit 1\n",
         encoding="utf-8",
@@ -698,7 +699,7 @@ def make_fake_runtime_bin(tmp_path: Path, *, service_user: str = "root", fail_in
     (fakebin / "sudo").write_text(
         f"""#!/bin/sh
 if [ "$1" = "-n" ]; then
-  {"exit 1" if fail_inner_sudo else "shift; if [ \"$1\" = \"-u\" ]; then shift 2; fi; exec \"$@\""}
+  {sudo_inner}
 fi
 while [ "$1" = "-S" ] || [ "$1" = "-p" ] || [ "$1" = "" ]; do
   if [ "$1" = "-p" ]; then shift 2; else shift; fi
