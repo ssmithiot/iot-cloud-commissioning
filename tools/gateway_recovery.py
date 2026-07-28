@@ -6,7 +6,17 @@ import re
 
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 RECOVERY_ROOT = "/home/swadmin/gw-recovery"
-CODE_FILES = ("app.py", "edge_program_engine.py", "README.md", "requirements.txt", "templates")
+CODE_FILES = (
+    "app.py",
+    "edge_program_engine.py",
+    "edge_trend_store.py",
+    "timed_override_store.py",
+    "router_config.py",
+    "README.md",
+    "requirements.txt",
+    "templates",
+    "static",
+)
 
 
 def release_name(value: str) -> str:

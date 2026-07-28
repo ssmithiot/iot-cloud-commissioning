@@ -15,6 +15,7 @@ import re
 import secrets
 import shlex
 import socket
+import sys
 import tempfile
 import threading
 import time
@@ -24,9 +25,11 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlparse
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from tools.gateway_recovery import checkpoint_commands, checkpoint_inventory_commands, code_restore_commands, release_name
 from tools.release_preflight import validate_edge_source
-from tools.release_manifest import load_manifest
+from tools.release_manifest import load_manifest, verify_manifest_artifact
 
 try:
     import paramiko
@@ -38,13 +41,28 @@ DEFAULT_PORT = 8766
 DEFAULT_CLOUD_URL = "https://iot-cloud-api-dev.onrender.com"
 DEFAULT_REPO_PATH = "/home/swadmin/iot-cloud-commissioning"
 DEFAULT_UI_SOURCE = r"C:\Dev\edge-bacnet-ui-v2"
-DEFAULT_EDGE_UPDATE_REF = "32eaf06"
-DEFAULT_EDGE_RELEASE = "0.1.7"
-DEFAULT_RELEASE_MANIFEST = str(Path(__file__).resolve().parent / "releases" / "manifests" / "edge-0.1.7.json")
+DEFAULT_EDGE_UPDATE_REF = "844d93d013359d837619e991da8f4da7a5000472"
+DEFAULT_EDGE_RELEASE = "0.1.9"
+DEFAULT_RELEASE_MANIFEST = str(Path(__file__).resolve().parent / "releases" / "manifests" / "edge-0.1.9.json")
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_ZIP_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.zip"
 REMOTE_REPO_URL = "https://github.com/ssmithiot/iot-cloud-commissioning.git"
 NESTED_UPLOAD_CHUNK_SIZE = 3000
+UI_PACKAGE_FILES = (
+    "app.py",
+    "edge_program_engine.py",
+    "edge_trend_store.py",
+    "timed_override_store.py",
+    "router_config.py",
+    "README.md",
+    "requirements.txt",
+)
+UI_PACKAGE_DIRS = ("templates", "static")
+UI_OPTIONAL_PACKAGE_FILES = (
+    "deploy/iot-cx-edge-router-control.py",
+    "deploy/edge-bacnet-ui.service.example",
+    "deploy/iot-cx-bacnet-router.service.example",
+)
 # Manual Cloud-triggered 0.1.4 updates replace both halves of the local handoff:
 # the proven edge UI writer and the agent that delegates queued jobs to it.
 # Nothing polls this list to auto-update a gateway when it reconnects.
@@ -104,6 +122,7 @@ class UpgradeRequest:
     reuse_uploaded_zip: bool = False
     skip_edge_ui_stop: bool = False
     cloud_portal_verified: bool = False
+    final_update_confirmed: bool = False
     selected_phases: tuple[int, ...] = tuple(range(len(PHASES)))
     edge_agent_write_token: str = ""
     edge_release: str = DEFAULT_EDGE_RELEASE
@@ -271,6 +290,15 @@ def wait_for_post_update_health(
 
 def health_gate_enabled() -> bool:
     return os.environ.get("IOT_EDGE_UPDATE_HEALTH_GATE", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def release_package_status(manifest_path: str) -> str:
+    try:
+        manifest = load_manifest(Path(manifest_path))
+        artifact = verify_manifest_artifact(manifest, Path(__file__).resolve().parents[1])
+    except Exception as exc:
+        return f"BLOCKED: {exc}"
+    return f"OK: {manifest.edge_release} artifact {artifact.name} SHA-256 {manifest.sha256}"
 
 
 def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str]) -> str | None:
@@ -466,12 +494,25 @@ def form_page(message: str = "") -> bytes:
     cp_password = escape(defaults["CRADLEPOINT_PASSWORD"], quote=True)
     gw_password = escape(defaults["GATEWAY_PASSWORD"], quote=True)
     ui_password = escape(defaults["EDGE_UI_PASSWORD"], quote=True)
+    package_status = release_package_status(DEFAULT_RELEASE_MANIFEST)
     return page(
         "Legacy Edge Upgrade",
         f"""
 <h1>Legacy Edge Upgrade</h1>
-<p>Upgrade older edge-only gateways through the Cradlepoint jump host. This is separate from IOTGWCFG and defaults to checkpoint mode.</p>
+<p>Upgrade older edge-only gateways through the Cradlepoint jump host. This is separate from IOTGWCFG and starts in preflight mode.</p>
 {warning}
+<section class="panel wide">
+  <h2>0.1.9 Pilot Readiness</h2>
+  <div class="phase-groups">
+    <div><b>Target gateway</b><span>Selected below; no fleet batch starts from this page.</span></div>
+    <div><b>Target UI version</b><span>{DEFAULT_EDGE_RELEASE}</span></div>
+    <div><b>Target agent version</b><span>{DEFAULT_EDGE_RELEASE}</span></div>
+    <div><b>Package / manifest checksum</b><span>{escape(package_status)}</span></div>
+    <div><b>BACnet route policy</b><span>Existing route settings are preserved; unconfigured installs default to external router UDP 47814 with internal Edge router disabled.</span></div>
+    <div><b>Dry run / preflight</b><span>Default action. Shows target identity, SSH route, versions, route decision, files installed, preserved data, restarted services, backup and rollback scope.</span></div>
+    <div><b>Final Update/Deploy</b><span>Disabled until the operator checks the final confirmation box after reviewing preflight output.</span></div>
+  </div>
+</section>
 <form id="upgrade-form" method="post" action="/api/start">
   <label>Gateway number
     <input name="gateway_id" placeholder="GW0xx" required>
@@ -525,10 +566,11 @@ def form_page(message: str = "") -> bytes:
     <input type="password" name="ui_password" value="{ui_password}" autocomplete="off" required>
   </label>
   <div class="wide checks">
-    <label><input type="checkbox" name="dry_run" value="1"> Dry run</label>
+    <label><input type="checkbox" name="dry_run" value="1" checked> Dry run / Preflight</label>
     <label><input type="checkbox" name="reuse_uploaded_zip" value="1"> Reuse uploaded UI ZIP</label>
     <label><input type="checkbox" name="skip_edge_ui_stop" value="1"> Edge UI already stopped / skip stop</label>
     <label><input type="checkbox" name="cloud_portal_verified" value="1"> Cloud portal verified</label>
+    <label><input type="checkbox" name="final_update_confirmed" value="1"> Final Update/Deploy confirmed</label>
   </div>
   <div class="wide phase-select">
     <strong>Processes to run</strong>
@@ -544,7 +586,7 @@ def form_page(message: str = "") -> bytes:
     <span class="hint">All processes are selected by default. Use this for targeted reruns only.</span>
   </div>
   <div class="wide">
-    <button id="start-button" type="submit">Start inspect</button>
+    <button id="start-button" type="submit">Run Preflight</button>
   </div>
 </form>
 <div class="layout">
@@ -558,6 +600,8 @@ def form_page(message: str = "") -> bytes:
       <button id="checkpoint-list-button" type="button" disabled>List code-only checkpoints</button>
       <button id="disable-agent-button" class="danger" type="button" disabled>Disable Agent</button>
     </div>
+    <h2>Validation Checklist</h2>
+    <div id="summary" class="phase-groups"></div>
   </section>
   <section>
     <h2>Live Log</h2>
@@ -577,6 +621,7 @@ const phaseChecks = () => [...document.querySelectorAll('input[name="selected_ph
 document.getElementById("select-all-phases").addEventListener("click", () => phaseChecks().forEach((input) => input.checked = true));
 document.getElementById("clear-all-phases").addEventListener("click", () => phaseChecks().forEach((input) => input.checked = false));
 const phases = document.getElementById("phases");
+const summary = document.getElementById("summary");
 let pollTimer = null;
 let jobId = null;
 
@@ -589,6 +634,11 @@ function renderPhases(items) {{
   phases.innerHTML = items.map((p) => `<div class="phase"><span>${{p.name}}</span><span class="badge ${{p.status.replaceAll(" ", "_")}}">${{p.status}}</span></div>`).join("");
 }}
 
+function renderSummary(items) {{
+  const entries = Object.entries(items || {{}});
+  summary.innerHTML = entries.length ? entries.map(([key, value]) => `<div><b>${{key}}</b><span>${{value}}</span></div>`).join("") : "<div><b>Preflight</b><span>Run preflight to populate target identity, SSH route, versions, BACnet decision, backup, validation and rollback status.</span></div>";
+}}
+
 async function poll() {{
   if (!jobId) return;
   const response = await fetch(`/api/status?job_id=${{encodeURIComponent(jobId)}}`);
@@ -596,13 +646,14 @@ async function poll() {{
   if (!response.ok) throw new Error(body.error || `HTTP ${{response.status}}`);
   setLog(body.log);
   renderPhases(body.phases || []);
+  renderSummary(body.summary || {{}});
   continueButton.disabled = body.status !== "waiting";
   rollbackButton.disabled = !body.can_rollback;
   rollbackCodeButton.disabled = !body.can_rollback;
   checkpointListButton.disabled = !jobId;
   disableAgentButton.disabled = !body.can_disable_agent;
   startButton.disabled = body.status === "running" || body.status === "waiting";
-  startButton.textContent = body.status === "complete" || body.status === "failed" ? "Start new run" : "Start inspect";
+  startButton.textContent = body.status === "complete" || body.status === "failed" ? "Start new run" : "Run Preflight";
   if (body.status === "running" || body.status === "queued") {{
     pollTimer = setTimeout(poll, 1000);
   }}
@@ -685,6 +736,8 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
     ui_password = value(fields, "ui_password")
     if "'" in ui_password:
         raise ValueError("Local BACnet UI password cannot contain a single quote for this legacy update flow.")
+    final_update_confirmed = parse_bool(fields, "final_update_confirmed")
+    dry_run = parse_bool(fields, "dry_run") or not final_update_confirmed
     request = UpgradeRequest(
         gateway_id=gateway_id,
         site_id=value(fields, "site_id") or gateway_id,
@@ -701,10 +754,11 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         ui_source_folder=value(fields, "ui_source_folder") or DEFAULT_UI_SOURCE,
         ui_username=value(fields, "ui_username") or "admin",
         ui_password=ui_password,
-        dry_run=parse_bool(fields, "dry_run"),
+        dry_run=dry_run,
         reuse_uploaded_zip=parse_bool(fields, "reuse_uploaded_zip"),
         skip_edge_ui_stop=parse_bool(fields, "skip_edge_ui_stop"),
         cloud_portal_verified=parse_bool(fields, "cloud_portal_verified"),
+        final_update_confirmed=final_update_confirmed,
         selected_phases=selected_phases,
         edge_release=release_name(value(fields, "edge_release") or DEFAULT_EDGE_RELEASE),
         release_manifest_path=value(fields, "release_manifest_path") or DEFAULT_RELEASE_MANIFEST,
@@ -854,18 +908,32 @@ def stop_edge_ui_command() -> str:
     return "timeout -k 5s 30s sudo -S -p '' systemctl stop edge-bacnet-ui.service"
 
 
-def update_start_sh_command(username: str, password: str) -> str:
-    script = f"""
+def start_sh_update_script(username: str, password: str, path: str = "/home/swadmin/edge-bacnet-ui-v2/start.sh") -> str:
+    return f"""
 from pathlib import Path
-path = Path("/home/swadmin/edge-bacnet-ui-v2/start.sh")
+path = Path({path!r})
 text = path.read_text()
 settings = {{
-    "BACNET_IP_PORT": "47814",
     "AUTH_ENABLED": "1",
     "EDGE_UI_USERNAME": {username!r},
     "EDGE_UI_PASSWORD": {password!r},
 }}
+route_defaults = [
+    "export BACNET_IP_PORT=47814",
+    "export BACNET_PORT_MODE=external",
+]
+route_markers = (
+    "BACNET_IP_PORT",
+    "BACNET_IP_PORTS",
+    "BACNET_PORT_MODE",
+    "BACNET_EDGE_PROGRAM_PORTS",
+)
 lines = text.splitlines()
+has_route_config = any(
+    line.strip().startswith(f"export {{marker}}=") or line.strip().startswith(f"{{marker}}=")
+    for line in lines
+    for marker in route_markers
+)
 seen = set()
 out = []
 for line in lines:
@@ -886,18 +954,102 @@ for key, value in settings.items():
     if key not in seen:
         quote = "'" if key == "EDGE_UI_PASSWORD" else ""
         missing.append(f"export {{key}}={{quote}}{{value}}{{quote}}")
+if not has_route_config:
+    missing = route_defaults + missing
 out[insert_at:insert_at] = missing
 path.write_text("\\n".join(out) + "\\n")
 """
+
+
+def update_start_sh_command(username: str, password: str) -> str:
+    script = start_sh_update_script(username, password)
+    return "python3 -c " + shell_quote(script)
+
+
+def apply_ui_files_script(
+    src_path: str = "/tmp/edge-bacnet-ui-v2-update",
+    dest_path: str = "/home/swadmin/edge-bacnet-ui-v2",
+) -> str:
+    return f"""
+from pathlib import Path
+import shutil
+
+src = Path({src_path!r})
+dest = Path({dest_path!r})
+files = {list(UI_PACKAGE_FILES)!r}
+dirs = {list(UI_PACKAGE_DIRS)!r}
+optional_files = {list(UI_OPTIONAL_PACKAGE_FILES)!r}
+missing = [item for item in [*files, *dirs] if not (src / item).exists()]
+if missing:
+    raise SystemExit("UI update package missing required item(s): " + ", ".join(missing))
+for item in files:
+    target = dest / item
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src / item, target)
+for item in dirs:
+    target = dest / item
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(src / item, target)
+for item in optional_files:
+    source = src / item
+    if source.exists():
+        target = dest / item
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+"""
+
+
+def apply_ui_files_command() -> str:
+    script = apply_ui_files_script()
     return "python3 -c " + shell_quote(script)
 
 
 def inspect_commands() -> list[tuple[str, str, bool]]:
+    route_probe = r"""python3 - <<'PY'
+from pathlib import Path
+import re
+start = Path('/home/swadmin/edge-bacnet-ui-v2/start.sh')
+router = Path('/home/swadmin/edge-bacnet-ui-v2/data/router-config.json')
+legacy_router = Path('/home/swadmin/edge-bacnet-ui-v2/data/edge_bacnet_router.json')
+text = start.read_text(errors='replace') if start.exists() else ''
+settings = {}
+for line in text.splitlines():
+    stripped = line.strip()
+    match = re.match(r'(?:export\s+)?(BACNET_IP_PORT|BACNET_IP_PORTS|BACNET_PORT_MODE|BACNET_EDGE_PROGRAM_PORTS)=(.*)', stripped)
+    if match:
+        settings[match.group(1)] = match.group(2).strip().strip('"').strip("'")
+port = settings.get('BACNET_IP_PORT', '')
+if port and not port.isdigit():
+    print(f'ROUTE_DECISION=ambiguous invalid BACNET_IP_PORT={port}')
+elif settings:
+    print('ROUTE_DECISION=preserve_existing')
+else:
+    print('ROUTE_DECISION=default_external_47814')
+print(f'DETECTED_BACNET_IP_PORT={port or "none"}')
+print(f'DETECTED_BACNET_PORT_MODE={settings.get("BACNET_PORT_MODE", "none")}')
+print(f'DETECTED_BACNET_IP_PORTS={settings.get("BACNET_IP_PORTS", "none")}')
+print(f'DETECTED_EDGE_PROGRAM_PORTS={settings.get("BACNET_EDGE_PROGRAM_PORTS", "none")}')
+print(f'ROUTER_CONFIG_PRESENT={router.exists()}')
+print(f'LEGACY_ROUTER_CONFIG_PRESENT={legacy_router.exists()}')
+if router.exists():
+    print('INTERNAL_EDGE_ROUTER_CONFIG=router-config.json present; preserve')
+elif legacy_router.exists():
+    print('INTERNAL_EDGE_ROUTER_CONFIG=edge_bacnet_router.json present; preserve')
+else:
+    print('INTERNAL_EDGE_ROUTER_CONFIG=none; fresh default disabled')
+PY"""
     return [
         ("hostname", "hostname", False),
         ("network addresses", "ip -br addr", False),
+        ("disk space", "df -h /home/swadmin /tmp | sed -n '1,5p'", False),
+        ("backup path writable", "test -w /home/swadmin && echo BACKUP_PATH_WRITABLE=/home/swadmin", False),
+        ("sudo available", "sudo -S -p '' -v && echo SUDO_AVAILABLE=yes", True),
         ("legacy UI folder", f'ls -ld {REMOTE_UI_PATH} 2>/dev/null || echo "missing edge-bacnet-ui-v2"', False),
         ("cloud repo folder", f'ls -ld {DEFAULT_REPO_PATH} 2>/dev/null || echo "missing iot-cloud-commissioning"', False),
+        ("current Edge UI version", "grep -R \"0.1.9\\|Edge Release\\|Edge BACnet\" -n /home/swadmin/edge-bacnet-ui-v2/README.md /home/swadmin/edge-bacnet-ui-v2/templates/base.html 2>/dev/null | head -20 || true", False),
+        ("current edge agent version", "/home/swadmin/iot-cloud-commissioning/edge-agent/.venv/bin/python -c 'import iot_cx_agent; print(\"EDGE_AGENT_VERSION=\" + getattr(iot_cx_agent, \"__version__\", \"unknown\"))' 2>/dev/null || python3 -c 'import iot_cx_agent; print(\"EDGE_AGENT_VERSION=\" + getattr(iot_cx_agent, \"__version__\", \"unknown\"))' 2>/dev/null || echo EDGE_AGENT_VERSION=unknown", False),
+        ("BACnet route detection", route_probe, False),
         ("unit files", "systemctl list-unit-files | grep -Ei 'iot|cx|bacnet|edge' || true", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service 2>/dev/null || true", False),
         ("edge UI enabled", "systemctl is-enabled edge-bacnet-ui.service 2>/dev/null || true", False),
@@ -941,7 +1093,7 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         ("verify normalized templates", r"""test -d /tmp/edge-bacnet-ui-v2-update/templates && ! find /tmp/edge-bacnet-ui-v2-update -maxdepth 1 -name 'templates\*' | grep -q . && ls -lah /tmp/edge-bacnet-ui-v2-update/templates""", False),
         stop_command,
         ("confirm edge UI stopped", "systemctl is-active edge-bacnet-ui.service || true", False),
-        ("apply code-only UI files", "cp /tmp/edge-bacnet-ui-v2-update/app.py /home/swadmin/edge-bacnet-ui-v2/app.py && cp /tmp/edge-bacnet-ui-v2-update/edge_program_engine.py /home/swadmin/edge-bacnet-ui-v2/edge_program_engine.py && cp /tmp/edge-bacnet-ui-v2-update/README.md /home/swadmin/edge-bacnet-ui-v2/README.md && cp /tmp/edge-bacnet-ui-v2-update/requirements.txt /home/swadmin/edge-bacnet-ui-v2/requirements.txt && rm -rf /home/swadmin/edge-bacnet-ui-v2/templates && cp -a /tmp/edge-bacnet-ui-v2-update/templates /home/swadmin/edge-bacnet-ui-v2/templates", False),
+        ("apply code-only UI files", apply_ui_files_command(), False),
         ("verify UI file ownership", "find /home/swadmin/edge-bacnet-ui-v2 -maxdepth 2 \\( ! -user swadmin -o ! -group swadmin \\) -print | head -20 || true", False),
         ("preserve start.sh executable", "chmod +x /home/swadmin/edge-bacnet-ui-v2/start.sh", False),
         ("verify replaced templates", "ls -lah /home/swadmin/edge-bacnet-ui-v2/templates", False),
@@ -1111,18 +1263,21 @@ def disable_agent_commands() -> list[tuple[str, str, bool]]:
 def create_update_zip(source_folder: str, release_manifest_path: str) -> Path:
     source = Path(source_folder)
     validate_edge_source(Path(release_manifest_path), source)
-    required = ["app.py", "edge_program_engine.py", "templates", "README.md", "requirements.txt"]
+    required = [*UI_PACKAGE_FILES, *UI_PACKAGE_DIRS]
     missing = [item for item in required if not (source / item).exists()]
     if missing:
         raise RuntimeError(f"Local BACnet UI source folder is missing: {', '.join(missing)}")
     temp_dir = Path(tempfile.mkdtemp(prefix="legacy-edge-upgrade-"))
     zip_path = temp_dir / "edge-bacnet-ui-v2-update.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for file_name in ["app.py", "edge_program_engine.py", "README.md", "requirements.txt"]:
+        for file_name in [*UI_PACKAGE_FILES, *UI_OPTIONAL_PACKAGE_FILES]:
+            if not (source / file_name).exists():
+                continue
             archive.write(source / file_name, arcname=file_name)
-        for path in (source / "templates").rglob("*"):
-            if path.is_file():
-                archive.write(path, arcname=path.relative_to(source).as_posix())
+        for directory in UI_PACKAGE_DIRS:
+            for path in (source / directory).rglob("*"):
+                if path.is_file():
+                    archive.write(path, arcname=path.relative_to(source).as_posix())
     if zip_path.stat().st_size <= 0:
         raise RuntimeError("Built UI update ZIP is empty")
     return zip_path
@@ -1370,7 +1525,15 @@ class LegacyUpgradeRunner:
         self.log.append(f"\n=== Phase {index + 1}: {name} ===\n")
         try:
             if index == 0:
-                output = self.run_commands(inspect_commands(), stop_on_failure=False)
+                if self.request.dry_run:
+                    saved_request = self.request
+                    self.request = replace(self.request, dry_run=False)
+                    try:
+                        output = self.run_commands(inspect_commands(), stop_on_failure=False)
+                    finally:
+                        self.request = saved_request
+                else:
+                    output = self.run_commands(inspect_commands(), stop_on_failure=False)
                 self.validate_inspection(output)
             elif index == 1:
                 output = self.run_commands(backup_commands(self.request.edge_release))
@@ -1444,6 +1607,9 @@ class LegacyUpgradeRunner:
 
     def validate_inspection(self, output: str) -> None:
         if self.request.dry_run:
+            if "ROUTE_DECISION=ambiguous" in output:
+                raise RuntimeError("Ambiguous BACnet route state. Resolve the reported route conflict before enabling Update.")
+            self.write_preflight_summary(output)
             return
         lower = output.lower()
         if "missing edge-bacnet-ui-v2" in lower:
@@ -1452,7 +1618,41 @@ class LegacyUpgradeRunner:
             raise RuntimeError("One or more BACnet tools are missing. Continue only after explicit field approval.")
         if "not a git repository" not in lower and "fatal:" not in lower:
             raise RuntimeError("edge-bacnet-ui-v2 appears to be a git repo. Do not use copied-folder legacy path without approval.")
+        if "ROUTE_DECISION=ambiguous" in output:
+            raise RuntimeError("Ambiguous BACnet route state. Resolve the reported route conflict before enabling Update.")
+        self.write_preflight_summary(output)
         self.log.append("\nCheckpoint summary:\nLegacy edge-only candidate: YES\nProceed with copied-folder update path: YES\n")
+
+    def write_preflight_summary(self, output: str) -> None:
+        route_decision = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("ROUTE_DECISION=")), "unknown")
+        port = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("DETECTED_BACNET_IP_PORT=")), "unknown")
+        mode = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("DETECTED_BACNET_PORT_MODE=")), "unknown")
+        agent_version = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("EDGE_AGENT_VERSION=")), "unknown")
+        sudo_state = "yes" if "SUDO_AVAILABLE=yes" in output else "not confirmed"
+        backup_path = "/home/swadmin" if "BACKUP_PATH_WRITABLE=/home/swadmin" in output else "not confirmed"
+        with JOBS_LOCK:
+            job = JOBS[self.job_id]
+            job.summary.update(
+                {
+                    "Selected target gateway": self.request.gateway_id,
+                    "SSH route and host": f"{self.request.cradlepoint_user}@{self.request.cradlepoint_host} -> {self.request.gateway_user}@{self.request.gateway_host}",
+                    "Detected current Edge UI version": "see live log",
+                    "Detected current agent version": agent_version,
+                    "Target UI version": DEFAULT_EDGE_RELEASE,
+                    "Target agent version": DEFAULT_EDGE_RELEASE,
+                    "Detected BACnet route mode": mode,
+                    "Detected external router port": port,
+                    "Internal Edge-router state": "preserve existing config if present; otherwise disabled",
+                    "Preservation/default decision": route_decision,
+                    "Package/manifest checksum status": release_package_status(self.request.release_manifest_path),
+                    "Pre-upgrade backup status and path": backup_path,
+                    "Sudo available": sudo_state,
+                    "Rollback action": "Use Restore legacy full backup or Restore code-only checkpoint after backup phase",
+                }
+            )
+        self.log.append("\nPreflight validation checklist:\n")
+        for key, value_text in JOBS[self.job_id].summary.items():
+            self.log.append(f"{key}: {value_text}\n")
 
     def extract_latest_backup(self, output: str) -> str:
         matches = re.findall(r"(edge-bacnet-ui-v2\.backup\.\d{8}-\d{6}\.tar\.gz)", output)
@@ -1466,7 +1666,11 @@ class LegacyUpgradeRunner:
         if self.request.dry_run:
             zip_path = Path(tempfile.gettempdir()) / "edge-bacnet-ui-v2-update.dry-run.zip"
             self.log.append(f"[dry-run] Would build ZIP from {self.request.ui_source_folder} and upload to {REMOTE_ZIP_PATH}.\n")
-            self.log.append(f"[dry-run] Required contents: app.py, templates/, README.md, requirements.txt, start.sh\n")
+            self.log.append(f"[dry-run] Required contents: {', '.join([*UI_PACKAGE_FILES, *(item + '/' for item in UI_PACKAGE_DIRS)])}\n")
+            self.log.append("[dry-run] Preserved: data/, .env, start.sh, databases, saved devices/templates, programs, trends, timed overrides, credentials, gateway identity, cloud identity, BACnet route settings.\n")
+            self.log.append("[dry-run] Services that would restart: edge-bacnet-ui.service; iot-cx-agent.service only when agent phases are selected.\n")
+            self.log.append("[dry-run] BACnet defaults apply only when no usable BACnet route settings exist: external router, UDP 47814, internal Edge router disabled.\n")
+            self.log.append("[dry-run] Rollback scope: full pre-upgrade folder backup plus release-named code-only checkpoint.\n")
             return
         zip_path = create_update_zip(self.request.ui_source_folder, self.request.release_manifest_path)
         self.log.append(f"Built local UI update ZIP: {zip_path} ({zip_path.stat().st_size} bytes)\n")

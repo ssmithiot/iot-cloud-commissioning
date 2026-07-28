@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import socket
+import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -19,10 +21,12 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     JOBS,
     JOBS_LOCK,
     agent_config_text,
+    apply_ui_files_script,
     auth_commands,
     config_commands,
     apply_ui_commands,
     DEFAULT_EDGE_UPDATE_REF,
+    create_update_zip,
     load_env_defaults,
     parse_upgrade_request,
     restart_ui_commands,
@@ -31,6 +35,7 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
     service_commands,
     stop_edge_ui_command,
     sudo_systemctl_timeout,
+    start_sh_update_script,
     update_start_sh_command,
 )
 
@@ -93,11 +98,85 @@ def test_redactor_masks_known_secrets_and_env_lines() -> None:
 
 def test_update_start_sh_command_sets_required_auth_values_without_printing_password() -> None:
     command = update_start_sh_command("admin", "ui-secret")
-    assert "BACNET_IP_PORT" in command
     assert "AUTH_ENABLED" in command
     assert "EDGE_UI_USERNAME" in command
     assert "EDGE_UI_PASSWORD" in command
     assert "ui-secret" not in Redactor(["ui-secret"]).redact(command)
+
+
+def run_start_sh_update(path: Path) -> None:
+    subprocess.run(
+        [sys.executable, "-c", start_sh_update_script("admin", "ui-secret", str(path))],
+        check=True,
+    )
+
+
+def test_update_start_sh_preserves_existing_47809_route_byte_for_byte(tmp_path: Path) -> None:
+    path = tmp_path / "start.sh"
+    original = (
+        "#!/usr/bin/env bash\n"
+        "export BACNET_IP_PORT=47809\n"
+        "export BACNET_PORT_MODE=bac-rtr\n"
+        "export AUTH_ENABLED=1\n"
+        "export EDGE_UI_USERNAME=admin\n"
+        "export EDGE_UI_PASSWORD='ui-secret'\n"
+        "python3 app.py\n"
+    )
+    path.write_text(original, encoding="utf-8")
+
+    run_start_sh_update(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_update_start_sh_preserves_existing_47814_route_byte_for_byte(tmp_path: Path) -> None:
+    path = tmp_path / "start.sh"
+    original = (
+        "#!/usr/bin/env bash\n"
+        "export BACNET_IP_PORT=47814\n"
+        "export BACNET_PORT_MODE=basrtb\n"
+        "export AUTH_ENABLED=1\n"
+        "export EDGE_UI_USERNAME=admin\n"
+        "export EDGE_UI_PASSWORD='ui-secret'\n"
+        "python3 app.py\n"
+    )
+    path.write_text(original, encoding="utf-8")
+
+    run_start_sh_update(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_update_start_sh_preserves_edge_router_enabled_fixture_byte_for_byte(tmp_path: Path) -> None:
+    path = tmp_path / "start.sh"
+    original = (
+        "#!/usr/bin/env bash\n"
+        "export BACNET_IP_PORT=47814\n"
+        "export BACNET_IP_PORTS=47809,47814\n"
+        "export BACNET_PORT_MODE=edge-router-fdr\n"
+        "export BACNET_EDGE_PROGRAM_PORTS=47816\n"
+        "export AUTH_ENABLED=1\n"
+        "export EDGE_UI_USERNAME=admin\n"
+        "export EDGE_UI_PASSWORD='ui-secret'\n"
+        "python3 app.py\n"
+    )
+    path.write_text(original, encoding="utf-8")
+
+    run_start_sh_update(path)
+
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_update_start_sh_defaults_unconfigured_install_to_external_47814(tmp_path: Path) -> None:
+    path = tmp_path / "start.sh"
+    path.write_text("#!/usr/bin/env bash\npython3 app.py\n", encoding="utf-8")
+
+    run_start_sh_update(path)
+
+    updated = path.read_text(encoding="utf-8")
+    assert "export BACNET_IP_PORT=47814\n" in updated
+    assert "export BACNET_PORT_MODE=external\n" in updated
+    assert "EDGE_BACNET_ROUTER_ENABLED=1" not in updated
 
 
 def test_auth_commands_include_safe_verification() -> None:
@@ -115,8 +194,52 @@ def test_auth_commands_include_safe_verification() -> None:
 def test_apply_ui_commands_preserves_start_script_and_installs_engine() -> None:
     commands = apply_ui_commands(make_request())
     apply_command = next(command for label, command, _sudo in commands if label == "apply code-only UI files")
-    assert "/tmp/edge-bacnet-ui-v2-update/edge_program_engine.py" in apply_command
+    assert "edge_program_engine.py" in apply_command
+    assert "edge_trend_store.py" in apply_command
+    assert "timed_override_store.py" in apply_command
+    assert "router_config.py" in apply_command
+    assert "static" in apply_command
     assert "start.sh" not in apply_command
+
+
+def test_apply_ui_files_script_copies_019_inventory_and_preserves_site_state(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    dest = tmp_path / "dest"
+    src.mkdir()
+    dest.mkdir()
+    for name in [
+        "app.py",
+        "edge_program_engine.py",
+        "edge_trend_store.py",
+        "timed_override_store.py",
+        "router_config.py",
+        "README.md",
+        "requirements.txt",
+    ]:
+        (src / name).write_text(f"new {name}", encoding="utf-8")
+        (dest / name).write_text(f"old {name}", encoding="utf-8")
+    for directory in ["templates", "static"]:
+        (src / directory).mkdir()
+        (src / directory / "item.txt").write_text(f"new {directory}", encoding="utf-8")
+        (dest / directory).mkdir()
+        (dest / directory / "old.txt").write_text(f"old {directory}", encoding="utf-8")
+    (dest / "start.sh").write_text("site startup", encoding="utf-8")
+    (dest / "data").mkdir()
+    (dest / "data" / "timed-overrides.db").write_text("site data", encoding="utf-8")
+
+    subprocess.run(
+        [sys.executable, "-c", apply_ui_files_script(str(src), str(dest))],
+        check=True,
+    )
+
+    assert (dest / "edge_trend_store.py").read_text(encoding="utf-8") == "new edge_trend_store.py"
+    assert (dest / "timed_override_store.py").read_text(encoding="utf-8") == "new timed_override_store.py"
+    assert (dest / "router_config.py").read_text(encoding="utf-8") == "new router_config.py"
+    assert (dest / "templates" / "item.txt").read_text(encoding="utf-8") == "new templates"
+    assert not (dest / "templates" / "old.txt").exists()
+    assert (dest / "static" / "item.txt").read_text(encoding="utf-8") == "new static"
+    assert (dest / "start.sh").read_text(encoding="utf-8") == "site startup"
+    assert (dest / "data" / "timed-overrides.db").read_text(encoding="utf-8") == "site data"
 
 
 def test_config_commands_write_root_owned_token_env_with_600_mode() -> None:
@@ -189,6 +312,34 @@ def test_parse_upgrade_request_accepts_reuse_uploaded_zip_checkbox() -> None:
     request = parse_upgrade_request(body)
     assert request.reuse_uploaded_zip is True
     assert request.skip_edge_ui_stop is True
+    assert request.dry_run is True
+    assert request.final_update_confirmed is False
+
+
+def test_parse_upgrade_request_allows_final_update_only_when_confirmed() -> None:
+    body = (
+        "gateway_id=GW010&cloud_url=https%3A%2F%2Fiot-cloud-api-dev.onrender.com"
+        "&admin_api_token=admin-secret-token&cradlepoint_host=10.0.0.10"
+        "&cradlepoint_password=cp-secret&gateway_password=gw-secret"
+        "&ui_password=ui-secret&final_update_confirmed=1"
+    ).encode("utf-8")
+
+    request = parse_upgrade_request(body)
+
+    assert request.dry_run is False
+    assert request.final_update_confirmed is True
+
+
+def test_form_page_shows_019_pilot_preflight_requirements() -> None:
+    html = legacy_webapp.form_page().decode("utf-8")
+    assert "0.1.9 Pilot Readiness" in html
+    assert "Target UI version" in html
+    assert "Target agent version" in html
+    assert "Package / manifest checksum" in html
+    assert "Dry run / Preflight" in html
+    assert "Final Update/Deploy confirmed" in html
+    assert "value=\"0.1.9\"" in html
+    assert "Run Preflight" in html
 
 
 def test_parse_upgrade_request_defaults_git_ref_to_release_commit() -> None:
@@ -201,9 +352,9 @@ def test_parse_upgrade_request_defaults_git_ref_to_release_commit() -> None:
 
     request = parse_upgrade_request(body)
 
-    assert request.git_ref == DEFAULT_EDGE_UPDATE_REF == "32eaf06"
-    assert request.edge_release == "0.1.7"
-    assert request.release_manifest_path.endswith("edge-0.1.7.json")
+    assert request.git_ref == DEFAULT_EDGE_UPDATE_REF == "844d93d013359d837619e991da8f4da7a5000472"
+    assert request.edge_release == "0.1.9"
+    assert request.release_manifest_path.endswith("edge-0.1.9.json")
 
 
 def test_backup_commands_create_named_code_only_checkpoint() -> None:
@@ -252,9 +403,49 @@ def test_queued_gateway_update_defaults_git_ref_to_release_commit(monkeypatch: p
     )
 
     assert outcome == "completed"
-    assert captured["request"].git_ref == DEFAULT_EDGE_UPDATE_REF == "32eaf06"
+    assert captured["request"].git_ref == DEFAULT_EDGE_UPDATE_REF == "844d93d013359d837619e991da8f4da7a5000472"
     with JOBS_LOCK:
         JOBS.pop("queued-default-ref-test", None)
+
+
+def test_create_update_zip_includes_019_runtime_inventory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    for name in [
+        "app.py",
+        "edge_program_engine.py",
+        "edge_trend_store.py",
+        "timed_override_store.py",
+        "router_config.py",
+        "README.md",
+        "requirements.txt",
+    ]:
+        (source / name).write_text(f"{name}\n", encoding="utf-8")
+    for directory in ["templates", "static"]:
+        (source / directory).mkdir()
+        (source / directory / "item.txt").write_text(directory, encoding="utf-8")
+    (source / "data").mkdir()
+    (source / "data" / "timed-overrides.db").write_text("site data", encoding="utf-8")
+    (source / ".env").write_text("secret=true", encoding="utf-8")
+    (source / "start.sh").write_text("site startup", encoding="utf-8")
+    (source / ".local-backups").mkdir()
+    (source / ".local-backups" / "app.py").write_text("backup", encoding="utf-8")
+    monkeypatch.setattr(legacy_webapp, "validate_edge_source", lambda _manifest, _source: "b4dc654")
+
+    zip_path = create_update_zip(str(source), "manifest.json")
+
+    with zipfile.ZipFile(zip_path) as archive:
+        names = set(archive.namelist())
+    assert "app.py" in names
+    assert "edge_trend_store.py" in names
+    assert "timed_override_store.py" in names
+    assert "router_config.py" in names
+    assert "templates/item.txt" in names
+    assert "static/item.txt" in names
+    assert "data/timed-overrides.db" not in names
+    assert ".env" not in names
+    assert "start.sh" not in names
+    assert ".local-backups/app.py" not in names
 
 
 def test_runner_uses_nested_shell_when_direct_gateway_client_is_unavailable(monkeypatch) -> None:
