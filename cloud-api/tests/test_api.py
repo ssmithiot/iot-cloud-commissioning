@@ -428,9 +428,9 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert "gatewayReleaseStatus(gateway).updateRequired" in response.text
     assert "const releaseStatus = gatewayReleaseStatus(gateway);" in response.text
     assert "gatewayReleaseReason(gateway)" in response.text
-    assert "Mode: Full non-provisioning update" in response.text
-    assert "Provisioning: No" in response.text
-    assert "BACnet configuration preserved" in response.text
+    assert 'return `<strong>${escapeHtml(version)}</strong>`;' in response.text
+    assert 'Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed' in response.text
+    assert 'data-request-update="${escapeHtml(gateway.gateway_id)}"' in response.text
     assert "target_agent_version: edgeAgentReleaseVersion" in response.text
     assert "target_ui_version: edgeUiReleaseVersion" in response.text
     assert 'data-sort="version">Edge App</button>' in response.text
@@ -445,6 +445,31 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert "window.setInterval(() =>" in response.text
 
 
+def test_dashboard_edge_app_cell_uses_short_release_labels_and_preserves_update_button() -> None:
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert 'return `<strong>${escapeHtml(version)}</strong>`;' in response.text
+    assert "Agent ${escapeHtml(gateway.agent_version" not in response.text
+    assert "UI ${escapeHtml(gateway.ui_version" not in response.text
+    assert 'Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed' in response.text
+    assert "Release: ${escapeHtml(releaseStatus.requiredUiVersion)}" not in response.text
+    assert "Mode: Full non-provisioning update" not in response.text
+    assert '<button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>' in response.text
+    assert "queueGatewayUpdates([button.dataset.requestUpdate]);" in response.text
+
+
+def test_dashboard_registry_sort_restores_from_session_storage() -> None:
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert "window.sessionStorage.getItem(dashboardRegistryStorageKey)" in response.text
+    assert "window.sessionStorage.setItem(dashboardRegistryStorageKey" in response.text
+    assert "window.localStorage.getItem(dashboardRegistryStorageKey)" in response.text
+    assert "dashboardSort = { key: saved.sort.key, direction: saved.sort.direction };" in response.text
+    assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
+
+
 def test_dashboard_release_comparison_states_are_019() -> None:
     response = client.get("/app")
 
@@ -456,8 +481,17 @@ def test_dashboard_release_comparison_states_are_019() -> None:
     assert 'reason = "Agent update required";' in response.text
     assert 'reason = "Full update required";' in response.text
     assert 'let reason = "Up to date";' in response.text
-    assert "Release: ${escapeHtml(releaseStatus.requiredUiVersion)}" in response.text
+    assert "Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed" in response.text
     assert "<small>${escapeHtml(releaseStatus.reason)}</small>" in response.text
+
+
+def test_gateway_workspace_restores_remote_tunnel_action_next_to_direct_connect() -> None:
+    response = client.get("/gateways/GW777")
+
+    assert response.status_code == 200
+    assert 'id="remote-tunnel-link"' in response.text
+    assert 'href="/gateways/GW777/tunnel/">Remote Tunnel</a><a id="direct-connect-link"' in response.text
+    assert 'id="direct-connect-link"' in response.text
 
 
 def test_gateway_workspace_contains_discovery_progress_ui() -> None:
@@ -480,6 +514,8 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'id="site-address-state"' in response.text
     assert 'id="site-address-postal-code"' in response.text
     assert 'id="direct-connect-link"' in response.text
+    assert 'id="remote-tunnel-link"' in response.text
+    assert 'href="/gateways/GW777/tunnel/">Remote Tunnel</a><a id="direct-connect-link"' in response.text
     assert 'id="tunnel-status"' in response.text
     assert "Direct Connect" in response.text
     assert "GATEWAY_API_TOKEN" not in response.text

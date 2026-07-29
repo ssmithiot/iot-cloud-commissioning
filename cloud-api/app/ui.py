@@ -1599,9 +1599,9 @@ APP_SCRIPT = r"""
     const releaseStatus = gatewayReleaseStatus(gateway);
     const releaseReason = releaseStatus.reason;
     if (releaseReason === "Up to date") {
-      return `<strong>Up to date</strong><small>Agent ${escapeHtml(gateway.agent_version || "?")} · UI ${escapeHtml(gateway.ui_version || "?")}</small>`;
+      return `<strong>${escapeHtml(version)}</strong>`;
     }
-    return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">${escapeHtml(releaseReason)} · Release: ${escapeHtml(releaseStatus.requiredUiVersion)} · Mode: Full non-provisioning update · Agent: ${escapeHtml(releaseStatus.requiredAgentVersion)} · UI: ${escapeHtml(releaseStatus.requiredUiVersion)} · Provisioning: No · BACnet configuration preserved</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+    return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
   }
 
   async function refreshGatewayUpdates() {
@@ -1777,7 +1777,11 @@ APP_SCRIPT = r"""
 
   function restoreDashboardRegistryState() {
     try {
-      const saved = JSON.parse(window.localStorage.getItem(dashboardRegistryStorageKey) || "{}");
+      const saved = JSON.parse(
+        window.sessionStorage.getItem(dashboardRegistryStorageKey)
+        || window.localStorage.getItem(dashboardRegistryStorageKey)
+        || "{}"
+      );
       if (dashboardSortKeys.has(saved.sort?.key) && ["asc", "desc"].includes(saved.sort?.direction)) {
         dashboardSort = { key: saved.sort.key, direction: saved.sort.direction };
       }
@@ -1789,7 +1793,7 @@ APP_SCRIPT = r"""
 
   function persistDashboardRegistryState() {
     try {
-      window.localStorage.setItem(dashboardRegistryStorageKey, JSON.stringify({
+      window.sessionStorage.setItem(dashboardRegistryStorageKey, JSON.stringify({
         sort: dashboardSort,
         selectedGatewayId: selectedDashboardGatewayId
       }));
@@ -7182,7 +7186,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
           <div class="grid">
             <div class="span-4"><label>Tunnel Status</label><pre id="tunnel-status">Loading...</pre></div>
             <div class="span-4"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
-            <div class="span-4"><label>Action</label><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div>
+            <div class="span-4"><label>Action</label><a id="remote-tunnel-link" class="button secondary" href="/gateways/{escaped_gateway_id}/tunnel/">Remote Tunnel</a><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div>
           </div>
         </article>
         <article class="workspace-tile site-summary">
@@ -7461,6 +7465,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
       <pre id="gateway-details">Loading...</pre>
     </section>
   </main>"""
+    body = body.replace("{escaped_gateway_id}", escaped_gateway_id)
     return _layout(
         "Gateway Workspace - IOT Cloud Commissioning",
         body,
