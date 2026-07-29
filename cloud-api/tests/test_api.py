@@ -1311,6 +1311,20 @@ def test_gateway_tunnel_registration_requires_matching_gateway_token() -> None:
             pass
 
 
+def test_gateway_tunnel_websocket_diagnostic_disable_rejects_before_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.database import engine as app_engine
+
+    monkeypatch.setattr(main_module.settings, "gateway_tunnel_websockets_disabled", True)
+    raw_token = create_gateway_token("GW001")
+
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+            pass
+
+    assert exc.value.code == 1013
+    assert app_engine.pool.checkedout() == 0
+
+
 def test_gateway_tunnel_registration_updates_status() -> None:
     raw_token = create_gateway_token("GW001")
 

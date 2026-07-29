@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     # request timeout long enough for field operations; session TTL remains a
     # separate control enforced by TunnelSessionManager.
     tunnel_request_timeout_sec: float = Field(default=900.0, validation_alias="TUNNEL_REQUEST_TIMEOUT_SEC")
+    gateway_tunnel_websockets_disabled: bool = Field(default=False, validation_alias="GATEWAY_TUNNEL_WEBSOCKETS_DISABLED")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),

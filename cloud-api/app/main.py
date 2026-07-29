@@ -2028,6 +2028,10 @@ async def edge_tunnel(
     websocket: WebSocket,
     authorization: str | None = Header(default=None),
 ) -> None:
+    if settings.gateway_tunnel_websockets_disabled:
+        await websocket.close(code=1013)
+        return
+
     # QueuePool-exhaustion hotfix (2026-07-14): this endpoint previously took
     # `db: Session = Depends(get_db)`, whose pooled connection stayed checked
     # out for the WebSocket's entire lifetime — one connection held per
