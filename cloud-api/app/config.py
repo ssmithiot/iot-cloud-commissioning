@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     # separate control enforced by TunnelSessionManager.
     tunnel_request_timeout_sec: float = Field(default=900.0, validation_alias="TUNNEL_REQUEST_TIMEOUT_SEC")
     gateway_tunnel_websockets_disabled: bool = Field(default=False, validation_alias="GATEWAY_TUNNEL_WEBSOCKETS_DISABLED")
+    gateway_tunnel_auth_concurrency: int = Field(default=5, ge=1, le=100, validation_alias="GATEWAY_TUNNEL_AUTH_CONCURRENCY")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),

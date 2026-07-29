@@ -1,8 +1,11 @@
 import os
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import sys
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -25,7 +28,7 @@ os.environ["IOT_ADMIN_API_TOKEN"] = "test-admin-token"
 os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-jwt-secret"
 
 from app import main as main_module
-from app.auth import hash_gateway_token
+from app.auth import GatewayAuthContext, hash_gateway_token
 from app.config import Settings
 from app.database import Base, SessionLocal, engine
 from app.main import app
@@ -35,10 +38,18 @@ from scripts.create_gateway_credential import DEFAULT_SCOPES, create_gateway_cre
 
 @pytest.fixture(autouse=True)
 def reset_database() -> None:
+    from app.tunnel import tunnel_auth_gate, tunnel_manager, tunnel_metrics
+
     engine.dispose()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    tunnel_manager._tunnels.clear()
+    tunnel_auth_gate.reset()
+    tunnel_metrics.reset()
     yield
+    tunnel_manager._tunnels.clear()
+    tunnel_auth_gate.reset()
+    tunnel_metrics.reset()
     engine.dispose()
 
 
@@ -296,6 +307,15 @@ def test_admin_cloud_metrics_exposes_safe_pool_health() -> None:
     assert body["database"]["pool_size"] == main_module.settings.db_pool_size
     assert body["database"]["max_overflow"] == main_module.settings.db_max_overflow
     assert body["database"]["timeout_seconds"] == main_module.settings.db_pool_timeout_sec
+    assert body["tunnels"]["active_tunnels"] == 0
+    assert body["tunnels"]["auth_gate_limit"] == main_module.settings.gateway_tunnel_auth_concurrency
+    assert body["tunnels"]["auth_gate_in_use"] == 0
+    assert body["tunnels"]["auth_attempts_total"] == 0
+    assert body["tunnels"]["accepted_total"] == 0
+    assert body["tunnels"]["rejected_total"] == 0
+    assert body["tunnels"]["duplicate_replacements_total"] == 0
+    assert "auth_duration_avg_ms" in body["tunnels"]
+    assert "db_checkout_wait_avg_ms" in body["tunnels"]
     assert "database_url" not in body
 
 
@@ -1342,6 +1362,28 @@ def test_gateway_tunnel_websocket_diagnostic_disable_rejects_before_db(monkeypat
     assert app_engine.pool.checkedout() == 0
 
 
+def test_gateway_tunnel_auth_gate_rejects_overload_before_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.database import engine as app_engine
+    from app.tunnel import tunnel_auth_gate, tunnel_metrics
+
+    monkeypatch.setattr(main_module.settings, "gateway_tunnel_auth_concurrency", 1)
+    assert tunnel_auth_gate.try_acquire(1) is True
+    raw_token = create_gateway_token("GW001")
+    try:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+                pass
+    finally:
+        tunnel_auth_gate.release()
+
+    assert exc.value.code == 1013
+    assert app_engine.pool.checkedout() == 0
+    snapshot = tunnel_metrics.snapshot(active_tunnels=0, auth_gate_in_use=tunnel_auth_gate.in_use, auth_gate_limit=1)
+    assert snapshot["auth_attempts_total"] == 1
+    assert snapshot["rejected_total"] == 1
+    assert snapshot["accepted_total"] == 0
+
+
 def test_gateway_tunnel_registration_updates_status() -> None:
     raw_token = create_gateway_token("GW001")
 
@@ -1386,6 +1428,94 @@ def test_gateway_tunnel_does_not_hold_db_session_while_connected() -> None:
         assert connected.json()["connected"] is True
         # The live tunnel must not retain a checked-out DB connection.
         assert app_engine.pool.checkedout() == 0
+    assert app_engine.pool.checkedout() == 0
+
+
+def test_gateway_tunnel_duplicate_connection_replaces_without_stale_cleanup_corruption() -> None:
+    from app.tunnel import tunnel_manager, tunnel_metrics
+
+    raw_token = create_gateway_token("GW001")
+
+    with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+        assert tunnel_manager.is_connected("GW001") is True
+        with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+            assert tunnel_manager.is_connected("GW001") is True
+            assert tunnel_manager.active_count() == 1
+
+    assert tunnel_manager.is_connected("GW001") is False
+    assert tunnel_metrics.snapshot(
+        active_tunnels=tunnel_manager.active_count(),
+        auth_gate_in_use=0,
+        auth_gate_limit=main_module.settings.gateway_tunnel_auth_concurrency,
+    )["duplicate_replacements_total"] == 1
+
+
+def test_gateway_tunnel_reconnect_burst_fast_rejects_overload_and_keeps_core_routes_responsive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.database import engine as app_engine
+    from app.tunnel import tunnel_auth_gate, tunnel_manager, tunnel_metrics
+
+    gateway_count = 100
+    auth_limit = 5
+    monkeypatch.setattr(main_module.settings, "gateway_tunnel_auth_concurrency", auth_limit)
+    original_require_gateway_auth = main_module.require_gateway_auth
+
+    def slow_gateway_auth(authorization: str | None = None, db=None) -> GatewayAuthContext:
+        time.sleep(0.2)
+        gateway_id = str(authorization or "").rsplit(" ", 1)[-1]
+        return GatewayAuthContext(gateway_id=gateway_id, credential_id="burst-test", scopes=[])
+
+    monkeypatch.setattr(main_module, "require_gateway_auth", slow_gateway_auth)
+    start_event = threading.Event()
+
+    def connect_gateway(index: int) -> str:
+        gateway_id = f"GW{index:03d}"
+        start_event.wait(timeout=5)
+        with TestClient(app) as local_client:
+            try:
+                with local_client.websocket_connect(
+                    f"/api/edge/tunnels/{gateway_id}",
+                    headers={"Authorization": f"Bearer {gateway_id}"},
+                ):
+                    time.sleep(0.05)
+                    return "accepted"
+            except WebSocketDisconnect as exc:
+                return f"rejected:{exc.code}"
+
+    with ThreadPoolExecutor(max_workers=gateway_count) as executor:
+        futures = [executor.submit(connect_gateway, index) for index in range(gateway_count)]
+        start_event.set()
+        health_started = time.perf_counter()
+        health = client.get("/health")
+        health_latency = time.perf_counter() - health_started
+        auth_started = time.perf_counter()
+        public_auth = client.get("/api/auth/public-config")
+        public_auth_latency = time.perf_counter() - auth_started
+        results = [future.result(timeout=10) for future in futures]
+
+    monkeypatch.setattr(main_module, "require_gateway_auth", original_require_gateway_auth)
+    accepted = results.count("accepted")
+    rejected_1013 = results.count("rejected:1013")
+    snapshot = tunnel_metrics.snapshot(
+        active_tunnels=tunnel_manager.active_count(),
+        auth_gate_in_use=tunnel_auth_gate.in_use,
+        auth_gate_limit=auth_limit,
+    )
+
+    assert health.status_code == 200
+    assert health_latency < 0.25
+    assert public_auth.status_code == 200
+    assert public_auth_latency < 0.5
+    assert accepted > 0
+    assert rejected_1013 > 0
+    assert accepted + rejected_1013 == gateway_count
+    assert snapshot["auth_gate_in_use"] == 0
+    assert snapshot["auth_gate_limit"] == auth_limit
+    assert snapshot["auth_attempts_total"] == gateway_count
+    assert snapshot["accepted_total"] == accepted
+    assert snapshot["rejected_total"] == rejected_1013
+    assert tunnel_manager.active_count() == 0
     assert app_engine.pool.checkedout() == 0
 
 

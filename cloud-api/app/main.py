@@ -121,7 +121,15 @@ from app.schemas import (
     TunnelSessionOut,
     TunnelStatusOut,
 )
-from app.tunnel import TunnelRequestFailed, TunnelResponse, TunnelUnavailable, tunnel_manager, tunnel_session_manager
+from app.tunnel import (
+    TunnelRequestFailed,
+    TunnelResponse,
+    TunnelUnavailable,
+    tunnel_auth_gate,
+    tunnel_manager,
+    tunnel_metrics,
+    tunnel_session_manager,
+)
 from app.ui import (
     admin_users_html,
     app_html,
@@ -1383,6 +1391,11 @@ def admin_cloud_metrics(
             "checked_in": pool_count("checkedin"),
             "overflow": pool_count("overflow"),
         },
+        "tunnels": tunnel_metrics.snapshot(
+            active_tunnels=tunnel_manager.active_count(),
+            auth_gate_in_use=tunnel_auth_gate.in_use,
+            auth_gate_limit=settings.gateway_tunnel_auth_concurrency,
+        ),
         "schema": schema_revision_status(engine, auto_create_tables=settings.auto_create_tables).as_dict(),
         "render_metrics_url": (settings.render_metrics_url or "").strip() or None,
     }
@@ -2029,6 +2042,13 @@ async def edge_tunnel(
     authorization: str | None = Header(default=None),
 ) -> None:
     if settings.gateway_tunnel_websockets_disabled:
+        tunnel_metrics.record_rejected()
+        await websocket.close(code=1013)
+        return
+
+    tunnel_metrics.record_auth_attempt()
+    if not tunnel_auth_gate.try_acquire(settings.gateway_tunnel_auth_concurrency):
+        tunnel_metrics.record_rejected()
         await websocket.close(code=1013)
         return
 
@@ -2038,20 +2058,34 @@ async def edge_tunnel(
     # connected gateway tunnel, indefinitely. A fleet of tunnels exhausted the
     # pool (QueuePool size 10 + overflow 15). Authenticate with a short-lived
     # session instead, closed before accept() and before the receive loop.
-    db = SessionLocal()
+    auth_started_at = time.monotonic()
+    db = None
     try:
+        db = SessionLocal()
+        checkout_started_at = time.monotonic()
+        db.connection()
+        tunnel_metrics.record_db_checkout_wait((time.monotonic() - checkout_started_at) * 1000)
         auth = require_gateway_auth(authorization=authorization, db=db)
         if auth.gateway_id != gateway_id:
+            tunnel_metrics.record_rejected()
             await websocket.close(code=1008)
             return
     except HTTPException:
+        tunnel_metrics.record_rejected()
         await websocket.close(code=1008)
         return
     finally:
-        db.close()
+        if db is not None:
+            db.close()
+        tunnel_metrics.record_auth_duration((time.monotonic() - auth_started_at) * 1000)
+        tunnel_auth_gate.release()
 
     await websocket.accept()
-    tunnel = tunnel_manager.register(gateway_id, websocket)
+    tunnel_metrics.record_accepted()
+    tunnel, replaced_tunnel = tunnel_manager.register(gateway_id, websocket)
+    if replaced_tunnel is not None:
+        tunnel_metrics.record_duplicate_replacement()
+        await replaced_tunnel.close()
     try:
         while True:
             tunnel.resolve_response(await websocket.receive_json())
