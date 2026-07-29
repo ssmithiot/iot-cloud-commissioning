@@ -49,7 +49,7 @@ APP_SCRIPT = r"""
   const themeStorageKey = "iot-cloud-command-theme";
   const dashboardRegistryStorageKey = "iot-cloud-dashboard-registry-state";
   const dashboardGatewayCacheKey = "iot-cloud-dashboard-gateway-cache-v1";
-  const dashboardGatewayRefreshMs = 30000;
+  const REGISTRY_REFRESH_INTERVAL_MS = 300000;
   const dashboardSortKeys = new Set(["gateway_id", "site", "address", "hostname", "version", "status", "network_status_notes", "direct", "configure"]);
   const trendChartFrame = Object.freeze({ minWidth: 360, height: 230, left: 72, right: 20, top: 14, bottom: 48 });
   const trendChartSizeStorageKey = "iot-cloud-trend-chart-size";
@@ -1378,7 +1378,7 @@ APP_SCRIPT = r"""
     if (!dashboardGatewayRefreshTimer) {
       dashboardGatewayRefreshTimer = window.setInterval(() => {
         refreshDashboardGatewayData({ initial: false });
-      }, dashboardGatewayRefreshMs);
+      }, REGISTRY_REFRESH_INTERVAL_MS);
     }
   }
 

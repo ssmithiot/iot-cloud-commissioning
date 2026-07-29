@@ -439,11 +439,28 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'colspan="10"' in response.text
     assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
     assert 'const dashboardGatewayCacheKey = "iot-cloud-dashboard-gateway-cache-v1";' in response.text
-    assert "const dashboardGatewayRefreshMs = 30000;" in response.text
+    assert "const REGISTRY_REFRESH_INTERVAL_MS = 300000;" in response.text
     assert "restoreCachedDashboardGateways" in response.text
     assert "cacheDashboardGateways(gateways)" in response.text
     assert "Gateway refresh failed; showing last known list." in response.text
     assert "window.setInterval(() =>" in response.text
+
+
+def test_dashboard_registry_refresh_interval_is_five_minutes_without_duplicate_timer() -> None:
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert "await refreshDashboardGatewayData({ savedGatewayId, initial: true });" in response.text
+    assert "if (!dashboardGatewayRefreshTimer) {" in response.text
+    assert "dashboardGatewayRefreshTimer = window.setInterval(() =>" in response.text
+    assert "refreshDashboardGatewayData({ initial: false });" in response.text
+    assert "}, REGISTRY_REFRESH_INTERVAL_MS);" in response.text
+    assert response.text.count("window.setInterval(() =>") == 1
+    assert response.text.count("REGISTRY_REFRESH_INTERVAL_MS") == 2
+    assert "const dashboardGatewayRefreshMs = 30000;" not in response.text
+    assert "}, dashboardGatewayRefreshMs);" not in response.text
+    assert "setTimeout(resolve, 2500)" in response.text
+    assert "setTimeout(resolve, 2000)" in response.text
 
 
 def test_dashboard_edge_app_cell_uses_short_release_labels_and_preserves_update_button() -> None:
