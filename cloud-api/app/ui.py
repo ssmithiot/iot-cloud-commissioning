@@ -1601,7 +1601,7 @@ APP_SCRIPT = r"""
     if (releaseReason === "Up to date") {
       return `<strong>${escapeHtml(version)}</strong>`;
     }
-    return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+    return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Update needed</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
   }
 
   async function refreshGatewayUpdates() {
@@ -5179,9 +5179,15 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .gateway-access-actions {{
       display: flex;
+      flex-direction: row;
       align-items: center;
       flex-wrap: wrap;
       gap: 10px;
+    }}
+    .gateway-access-actions .button {{
+      width: auto;
+      flex: 0 0 auto;
+      justify-content: center;
     }}
     .gateway-action-status {{
       display: block;
@@ -7237,7 +7243,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
           <div class="grid">
             <div class="span-4"><label>Tunnel Status</label><pre id="tunnel-status">Loading...</pre></div>
             <div class="span-4"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
-            <div class="span-4"><label>Action</label><div class="gateway-access-actions"><a id="remote-tunnel-link" class="button secondary" href="/gateways/{escaped_gateway_id}/tunnel/">Remote Tunnel</a><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div><span id="tunnel-action-status" class="gateway-action-status">Ready</span></div>
+            <div class="span-12"><label>Action</label><div class="gateway-access-actions"><a id="remote-tunnel-link" class="button secondary" href="/gateways/{escaped_gateway_id}/tunnel/">Remote Tunnel</a><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div><span id="tunnel-action-status" class="gateway-action-status">Ready</span></div>
           </div>
         </article>
         <article class="workspace-tile site-summary">

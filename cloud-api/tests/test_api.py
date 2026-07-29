@@ -429,7 +429,8 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert "const releaseStatus = gatewayReleaseStatus(gateway);" in response.text
     assert "gatewayReleaseReason(gateway)" in response.text
     assert 'return `<strong>${escapeHtml(version)}</strong>`;' in response.text
-    assert 'Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed' in response.text
+    assert 'Update needed' in response.text
+    assert 'Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed' not in response.text
     assert 'data-request-update="${escapeHtml(gateway.gateway_id)}"' in response.text
     assert "target_agent_version: edgeAgentReleaseVersion" in response.text
     assert "target_ui_version: edgeUiReleaseVersion" in response.text
@@ -452,7 +453,7 @@ def test_dashboard_edge_app_cell_uses_short_release_labels_and_preserves_update_
     assert 'return `<strong>${escapeHtml(version)}</strong>`;' in response.text
     assert "Agent ${escapeHtml(gateway.agent_version" not in response.text
     assert "UI ${escapeHtml(gateway.ui_version" not in response.text
-    assert 'Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed' in response.text
+    assert 'Update needed' in response.text
     assert "Release: ${escapeHtml(releaseStatus.requiredUiVersion)}" not in response.text
     assert "Mode: Full non-provisioning update" not in response.text
     assert '<button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>' in response.text
@@ -481,7 +482,8 @@ def test_dashboard_release_comparison_states_are_019() -> None:
     assert 'reason = "Agent update required";' in response.text
     assert 'reason = "Full update required";' in response.text
     assert 'let reason = "Up to date";' in response.text
-    assert "Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed" in response.text
+    assert "Update needed" in response.text
+    assert "Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed" not in response.text
     assert "<small>${escapeHtml(releaseStatus.reason)}</small>" in response.text
 
 
@@ -490,12 +492,16 @@ def test_gateway_workspace_restores_remote_tunnel_action_next_to_direct_connect(
 
     assert response.status_code == 200
     assert 'id="remote-tunnel-link"' in response.text
-    assert 'class="gateway-access-actions"><a id="remote-tunnel-link"' in response.text
+    assert '<div class="span-12"><label>Action</label><div class="gateway-access-actions"><a id="remote-tunnel-link"' in response.text
     assert 'Remote Tunnel</a><a id="direct-connect-link"' in response.text
     assert 'id="direct-connect-link"' in response.text
     assert ".gateway-access-actions" in response.text
     assert "display: flex;" in response.text
+    assert "flex-direction: row;" in response.text
     assert "gap: 10px;" in response.text
+    assert ".gateway-access-actions .button" in response.text
+    assert "width: auto;" in response.text
+    assert "flex: 0 0 auto;" in response.text
     assert 'id="tunnel-action-status" class="gateway-action-status">Ready</span>' in response.text
     assert 'tunnelActionStatus.textContent = "Connecting";' in response.text
     assert 'tunnelActionStatus.textContent = "Ready";' in response.text
@@ -525,7 +531,7 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'id="site-address-postal-code"' in response.text
     assert 'id="direct-connect-link"' in response.text
     assert 'id="remote-tunnel-link"' in response.text
-    assert 'class="gateway-access-actions"><a id="remote-tunnel-link"' in response.text
+    assert '<div class="span-12"><label>Action</label><div class="gateway-access-actions"><a id="remote-tunnel-link"' in response.text
     assert 'Remote Tunnel</a><a id="direct-connect-link"' in response.text
     assert 'id="tunnel-action-status" class="gateway-action-status">Ready</span>' in response.text
     assert 'id="tunnel-status"' in response.text
