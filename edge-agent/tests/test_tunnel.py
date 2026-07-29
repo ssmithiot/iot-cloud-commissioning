@@ -7,16 +7,7 @@ import pytest
 import requests
 
 from iot_cx_agent.config import AgentConfig
-from iot_cx_agent import tunnel as tunnel_module
-from iot_cx_agent.tunnel import (
-    next_retry_base_delay,
-    retry_delay_with_jitter,
-    handle_tunnel_message,
-    local_ui_base_url,
-    run_tunnel,
-    run_tunnel_forever,
-    tunnel_url,
-)
+from iot_cx_agent.tunnel import handle_tunnel_message, local_ui_base_url, run_tunnel, tunnel_url
 
 
 def test_tunnel_url_uses_gateway_id() -> None:
@@ -239,71 +230,3 @@ def test_run_tunnel_sends_gateway_auth_header(monkeypatch, tmp_path: Path) -> No
     assert captured["header"] == ["Authorization: Bearer iotcc_gw_prefix_secret"]
     assert captured["timeout"] == 30
     assert captured["closed"] is True
-
-
-def test_tunnel_retry_delay_uses_jitter_and_caps(monkeypatch) -> None:
-    monkeypatch.setattr(tunnel_module.random, "uniform", lambda lower, upper: upper)
-
-    assert retry_delay_with_jitter(15) == 22.5
-    assert retry_delay_with_jitter(300) == 300
-    assert next_retry_base_delay(15) == 30
-    assert next_retry_base_delay(300) == 300
-
-
-def test_run_tunnel_forever_adds_startup_jitter_and_exponential_retry(monkeypatch, tmp_path: Path) -> None:
-    config = AgentConfig(
-        gateway_id="GW001",
-        site_id="demo-site",
-        cloud_url="https://cloud.example.com",
-        sqlite_path=tmp_path / "edge.db",
-    )
-    sleeps: list[float] = []
-    random_values = iter([7.0, 15.0, 30.0, 60.0])
-
-    class StopLoop(BaseException):
-        pass
-
-    def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        if len(sleeps) >= 4:
-            raise StopLoop()
-
-    monkeypatch.setattr(tunnel_module.random, "uniform", lambda _lower, _upper: next(random_values))
-    monkeypatch.setattr(tunnel_module.time, "sleep", fake_sleep)
-    monkeypatch.setattr(tunnel_module.time, "monotonic", lambda: 100.0)
-    monkeypatch.setattr(tunnel_module, "run_tunnel", lambda _config: (_ for _ in ()).throw(RuntimeError("reject 403")))
-
-    with pytest.raises(StopLoop):
-        run_tunnel_forever(config)
-
-    assert sleeps == [7.0, 15.0, 30.0, 60.0]
-
-
-def test_run_tunnel_forever_resets_backoff_only_after_stable_connection(monkeypatch, tmp_path: Path) -> None:
-    config = AgentConfig(
-        gateway_id="GW001",
-        site_id="demo-site",
-        cloud_url="https://cloud.example.com",
-        sqlite_path=tmp_path / "edge.db",
-    )
-    sleeps: list[float] = []
-    random_values = iter([0.0, 15.0, 30.0, 15.0])
-    monotonic_values = iter([0.0, 1.0, 10.0, 11.0, 20.0, 81.0])
-
-    class StopLoop(BaseException):
-        pass
-
-    def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        if len(sleeps) >= 3:
-            raise StopLoop()
-
-    monkeypatch.setattr(tunnel_module.random, "uniform", lambda _lower, _upper: next(random_values))
-    monkeypatch.setattr(tunnel_module.time, "sleep", fake_sleep)
-    monkeypatch.setattr(tunnel_module.time, "monotonic", lambda: next(monotonic_values))
-    monkeypatch.setattr(tunnel_module, "run_tunnel", lambda _config: None)
-
-    with pytest.raises(StopLoop):
-        run_tunnel_forever(config)
-
-    assert sleeps == [15.0, 30.0, 15.0]

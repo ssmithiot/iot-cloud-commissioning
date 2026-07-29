@@ -1,7 +1,6 @@
 import base64
 import json
 import logging
-import random
 import time
 from urllib.parse import quote, urlparse
 
@@ -14,11 +13,6 @@ logger = logging.getLogger("iot-cx-agent.tunnel")
 ALLOWED_LOCAL_UI_URL = "http://127.0.0.1:5000"
 STRIPPED_LOCAL_HEADERS = {"host", "content-length", "connection", "authorization"}
 SENSITIVE_LOG_HEADER_NAMES = {"authorization"}
-TUNNEL_STARTUP_JITTER_MAX_SEC = 30.0
-TUNNEL_RETRY_INITIAL_SEC = 15.0
-TUNNEL_RETRY_MAX_SEC = 300.0
-TUNNEL_STABLE_RESET_SEC = 60.0
-TUNNEL_RETRY_JITTER_FACTOR = 0.5
 
 
 def tunnel_url(config: AgentConfig) -> str:
@@ -29,44 +23,13 @@ def tunnel_url(config: AgentConfig) -> str:
     return f"{scheme}://{parsed.netloc}{base_path}/api/edge/tunnels/{gateway_id}"
 
 
-def retry_delay_with_jitter(base_delay_sec: float) -> float:
-    upper = min(TUNNEL_RETRY_MAX_SEC, base_delay_sec * (1 + TUNNEL_RETRY_JITTER_FACTOR))
-    return random.uniform(base_delay_sec, upper)
-
-
-def next_retry_base_delay(base_delay_sec: float) -> float:
-    return min(TUNNEL_RETRY_MAX_SEC, base_delay_sec * 2)
-
-
 def run_tunnel_forever(config: AgentConfig) -> None:
-    startup_delay = random.uniform(0, TUNNEL_STARTUP_JITTER_MAX_SEC)
-    if startup_delay > 0:
-        logger.info("Delaying initial gateway tunnel attempt for %.1fs", startup_delay)
-        time.sleep(startup_delay)
-
-    retry_base_delay = TUNNEL_RETRY_INITIAL_SEC
     while True:
-        started_at = time.monotonic()
         try:
             run_tunnel(config)
         except Exception as exc:
             logger.warning("Gateway tunnel disconnected: %s", exc)
-        connected_for = time.monotonic() - started_at
-        stable_connection = connected_for >= TUNNEL_STABLE_RESET_SEC
-        if stable_connection:
-            retry_base_delay = TUNNEL_RETRY_INITIAL_SEC
-        sleep_for = retry_delay_with_jitter(retry_base_delay)
-        logger.info(
-            "Retrying gateway tunnel in %.1fs after %.1fs connection lifetime",
-            sleep_for,
-            connected_for,
-        )
-        time.sleep(sleep_for)
-        retry_base_delay = (
-            TUNNEL_RETRY_INITIAL_SEC
-            if stable_connection
-            else next_retry_base_delay(retry_base_delay)
-        )
+        time.sleep(5)
 
 
 def run_tunnel(config: AgentConfig) -> None:

@@ -104,13 +104,6 @@ class GatewayTunnel:
                 future.set_exception(TunnelUnavailable("Gateway tunnel disconnected"))
         self.pending.clear()
 
-    async def close(self, code: int = 1012) -> None:
-        try:
-            await self.websocket.close(code=code)
-        except RuntimeError:
-            pass
-
-
 class TunnelManager:
     def __init__(self) -> None:
         self._tunnels: dict[str, GatewayTunnel] = {}

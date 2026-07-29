@@ -2085,7 +2085,6 @@ async def edge_tunnel(
     tunnel, replaced_tunnel = tunnel_manager.register(gateway_id, websocket)
     if replaced_tunnel is not None:
         tunnel_metrics.record_duplicate_replacement()
-        await replaced_tunnel.close()
     try:
         while True:
             tunnel.resolve_response(await websocket.receive_json())

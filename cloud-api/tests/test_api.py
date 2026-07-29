@@ -1450,6 +1450,29 @@ def test_gateway_tunnel_duplicate_connection_replaces_without_stale_cleanup_corr
     )["duplicate_replacements_total"] == 1
 
 
+def test_tunnel_manager_replacement_does_not_close_displaced_socket_or_allow_stale_cleanup() -> None:
+    from app.tunnel import TunnelManager
+
+    manager = TunnelManager()
+    first_websocket = object()
+    second_websocket = object()
+
+    first, replaced = manager.register("GW001", first_websocket)  # type: ignore[arg-type]
+    assert replaced is None
+    second, replaced = manager.register("GW001", second_websocket)  # type: ignore[arg-type]
+
+    assert replaced is first
+    assert manager.active_count() == 1
+    assert manager.get("GW001") is second
+
+    manager.unregister("GW001", first)
+    assert manager.active_count() == 1
+    assert manager.get("GW001") is second
+
+    manager.unregister("GW001", second)
+    assert manager.active_count() == 0
+
+
 def test_gateway_tunnel_reconnect_burst_fast_rejects_overload_and_keeps_core_routes_responsive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
