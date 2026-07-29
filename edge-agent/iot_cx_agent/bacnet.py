@@ -76,6 +76,21 @@ def resolved_bacnet_port(config: AgentConfig) -> int:
     return config.bacnet_default_port
 
 
+def bacnet_environment(config: AgentConfig) -> dict[str, str]:
+    """Build a per-command BACnet/IP environment without changing process state.
+
+    The configured port is the client socket's source port. Supplying a BBMD
+    address and port enables Foreign Device Registration through a separately
+    owned router while preserving this client's UDP source port for replies.
+    """
+    env = os.environ.copy()
+    env["BACNET_IP_PORT"] = str(resolved_bacnet_port(config))
+    if config.bacnet_bbmd_address and config.bacnet_bbmd_port:
+        env["BACNET_BBMD_ADDRESS"] = config.bacnet_bbmd_address
+        env["BACNET_BBMD_PORT"] = str(config.bacnet_bbmd_port)
+    return env
+
+
 def _runtime_busy_message(port: int) -> str:
     return f"BACnet runtime is busy. Another local BACnet command is already using UDP {port}."
 
@@ -234,7 +249,10 @@ def run_bacnet_runtime_check(config: AgentConfig, request: dict[str, Any]) -> tu
     result = {
         "job_type": "bacnet_runtime_check",
         "bacnet_port": port,
+        "bacnet_source_port": port,
         "bacnet_router_profile": config.bacnet_router_profile,
+        "bacnet_bbmd_address": config.bacnet_bbmd_address,
+        "bacnet_bbmd_port": config.bacnet_bbmd_port,
         "timeout_sec": timeout_sec,
         "lock_path": str(config.bacnet_lock_path_for_port(port)),
         "lock_held": bacnet_runtime_lock_held(config, port),
@@ -305,8 +323,7 @@ def run_bacnet_discovery(config: AgentConfig, request: dict[str, Any]) -> tuple[
     port = resolved_bacnet_port(config)
     base_result = {"bacnet_discover": True, "port": port, "bacnet_router_profile": config.bacnet_router_profile}
 
-    env = os.environ.copy()
-    env["BACNET_IP_PORT"] = str(port)
+    env = bacnet_environment(config)
 
     try:
         lock = BacnetRuntimeLock(config, port)
@@ -707,9 +724,8 @@ def run_bacnet_read(config: AgentConfig, request: dict[str, Any]) -> tuple[dict[
         result = _failure_result({"job_type": "bacnet_read", "property": BACNET_PRESENT_VALUE, "property_id": 85}, str(exc))
         return result, str(exc)
 
-    env = os.environ.copy()
     port = resolved_bacnet_port(config)
-    env["BACNET_IP_PORT"] = str(port)
+    env = bacnet_environment(config)
     args = build_bacnet_read_args(config, normalized)
     normalized["bacnet_port"] = port
     normalized["bacnet_router_profile"] = config.bacnet_router_profile
@@ -771,9 +787,8 @@ def run_bacnet_read_bulk(config: AgentConfig, request: dict[str, Any]) -> tuple[
         result = _failure_result({"job_type": "bacnet_read_bulk", "property": BACNET_PRESENT_VALUE, "property_id": 85}, str(exc))
         return result, str(exc)
 
-    env = os.environ.copy()
     port = resolved_bacnet_port(config)
-    env["BACNET_IP_PORT"] = str(port)
+    env = bacnet_environment(config)
     normalized["bacnet_port"] = port
     normalized["bacnet_router_profile"] = config.bacnet_router_profile
 
@@ -1174,9 +1189,8 @@ def run_bacnet_load_points(config: AgentConfig, request: dict[str, Any]) -> tupl
         result = _failure_result({"job_type": "bacnet_load_points", "bacnet_port": resolved_bacnet_port(config)}, str(exc))
         return result, str(exc)
 
-    env = os.environ.copy()
     port = resolved_bacnet_port(config)
-    env["BACNET_IP_PORT"] = str(port)
+    env = bacnet_environment(config)
     normalized["bacnet_port"] = port
     normalized["bacnet_router_profile"] = config.bacnet_router_profile
     lock = BacnetRuntimeLock(config, port)

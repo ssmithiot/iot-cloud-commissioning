@@ -18,6 +18,15 @@ local_ui_write_timeout_sec: 120
 # - bac-rtr: BAC-RTR commissioning on UDP 47809.
 # - custom: use bacnet.default_port or BACNET_IP_PORT exactly.
 # BACNET_IP_PORT in the service environment overrides these profile defaults.
+# For the GW006 USB-485 pilot, use a dedicated client source port and register
+# it as a Foreign Device with the router, rather than sharing another app's
+# BACnet/IP socket. Do not enable this block without the field validation gate:
+# bacnet_default_port: 47814
+# bacnet:
+#   router_profile: custom
+#   default_port: 47814
+#   bbmd_address: 192.168.1.200
+#   bbmd_port: 47809
 bacnet_default_port: 47814
 heartbeat_interval_sec: 30
 # Trend samples stay local until the cloud acknowledges them. These bounds keep

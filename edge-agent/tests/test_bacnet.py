@@ -4,7 +4,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from iot_cx_agent.bacnet import active_priority_from_array_output, parse_bacnet_object_list, parse_bacwi_output, run_bacnet_runtime_check
+from iot_cx_agent.bacnet import bacnet_environment, active_priority_from_array_output, parse_bacnet_object_list, parse_bacwi_output, run_bacnet_runtime_check
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.jobs import execute_job
 
@@ -97,6 +97,49 @@ def test_parse_bacwi_output() -> None:
             "apdu": 480,
         },
     ]
+
+
+def test_bacnet_environment_uses_a_distinct_fdr_client_source_port(tmp_path: Path) -> None:
+    agent_config = replace(
+        config(tmp_path),
+        bacnet_default_port=47814,
+        bacnet_bbmd_address="192.168.1.200",
+        bacnet_bbmd_port=47809,
+    )
+
+    env = bacnet_environment(agent_config)
+
+    assert env["BACNET_IP_PORT"] == "47814"
+    assert env["BACNET_BBMD_ADDRESS"] == "192.168.1.200"
+    assert env["BACNET_BBMD_PORT"] == "47809"
+
+
+def test_bacnet_discovery_passes_fdr_target_to_the_client_tool(tmp_path: Path, monkeypatch) -> None:
+    agent_config = replace(
+        config(tmp_path),
+        bacnet_default_port=47814,
+        bacnet_bbmd_address="192.168.1.200",
+        bacnet_bbmd_port=47809,
+    )
+
+    def fake_run(*args, **kwargs):
+        assert args[0] == ["bacwi"]
+        assert kwargs["env"]["BACNET_IP_PORT"] == "47814"
+        assert kwargs["env"]["BACNET_BBMD_ADDRESS"] == "192.168.1.200"
+        assert kwargs["env"]["BACNET_BBMD_PORT"] == "47809"
+        return subprocess.CompletedProcess(args[0], 0, stdout=SAMPLE_BACWI_OUTPUT, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    status, result, error = execute_job(
+        agent_config,
+        {"job_id": "job-fdr-discover", "job_type": "bacnet_discover", "request": {"timeout_sec": 10}},
+    )
+
+    assert status == "completed"
+    assert error is None
+    assert result is not None
+    assert result["port"] == 47814
 
 
 def test_active_priority_from_array_output() -> None:

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import ipaddress
 import os
 from pathlib import Path
 
@@ -35,6 +36,10 @@ class AgentConfig:
     local_ui_write_timeout_sec: float = 120.0
     bacnet_router_profile: str = "contemporary"
     bacnet_default_port: int = DEFAULT_BACNET_PORT
+    # The local BACnet/IP UDP source port used by the command-line client.
+    # When FDR is configured, this remains distinct from the router's port.
+    bacnet_bbmd_address: str | None = None
+    bacnet_bbmd_port: int | None = None
     bacwi_path: str = "bacwi"
     bacrp_path: str = "bacrp"
     bacrpm_path: str = "bacrpm"
@@ -85,6 +90,17 @@ def _parse_port(raw_port: object, source: str) -> int:
     if port < 1 or port > 65535:
         raise ValueError(f"{source} must be an integer between 1 and 65535")
     return port
+
+
+def _parse_ipv4_address(raw_address: object, source: str) -> str:
+    value = str(raw_address).strip()
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise ValueError(f"{source} must be an IPv4 address") from exc
+    if address.version != 4:
+        raise ValueError(f"{source} must be an IPv4 address")
+    return str(address)
 
 
 def _positive_int(raw_value: object, source: str, *, minimum: int = 1) -> int:
@@ -139,6 +155,14 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
     )
     raw_lock_path = bacnet.get("lock_path")
     lock_path = Path(raw_lock_path) if raw_lock_path else None
+    raw_bbmd_address = os.getenv("BACNET_BBMD_ADDRESS") or bacnet.get("bbmd_address")
+    raw_bbmd_port = os.getenv("BACNET_BBMD_PORT") or bacnet.get("bbmd_port")
+    if bool(raw_bbmd_address) != bool(raw_bbmd_port):
+        raise ValueError("bacnet.bbmd_address and bacnet.bbmd_port must be configured together")
+    bbmd_address = _parse_ipv4_address(raw_bbmd_address, "BACNET_BBMD_ADDRESS") if raw_bbmd_address else None
+    bbmd_port = _parse_port(raw_bbmd_port, "BACNET_BBMD_PORT") if raw_bbmd_port else None
+    if bbmd_port is not None and bbmd_port == bacnet_port:
+        raise ValueError("bacnet.default_port must differ from bacnet.bbmd_port when FDR is configured")
     return AgentConfig(
         gateway_id=str(raw["gateway_id"]),
         site_id=str(raw["site_id"]),
@@ -149,6 +173,8 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         local_ui_write_timeout_sec=float(raw.get("local_ui_write_timeout_sec", 120)),
         bacnet_router_profile=profile,
         bacnet_default_port=bacnet_port,
+        bacnet_bbmd_address=bbmd_address,
+        bacnet_bbmd_port=bbmd_port,
         bacwi_path=str(bacnet.get("bacwi_path", "bacwi")),
         bacrp_path=str(bacnet.get("bacrp_path", "bacrp")),
         bacrpm_path=str(bacnet.get("bacrpm_path", "bacrpm")),

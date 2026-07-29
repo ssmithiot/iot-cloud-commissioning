@@ -1063,6 +1063,9 @@ def service_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     repo = shell_quote(request.remote_repo)
     return [
         ("install iot-cx-agent service", f"sudo -S -p '' install -m 0644 {repo}/deploy/iot-cx-agent.service /etc/systemd/system/iot-cx-agent.service", True),
+        ("install BACnet router helper", f"sudo -S -p '' install -o root -g root -m 0755 {repo}/deploy/iot-cx-configure-mstp-router /usr/local/sbin/iot-cx-configure-mstp-router", True),
+        ("install BACnet router authorization", f"sudo -S -p '' install -o root -g root -m 0440 {repo}/deploy/iot-cx-mstp-router.sudoers /etc/sudoers.d/iot-cx-mstp-router", True),
+        ("validate BACnet router authorization", "sudo -S -p '' visudo -cf /etc/sudoers.d/iot-cx-mstp-router", True),
         ("systemd daemon reload", "sudo -S -p '' systemctl daemon-reload", True),
         ("show agent service", "systemctl cat iot-cx-agent.service --no-pager", False),
         ("enable agent service", sudo_systemctl_timeout("enable", "iot-cx-agent.service"), True),

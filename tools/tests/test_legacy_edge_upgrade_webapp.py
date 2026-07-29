@@ -298,6 +298,15 @@ def test_service_control_commands_use_timeout_wrapper() -> None:
     assert agent_restart.startswith("sh -c ")
 
 
+def test_service_commands_install_the_fixed_mstp_router_helper() -> None:
+    commands = {label: command for label, command, _sudo in service_commands(make_request())}
+
+    assert "/deploy/iot-cx-configure-mstp-router" in commands["install BACnet router helper"]
+    assert "/usr/local/sbin/iot-cx-configure-mstp-router" in commands["install BACnet router helper"]
+    assert "/deploy/iot-cx-mstp-router.sudoers" in commands["install BACnet router authorization"]
+    assert "visudo -cf /etc/sudoers.d/iot-cx-mstp-router" in commands["validate BACnet router authorization"]
+
+
 def test_stop_edge_ui_command_is_direct_and_bounded() -> None:
     command = stop_edge_ui_command()
     assert "systemctl stop edge-bacnet-ui.service" in command

@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from iot_cx_agent.config import AgentConfig, load_config, resolve_bacnet_port
 from iot_cx_agent.heartbeat import auth_headers
 from iot_cx_agent.jobs import execute_job
@@ -258,6 +260,53 @@ def test_load_config_reads_bacrp_path(tmp_path: Path) -> None:
     agent_config = load_config(config_path)
 
     assert agent_config.bacrp_path == "/opt/bacnet-stack/bin/bacrp"
+
+
+def test_load_config_reads_fdr_router_target_for_distinct_client_port(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW006\n"
+        "site_id: pilot\n"
+        "cloud_url: http://localhost:8000\n"
+        "bacnet_default_port: 47814\n"
+        "bacnet:\n"
+        "  router_profile: custom\n"
+        "  default_port: 47814\n"
+        "  bbmd_address: 192.168.1.200\n"
+        "  bbmd_port: 47809\n",
+        encoding="utf-8",
+    )
+
+    agent_config = load_config(config_path)
+
+    assert agent_config.bacnet_default_port == 47814
+    assert agent_config.bacnet_bbmd_address == "192.168.1.200"
+    assert agent_config.bacnet_bbmd_port == 47809
+
+
+def test_load_config_rejects_incomplete_fdr_target(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW006\nsite_id: pilot\ncloud_url: http://localhost:8000\n"
+        "bacnet:\n  bbmd_address: 192.168.1.200\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must be configured together"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_fdr_target_that_shares_the_client_port(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW006\nsite_id: pilot\ncloud_url: http://localhost:8000\n"
+        "bacnet_default_port: 47814\n"
+        "bacnet:\n  router_profile: custom\n  bbmd_address: 192.168.1.200\n  bbmd_port: 47814\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must differ"):
+        load_config(config_path)
 
 
 def test_bacnet_port_resolution_defaults_to_contemporary_47814() -> None:
