@@ -4036,6 +4036,45 @@ APP_SCRIPT = r"""
 
     const directLink = byId("direct-connect-link");
     const directStatus = byId("direct-connect-status");
+    const remoteTunnelLink = byId("remote-tunnel-link");
+    const tunnelActionStatus = byId("tunnel-action-status");
+    if (tunnelActionStatus && !tunnelActionStatus.textContent.trim()) {
+      tunnelActionStatus.textContent = "Ready";
+    }
+    if (remoteTunnelLink) {
+      remoteTunnelLink.hidden = currentUser?.role === "viewer";
+      remoteTunnelLink.href = `/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/tunnel/`;
+      remoteTunnelLink.onclick = async (event) => {
+        event.preventDefault();
+        remoteTunnelLink.setAttribute("aria-busy", "true");
+        if (tunnelActionStatus) {
+          tunnelActionStatus.textContent = "Connecting";
+        }
+        const tunnelWindow = window.open("about:blank", "_blank");
+        try {
+          const session = await api(`/api/ui/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/tunnel-session`, {
+            method: "POST",
+            body: JSON.stringify({ ttl_minutes: 5 })
+          });
+          if (!tunnelWindow) {
+            throw new Error("Popup blocked. Allow popups for this site and try again.");
+          }
+          try {
+            tunnelWindow.opener = null;
+          } catch (_) {}
+          tunnelWindow.location.assign(session.url);
+          setText("status", "Tunnel opened in a new tab.");
+        } catch (error) {
+          if (tunnelWindow) tunnelWindow.close();
+          setText("status", errorMessage(error), true);
+        } finally {
+          remoteTunnelLink.removeAttribute("aria-busy");
+          if (tunnelActionStatus) {
+            tunnelActionStatus.textContent = "Ready";
+          }
+        }
+      };
+    }
     if (directConnect.available && directConnect.url && currentUser && currentUser.role !== "viewer") {
       directStatus.textContent = `${directConnect.host}:${directConnect.port}`;
       directLink.hidden = false;
@@ -5137,6 +5176,18 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     .workspace-tile .button {{
       min-height: 44px;
+    }}
+    .gateway-access-actions {{
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }}
+    .gateway-action-status {{
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
     }}
     .icon-button {{
       width: 42px;
@@ -7186,7 +7237,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
           <div class="grid">
             <div class="span-4"><label>Tunnel Status</label><pre id="tunnel-status">Loading...</pre></div>
             <div class="span-4"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
-            <div class="span-4"><label>Action</label><a id="remote-tunnel-link" class="button secondary" href="/gateways/{escaped_gateway_id}/tunnel/">Remote Tunnel</a><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div>
+            <div class="span-4"><label>Action</label><div class="gateway-access-actions"><a id="remote-tunnel-link" class="button secondary" href="/gateways/{escaped_gateway_id}/tunnel/">Remote Tunnel</a><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div><span id="tunnel-action-status" class="gateway-action-status">Ready</span></div>
           </div>
         </article>
         <article class="workspace-tile site-summary">

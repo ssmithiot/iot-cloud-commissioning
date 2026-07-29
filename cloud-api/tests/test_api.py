@@ -490,8 +490,18 @@ def test_gateway_workspace_restores_remote_tunnel_action_next_to_direct_connect(
 
     assert response.status_code == 200
     assert 'id="remote-tunnel-link"' in response.text
-    assert 'href="/gateways/GW777/tunnel/">Remote Tunnel</a><a id="direct-connect-link"' in response.text
+    assert 'class="gateway-access-actions"><a id="remote-tunnel-link"' in response.text
+    assert 'Remote Tunnel</a><a id="direct-connect-link"' in response.text
     assert 'id="direct-connect-link"' in response.text
+    assert ".gateway-access-actions" in response.text
+    assert "display: flex;" in response.text
+    assert "gap: 10px;" in response.text
+    assert 'id="tunnel-action-status" class="gateway-action-status">Ready</span>' in response.text
+    assert 'tunnelActionStatus.textContent = "Connecting";' in response.text
+    assert 'tunnelActionStatus.textContent = "Ready";' in response.text
+    assert "/tunnel-session" in response.text
+    assert 'body: JSON.stringify({ ttl_minutes: 5 })' in response.text
+    assert 'id="tunnel-status"' in response.text
 
 
 def test_gateway_workspace_contains_discovery_progress_ui() -> None:
@@ -515,7 +525,9 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'id="site-address-postal-code"' in response.text
     assert 'id="direct-connect-link"' in response.text
     assert 'id="remote-tunnel-link"' in response.text
-    assert 'href="/gateways/GW777/tunnel/">Remote Tunnel</a><a id="direct-connect-link"' in response.text
+    assert 'class="gateway-access-actions"><a id="remote-tunnel-link"' in response.text
+    assert 'Remote Tunnel</a><a id="direct-connect-link"' in response.text
+    assert 'id="tunnel-action-status" class="gateway-action-status">Ready</span>' in response.text
     assert 'id="tunnel-status"' in response.text
     assert "Direct Connect" in response.text
     assert "GATEWAY_API_TOKEN" not in response.text
