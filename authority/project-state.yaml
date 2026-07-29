@@ -1,0 +1,163 @@
+# Workspace project state — machine-readable authority
+# Scope: IOT Engineering multi-repository workspace (/home/steve/projects/iot)
+# Human narrative: docs/authoritative/PROJECT_STATE.md
+#
+# This file records only what is owner-confirmed or repository-verifiable.
+# Anything else carries an explicit verification state.
+
+schema_version: 1
+updated: 2026-07-29
+updated_by: forensic-audit-phase-3
+authority_repository: iot-cloud-commissioning
+
+verification_states:
+  - verified                       # reproducible from repository evidence
+  - owner_confirmed_deployment     # owner attests deployment; treated as authoritative
+  - supported_by_evidence
+  - likely
+  - unverified
+  - contradicted
+  - unknown
+  - requires_owner_confirmation
+
+# --------------------------------------------------------------------------
+# Releases
+# --------------------------------------------------------------------------
+
+releases:
+  edge_agent_0_1_9:
+    release: 0.1.9
+    component: edge-agent
+    status: deployed
+    authoritative_commit: d2722d395ab3b380f8858b5208863a8e49ff2cc3
+    authoritative_tag: edge-agent-v0.1.9-final
+    verification:
+      state: owner_confirmed_deployment
+      deployment_method: legacy_updater
+      deployed_device_count: 75
+    trend_status:
+      enabled: false
+      decision: approved_temporary_exception
+      permanent_architecture: false
+    maintenance_line:
+      candidate_head: e634e77
+      approval_status: unverified
+      deployment_status: unverified
+    detail: authority/releases/0.1.9.yaml
+
+  edge_agent_0_1_8:
+    release: 0.1.8
+    component: edge-agent
+    status: superseded_unverified
+    authoritative_commit: null
+    candidate_tag: edge-agent-v0.1.8
+    candidate_commit: 8c81889
+    verification:
+      state: unverified
+      reason: >-
+        No artifact, no release note, and no manifest exists. The tag lives only
+        on origin/codex/edge-release-018, which was never merged to main.
+    is_declared_rollback_target_for: "0.1.9"
+    recovery_required: true
+
+  edge_ui_0_1_9:
+    release: 0.1.9
+    component: edge-ui
+    status: requires_owner_confirmation
+    candidate_commit: 719d4a82ed972269d44db7c0638800b26e82002d
+    candidate_tag: edge-ui-v0.1.9-final
+    artifact_sha256: a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683
+    verification:
+      state: requires_owner_confirmation
+      reason: >-
+        Artifact integrity is verified against the manifest, but which UI
+        artifact reached the 75 devices is not owner-confirmed.
+
+# --------------------------------------------------------------------------
+# Components and source authority
+# --------------------------------------------------------------------------
+
+components:
+  edge-agent:
+    source_repository: iot-cloud-commissioning
+    source_path: edge-agent/
+    release_branch: release/edge-agent-0.1.9
+    main_branch_version_declaration: "0.1.6"
+    main_branch_version_state: contradicted
+    note: >-
+      main still declares 0.1.6 although 0.1.8 and 0.1.9 were released. None of
+      the 0.1.8/0.1.9 agent tags are ancestors of main.
+
+  edge-ui:
+    source_repository: edge-bacnet-ui
+    release_branch: release/edge-ui-0.1.9
+    history_state: orphaned_dual_history
+    note: >-
+      The active line (root 491b766) shares no ancestor with the 0.1.8/0.1.9
+      release tags (root 70259c7). Both preserved; neither adjudicated.
+
+  cloud-api:
+    source_repository: iot-cloud-commissioning
+    source_path: cloud-api/
+    migration_system: alembic
+    migration_head: 0023_edge_release_targets
+
+# --------------------------------------------------------------------------
+# Repositories
+# --------------------------------------------------------------------------
+
+repositories:
+  iot-cloud-commissioning:
+    role: authority_repository
+    remote: https://github.com/ssmithiot/iot-cloud-commissioning.git
+    default_branch: main
+    default_branch_commit: 66c5f33286bd54b164213bc47177d1f08bfadcde
+  edge-bacnet-ui:
+    role: active_source
+    remote: https://github.com/ssmithiot/edge-bacnet-commissioning-ui.git
+  engineering-headquarters:
+    role: workstation_standards
+    remote: null
+    risk: single_machine_no_remote
+    note: Must not be treated as application authority.
+  docs:
+    role: empty_scaffold
+    commits: 0
+  gateway-tools:
+    role: empty_scaffold
+    commits: 0
+  releases:
+    role: mutable_working_copies
+    note: Not immutable release artifacts. Contains build/test contamination.
+
+# --------------------------------------------------------------------------
+# Open items blocking Engineering Authority readiness
+# --------------------------------------------------------------------------
+
+readiness:
+  state: not_ready
+  blocking:
+    - id: OPEN-01
+      item: Exact deployed 0.1.8 source and artifact unrecovered.
+      severity: critical
+    - id: OPEN-02
+      item: Paired Edge UI artifact for the 75-device rollout unconfirmed.
+      severity: high
+    - id: OPEN-03
+      item: Maintenance-line approval and version identity for e634e77 undecided.
+      severity: high
+    - id: OPEN-04
+      item: Rule #1 enforced in code but its wording is unstated anywhere.
+      severity: high
+    - id: OPEN-05
+      item: Trend ownership rule unratified and absent from all repositories.
+      severity: high
+    - id: OPEN-06
+      item: Supabase error investigation not started; 9,000+ errors uncategorised.
+      severity: high
+    - id: OPEN-07
+      item: Two parallel migration systems (supabase/migrations, cloud-api/alembic).
+      severity: medium
+    - id: OPEN-08
+      item: engineering-headquarters has no approved independent remote.
+      severity: medium

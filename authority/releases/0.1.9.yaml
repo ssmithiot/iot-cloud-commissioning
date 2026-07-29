@@ -1,0 +1,145 @@
+# Edge Agent release 0.1.9 — authoritative record
+# Owner determination recorded 2026-07-29 by Steve (repository owner).
+# Machine-readable source of truth for release identity. Human narrative:
+# docs/authoritative/RELEASES.md
+
+release: 0.1.9
+component: edge-agent
+status: deployed
+
+authoritative_commit: d2722d395ab3b380f8858b5208863a8e49ff2cc3
+authoritative_tag: edge-agent-v0.1.9-final
+
+verification:
+  state: owner_confirmed_deployment
+  deployment_method: legacy_updater
+  deployed_device_count: 75
+
+trend_status:
+  enabled: false
+  decision: approved_temporary_exception
+  permanent_architecture: false
+
+maintenance_line:
+  candidate_head: e634e77
+  approval_status: unverified
+  deployment_status: unverified
+
+# --------------------------------------------------------------------------
+# Supporting evidence (repository-verifiable, read-only)
+# --------------------------------------------------------------------------
+
+evidence:
+  owner_determination:
+    basis:
+      - Legacy updater contains this exact Git reference.
+      - Legacy updater pushed this code to all 75 online devices.
+      - Approved by Steve for the 0.1.9 rollout.
+      - Contains the temporarily approved trends-disabled behavior.
+    authority: owner
+    date: 2026-07-29
+
+  repository_corroboration:
+    - source: tools/releases/manifests/edge-0.1.9.json
+      field: agent_source_commit
+      value: d2722d395ab3b380f8858b5208863a8e49ff2cc3
+      present_from_commit: d679871
+      note: >-
+        The release manifest consumed by the legacy updater
+        (DEFAULT_RELEASE_MANIFEST) names this commit as the agent source.
+    - source: tools/tests/test_legacy_edge_upgrade_webapp.py
+      symbol: FINAL_AGENT_COMMIT
+      value: d2722d395ab3b380f8858b5208863a8e49ff2cc3
+      note: Test-enforced; a change to the agent baseline breaks this test.
+    - source: git tag
+      tag: edge-agent-v0.1.9-final
+      resolves_to: d2722d395ab3b380f8858b5208863a8e49ff2cc3
+    - source: edge-agent/pyproject.toml at d2722d3
+      declared_version: "0.1.9"
+      note: Version declaration agrees with the release name.
+
+  agent_payload_equivalence:
+    d2722d3_edge_agent_tree: fdea438fcf435bce6b4128697d3401a295c0b7da
+    e634e77_edge_agent_tree: fdea438fcf435bce6b4128697d3401a295c0b7da
+    identical: true
+    note: >-
+      All 16 commits between d2722d3 and e634e77 change cloud-api, the legacy
+      updater, release tooling, and Alembic migrations only. The edge-agent
+      package is byte-identical, so no post-release commit altered the agent
+      payload shipped to the fleet.
+
+# --------------------------------------------------------------------------
+# Paired Edge UI artifact — OPEN QUESTION, not owner-confirmed
+# --------------------------------------------------------------------------
+
+paired_edge_ui:
+  status: requires_owner_confirmation
+  note: >-
+    The owner determination covers the Edge Agent commit. The Edge UI artifact
+    paired with 0.1.9 changed after d2722d3 and is not yet confirmed.
+  at_authoritative_commit:
+    manifest_edge_ui_tag: b4dc654793af17a2a440baa5142b8eee07e08880
+    manifest_sha256: f7acfbaad0d83a63c5b6fac2db80cae296ae07fe332d2d660dc92480dbe1a475
+    artifact_size_bytes: 162991
+    artifact_recoverable: true
+    git_blob: a9c1842b7f13646a1d17e1ebeaed20173b01ffe5
+    ui_trend_gate_present: false
+  current_release_line:
+    manifest_edge_ui_tag: 719d4a82ed972269d44db7c0638800b26e82002d
+    manifest_sha256: a83fc2a6c3f17d188f8fbed13352e07a924f7c619869950a0e140890f710f683
+    artifact_size_bytes: 163585
+    artifact_recoverable: true
+    ui_trend_gate_present: true
+    repaired_by_commit: 84881fb
+  assessment:
+    likely_deployed: 719d4a82ed972269d44db7c0638800b26e82002d
+    confidence: likely_not_verified
+    reasoning: >-
+      The manifest naming agent_source_commit d2722d3 first exists at d679871,
+      which is after the UI artifact was re-paired at 84881fb. An updater build
+      capable of citing d2722d3 therefore also carried UI 719d4a8 / sha
+      a83fc2a6. This is inference from manifest lineage, not deployment
+      evidence, and must be confirmed by the owner or by gateway runtime data.
+
+# --------------------------------------------------------------------------
+# Rollback
+# --------------------------------------------------------------------------
+
+rollback:
+  declared_target: "0.1.8"
+  artifact_available: false
+  release_note_available: false
+  manifest_available: false
+  state: unverified
+  note: >-
+    edge-0.1.9.json declares rollback_release 0.1.8, but no 0.1.8 artifact,
+    release note, or manifest exists anywhere in the workspace. The documented
+    rollback path is not currently reproducible from preserved evidence.
+
+# --------------------------------------------------------------------------
+# Related commits — explicitly NOT authoritative
+# --------------------------------------------------------------------------
+
+non_authoritative_commits:
+  - commit: e634e77
+    classification: Later 0.1.9 development or maintenance-line head
+    must_not_be_described_as: the original deployed 0.1.9 release
+    open_questions:
+      - What changed after d2722d3 (answered: cloud-api, updater, tooling, migrations 0022/0023).
+      - Whether those changes were approved (unverified).
+      - Whether any were deployed (unverified).
+      - Whether they remain compatible with the authoritative release.
+      - Whether they should become 0.1.9.1 or another explicitly approved version.
+  - commit: d899d80
+    classification: Contradicted or invalid 0.1.9 release candidate
+    reasons:
+      - Tag is named 0.1.9.
+      - Source declares version 0.1.8.
+      - Not the commit used by the legacy updater for the 75-device rollout.
+  - commit: 71656b4
+    classification: Stale mutable release working copy
+    location: releases/iot-cloud-commissioning-0.1.9
+    reasons:
+      - Not authoritative merely because it exists under releases/.
+      - Working copy is mutable and contains build/test contamination.
+      - 7 commits behind the maintenance-line head.
