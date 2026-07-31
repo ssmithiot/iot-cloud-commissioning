@@ -1,0 +1,15 @@
+{
+  "edge_release": "0.2.0",
+  "base_release": "0.1.9",
+  "edge_ui_tag": "e504879fda1f408c2f9c97d6ada55de8d105230a",
+  "artifact": "tools/releases/gw006-edge-ui-0.2.0-code.tar.gz",
+  "sha256": "1e634fe2a58bdad7e21827e4a4e706c0c3240a739a378bb7e0b6bdc307f95bad",
+  "agent_source_commit": "40133f2a81390db92a01b33a9c02c48a07363a7e",
+  "local_edge_trends_default_enabled": true,
+  "preserves": ["data/", ".env", "start.sh", "gateway identity", "credentials"],
+  "rollback_release": "0.1.9",
+  "bacnet_route_policy": "preserve_existing_or_default_external_47814",
+  "fresh_install_router_mode": "external",
+  "fresh_install_bacnet_port": 47814,
+  "fresh_install_edge_router_enabled": false
+}

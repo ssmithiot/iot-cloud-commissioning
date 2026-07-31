@@ -40,8 +40,8 @@ except ImportError:  # pragma: no cover - shown in browser and terminal at runti
 DEFAULT_PORT = 8766
 DEFAULT_CLOUD_URL = "https://iot-cloud-api-dev.onrender.com"
 DEFAULT_REPO_PATH = "/home/swadmin/iot-cloud-commissioning"
-DEFAULT_UI_SOURCE = r"C:\Temp\edge-bacnet-ui-0.1.9"
-DEFAULT_RELEASE_MANIFEST = str(Path(__file__).resolve().parent / "releases" / "manifests" / "edge-0.1.9.json")
+DEFAULT_UI_SOURCE = r"C:\Temp\edge-bacnet-ui-0.2.0"
+DEFAULT_RELEASE_MANIFEST = str(Path(__file__).resolve().parent / "releases" / "manifests" / "edge-0.2.0.json")
 DEFAULT_RELEASE_DEFINITION = load_manifest(Path(DEFAULT_RELEASE_MANIFEST))
 DEFAULT_EDGE_UPDATE_REF = DEFAULT_RELEASE_DEFINITION.agent_source_commit
 DEFAULT_EDGE_RELEASE = DEFAULT_RELEASE_DEFINITION.edge_release
@@ -233,7 +233,7 @@ def validate_ui_source_for_deploy(source_folder: str, release_manifest_path: str
 def load_release_definition(release_manifest_path: str = DEFAULT_RELEASE_MANIFEST):
     manifest = load_manifest(Path(release_manifest_path))
     if manifest.edge_release == DEFAULT_EDGE_RELEASE and not manifest.agent_source_commit:
-        raise ValueError("0.1.9 release manifest is missing agent_source_commit")
+        raise ValueError("Release manifest is missing agent_source_commit")
     return manifest
 
 
@@ -630,7 +630,7 @@ def form_page(message: str = "") -> bytes:
 <p>Upgrade older edge-only gateways through the Cradlepoint jump host. This is separate from IOTGWCFG and starts in preflight mode.</p>
 {warning}
 <section class="panel wide">
-  <h2>0.1.9 Pilot Readiness</h2>
+  <h2>{escape(DEFAULT_EDGE_RELEASE)} Pilot Readiness</h2>
   <div class="phase-groups">
     <div><b>Target gateway</b><span>Selected below; no fleet batch starts from this page.</span></div>
     <div><b>Target UI version</b><span>{DEFAULT_EDGE_RELEASE}</span></div>
@@ -684,9 +684,9 @@ def form_page(message: str = "") -> bytes:
   <label class="wide">Repo path on gateway
     <input name="remote_repo" value="{DEFAULT_REPO_PATH}" required>
   </label>
-  <label class="wide">Local BACnet UI source folder on Windows (developer-only; ignored for 0.1.9)
+  <label class="wide">Local BACnet UI source folder on Windows (developer-only; ignored for validated releases)
     <input name="ui_source_folder" value="{escape(DEFAULT_UI_SOURCE, quote=True)}" disabled>
-    <span class="hint">0.1.9 deploys the embedded validated artifact from this updater package.</span>
+    <span class="hint">This release deploys the embedded validated artifact from this updater package.</span>
   </label>
   <label>Local BACnet UI username
     <input name="ui_username" value="admin" required>
@@ -1148,7 +1148,7 @@ def inspect_commands() -> list[tuple[str, str, bool]]:
         ("sudo available", "sudo -S -p '' -v && echo SUDO_AVAILABLE=yes", True),
         ("legacy UI folder", f'ls -ld {REMOTE_UI_PATH} 2>/dev/null || echo "missing edge-bacnet-ui-v2"', False),
         ("cloud repo folder", f'ls -ld {DEFAULT_REPO_PATH} 2>/dev/null || echo "missing iot-cloud-commissioning"', False),
-        ("current Edge UI version", "grep -R \"0.1.9\\|Edge Release\\|Edge BACnet\" -n /home/swadmin/edge-bacnet-ui-v2/README.md /home/swadmin/edge-bacnet-ui-v2/templates/base.html 2>/dev/null | head -20 || true", False),
+        ("current Edge UI version", "grep -R \"Edge Release\\|Edge BACnet\" -n /home/swadmin/edge-bacnet-ui-v2/README.md /home/swadmin/edge-bacnet-ui-v2/templates/base.html 2>/dev/null | head -20 || true", False),
         ("current edge agent version", "/home/swadmin/iot-cloud-commissioning/edge-agent/.venv/bin/python -c 'import iot_cx_agent; print(\"EDGE_AGENT_VERSION=\" + getattr(iot_cx_agent, \"__version__\", \"unknown\"))' 2>/dev/null || python3 -c 'import iot_cx_agent; print(\"EDGE_AGENT_VERSION=\" + getattr(iot_cx_agent, \"__version__\", \"unknown\"))' 2>/dev/null || echo EDGE_AGENT_VERSION=unknown", False),
         ("pre-upgrade agent BACnet default port", "awk '/^bacnet_default_port:/{print \"PRE_UPGRADE_AGENT_DEFAULT_PORT=\" $2; found=1; exit} END{if (!found) print \"PRE_UPGRADE_AGENT_DEFAULT_PORT=47814\"}' /etc/iot-cx-agent/agent.yaml 2>/dev/null || echo PRE_UPGRADE_AGENT_DEFAULT_PORT=47814", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service 2>/dev/null || true", False),
@@ -1516,7 +1516,7 @@ def disable_agent_commands() -> list[tuple[str, str, bool]]:
 
 
 def create_update_zip(source_folder: str, release_manifest_path: str) -> Path:
-    """Legacy developer helper retained for tests; normal 0.1.9 deploys the embedded artifact."""
+    """Legacy developer helper retained for tests; normal deploys use the embedded artifact."""
     artifact, _summary = validated_embedded_ui_artifact(release_manifest_path)
     return artifact
 
@@ -2004,7 +2004,7 @@ class LegacyUpgradeRunner:
                 "Local Edge trends enabled": local_edge_trends_enabled,
                 "Background BACnet activity added": background_bacnet_activity,
                 "Rule #1 validation": rule_1_validation,
-                "Release 0.1.9 validation": release_validation,
+                f"Release {DEFAULT_EDGE_RELEASE} validation": release_validation,
                 "Cloud portal manual confirmation": "Yes" if self.request.cloud_portal_verified else "No",
                 "Backup filename": job.backup_filename or "(none captured)",
                 "Warnings/errors": job.warning or job.error or "(none)",
