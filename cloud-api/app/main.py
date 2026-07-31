@@ -41,6 +41,7 @@ from app.models import (
     BacnetWriteCommand,
     EdgeHeartbeat,
     EdgeJob,
+    EdgeLocalTrendSample,
     EdgeNode,
     GatewayAlertState,
     GatewayCredential,
@@ -73,6 +74,9 @@ from app.schemas import (
     CurrentOperatorOut,
     DirectConnectOut,
     EdgeJobClaimOut,
+    EdgeLocalTrendSampleAccepted,
+    EdgeLocalTrendSampleIn,
+    EdgeLocalTrendSampleOut,
     EdgeTrendConfigOut,
     GatewayCredentialOut,
     GatewayGroupIn,
@@ -3123,6 +3127,88 @@ def edge_upload_trend_samples(
     )
     db.commit()
     return stored
+
+
+@app.post("/api/edge/{gateway_id}/local-trend-samples", response_model=EdgeLocalTrendSampleAccepted)
+def edge_upload_local_trend_samples(
+    gateway_id: str,
+    payload: list[EdgeLocalTrendSampleIn] = Body(min_length=1, max_length=500),
+    auth: GatewayAuthContext = Depends(require_gateway_auth),
+    db: Session = Depends(get_db),
+) -> EdgeLocalTrendSampleAccepted:
+    """Mirror Edge-owned trend samples into the cloud.
+
+    The gateway remains authoritative for local trend configuration; this
+    endpoint accepts already-collected readings and nothing else. It is
+    deliberately idempotent on the gateway-generated event_id so that a
+    gateway which loses its acknowledgement and retries a batch does not create
+    a second copy of a reading.
+    """
+    if auth.gateway_id != gateway_id:
+        raise HTTPException(status_code=403, detail="Gateway credential does not match trend sample gateway_id")
+
+    event_ids = [sample.event_id for sample in payload]
+    if len(event_ids) != len(set(event_ids)):
+        raise HTTPException(status_code=422, detail="Local trend sample batch must not contain duplicate event_id values")
+
+    known = set(
+        db.scalars(
+            select(EdgeLocalTrendSample.event_id).where(
+                EdgeLocalTrendSample.gateway_id == gateway_id,
+                EdgeLocalTrendSample.event_id.in_(event_ids),
+            )
+        ).all()
+    )
+    accepted = 0
+    for sample in payload:
+        if sample.event_id in known:
+            continue
+        db.add(
+            EdgeLocalTrendSample(
+                event_id=sample.event_id,
+                gateway_id=gateway_id,
+                group_name=sample.group_name,
+                device_instance=sample.device_instance,
+                object_type=sample.object_type,
+                object_instance=sample.object_instance,
+                object_name=sample.object_name,
+                sampled_at=sample.sampled_at,
+                value_text=sample.value_text,
+                status=sample.status,
+                read_source=sample.read_source,
+                error_text=sample.error_text,
+            )
+        )
+        known.add(sample.event_id)
+        accepted += 1
+
+    retention_cutoff = utc_now() - timedelta(days=settings.trend_retention_days)
+    db.execute(
+        delete(EdgeLocalTrendSample)
+        .where(EdgeLocalTrendSample.sampled_at < retention_cutoff)
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return EdgeLocalTrendSampleAccepted(accepted=accepted, duplicates=len(payload) - accepted)
+
+
+@app.get("/api/ui/gateways/{gateway_id}/local-trend-samples", response_model=list[EdgeLocalTrendSampleOut])
+def ui_gateway_local_trend_samples(
+    gateway_id: str,
+    limit: int = 500,
+    auth: AdminAuthContext = Depends(require_operator_auth),
+    db: Session = Depends(get_db),
+) -> list[EdgeLocalTrendSample]:
+    """Read-only mirror of what a gateway collected. The cloud never edits it."""
+    _require_gateway_site_access(db, auth, gateway_id)
+    return list(
+        db.scalars(
+            select(EdgeLocalTrendSample)
+            .where(EdgeLocalTrendSample.gateway_id == gateway_id)
+            .order_by(EdgeLocalTrendSample.sampled_at.desc())
+            .limit(max(1, min(limit, 5000)))
+        ).all()
+    )
 
 
 @app.post("/api/edge/heartbeat", response_model=HeartbeatAccepted)

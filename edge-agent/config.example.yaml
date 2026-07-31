@@ -4,7 +4,10 @@ cloud_url: http://localhost:8000
 tunnel_enabled: true
 local_ui_url: http://127.0.0.1:5000
 edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data
-local_edge_trends_enabled: false
+# Local Edge trends are enabled by default from 0.2.0. The Edge UI must also
+# have EDGE_TRENDS_UI_ENABLED=1; setting only one gate produces a trend
+# interface with no samples, or samples with no interface.
+local_edge_trends_enabled: true
 # Maximum time for a cloud-relayed request to complete at the local gateway UI.
 # The WebSocket connection/reconnect timeout remains 30 seconds.
 tunnel_request_timeout_sec: 900
@@ -29,6 +32,17 @@ trend_upload_batch_size: 100
 trend_queue_max_pending_samples: 10000
 trend_upload_retry_base_sec: 30
 trend_upload_retry_max_sec: 900
+# Trend collection must never slow a live read or a write. A trend batch waits
+# only this long for the BACnet runtime lock before deferring to the next agent
+# cycle; operator work keeps the full bacnet.lock_timeout_sec.
+trend_lock_timeout_sec: 2
+# Points per BACnet trend request. The runtime lock is released between
+# batches so live work can interleave.
+trend_read_batch_size: 8
+# Upper bound on trend points read in one agent cycle.
+trend_max_points_per_cycle: 200
+# Local trend samples uploaded to the cloud mirror per agent cycle.
+trend_local_upload_batch_size: 200
 # agent_version is read from the installed edge app package and cannot be overridden here.
 ui_version: 0.1.0
 bacnet:

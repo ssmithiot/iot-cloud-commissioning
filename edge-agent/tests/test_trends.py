@@ -151,7 +151,7 @@ def fetch_rows(db_path: Path, table: str) -> list[sqlite3.Row]:
         return conn.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
 
 
-def test_config_defaults_local_edge_trends_to_disabled_when_absent(tmp_path: Path) -> None:
+def test_config_defaults_local_edge_trends_to_enabled_when_absent(tmp_path: Path) -> None:
     config_path = tmp_path / "agent.yaml"
     config_path.write_text(
         """
@@ -167,7 +167,8 @@ edge_ui_data_dir: /home/swadmin/edge-bacnet-ui-v2/data
     agent_config = load_config(config_path)
 
     assert agent_config.edge_ui_data_dir == Path("/home/swadmin/edge-bacnet-ui-v2/data")
-    assert agent_config.local_edge_trends_enabled is False
+    # 0.2.0 ships local Edge trends on; 0.1.9 shipped them off.
+    assert agent_config.local_edge_trends_enabled is True
 
 
 def test_config_parses_explicit_local_edge_trends_flag(tmp_path: Path) -> None:
@@ -430,7 +431,10 @@ def test_local_sampler_persists_good_missing_and_error_samples_and_outbox(tmp_pa
     assert run["completed_at"]
     assert run["requested_count"] == 3
     assert run["returned_count"] == 1
-    assert run["deferred_count"] == 2
+    # From 0.2.0 deferred_count counts points that were not read because the
+    # BACnet runtime was busy. A missing or failed read is a recorded sample
+    # with a quality status, not a deferral.
+    assert run["deferred_count"] == 0
     assert "device 1104: device timeout" in run["error_text"]
 
 
@@ -474,28 +478,49 @@ def test_local_sampling_does_not_depend_on_cloud_trend_configs(tmp_path: Path, m
     monkeypatch.setattr("iot_cx_agent.main.process_next_job", lambda *args, **kwargs: None)
     monkeypatch.setattr("iot_cx_agent.trends.run_bacnet_read_bulk", lambda agent_config, request: ({"values": [{"saved_point_id": str(request["points"][0]["saved_point_id"]), "status": "ok", "value": "1"}]}, None))
     monkeypatch.setattr(requests, "get", lambda *args, **kwargs: (_ for _ in ()).throw(requests.ConnectionError("cloud offline")))
-    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: pytest.fail("upload should not run without queued cloud samples"))
+    posted: list[str] = []
+
+    def record_post(url, *args, **kwargs):
+        posted.append(str(url))
+        return Response()
+
+    monkeypatch.setattr(requests, "post", record_post)
 
     assert run_once(agent_config) is True
     assert len(fetch_rows(db_path, "trend_samples")) == 1
+    # Sampling used only the gateway's own trend database; the only cloud call
+    # is the upward mirror of what was already collected locally.
+    assert all(url.endswith("/local-trend-samples") for url in posted)
 
 
-def test_local_sampler_not_invoked_when_flag_is_absent(tmp_path: Path, monkeypatch, caplog) -> None:
-    agent_config = config(tmp_path)
-    initialize_database(agent_config.sqlite_path)
+def test_local_sampler_runs_when_flag_is_absent_from_config(tmp_path: Path, monkeypatch) -> None:
+    """0.2.0 release identity: an agent.yaml with no trend flag collects trends."""
+    config_path = tmp_path / "agent.yaml"
+    db_path = edge_trends_db(tmp_path)
+    add_local_group(db_path, enabled=True)
+    config_path.write_text(
+        f"""
+gateway_id: GW001
+site_id: demo-site
+cloud_url: https://cloud.example.test
+gateway_api_token: token
+edge_ui_data_dir: {db_path.parent}
+sqlite_path: {tmp_path / 'edge.db'}
+""",
+        encoding="utf-8",
+    )
+    agent_config = load_config(config_path)
 
-    monkeypatch.setattr("iot_cx_agent.main.send_heartbeat", lambda *args, **kwargs: Response())
-    monkeypatch.setattr("iot_cx_agent.main.sample_local_edge_trends", lambda *args, **kwargs: pytest.fail("local sampler invoked"))
-    monkeypatch.setattr("iot_cx_agent.main.sample_configured_trends", lambda *args, **kwargs: 0)
-    monkeypatch.setattr("iot_cx_agent.main.upload_pending_trend_samples", lambda *args, **kwargs: 0)
-    monkeypatch.setattr("iot_cx_agent.main.process_next_job", lambda *args, **kwargs: None)
-    monkeypatch.setattr(agent_main, "_local_edge_trends_disabled_logged", False)
+    monkeypatch.setattr(
+        "iot_cx_agent.trends.run_bacnet_read_bulk",
+        lambda agent_config, request: (
+            {"values": [{"saved_point_id": str(point["saved_point_id"]), "status": "ok", "value": "1"} for point in request["points"]]},
+            None,
+        ),
+    )
 
-    with caplog.at_level(logging.INFO, logger="iot-cx-agent"):
-        assert run_once(agent_config) is True
-        assert run_once(agent_config) is True
-
-    assert caplog.text.count("Local Edge trend sampling disabled") == 1
+    assert agent_config.local_edge_trends_enabled is True
+    assert sample_local_edge_trends(agent_config) > 0
 
 
 def test_local_sampler_not_invoked_when_flag_is_false(tmp_path: Path, monkeypatch) -> None:
@@ -509,17 +534,16 @@ def test_local_sampler_not_invoked_when_flag_is_false(tmp_path: Path, monkeypatc
     monkeypatch.setattr("iot_cx_agent.main.sample_configured_trends", lambda *args, **kwargs: 0)
     monkeypatch.setattr("iot_cx_agent.main.upload_pending_trend_samples", lambda *args, **kwargs: 0)
     monkeypatch.setattr("iot_cx_agent.main.process_next_job", lambda *args, **kwargs: None)
-    monkeypatch.setattr(agent_main, "_local_edge_trends_disabled_logged", False)
 
     assert run_once(agent_config) is True
     assert fetch_rows(db_path, "trend_runs") == []
     assert fetch_rows(db_path, "trend_samples") == []
 
 
-def test_edge_ui_data_dir_does_not_implicitly_enable_local_sampling(tmp_path: Path, monkeypatch) -> None:
+def test_disabled_flag_beats_a_configured_edge_ui_data_dir(tmp_path: Path, monkeypatch) -> None:
     db_path = edge_trends_db(tmp_path)
     add_local_group(db_path, enabled=True)
-    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent)
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent, local_edge_trends_enabled=False)
 
     monkeypatch.setattr("iot_cx_agent.trends.run_bacnet_read_bulk", lambda *args, **kwargs: pytest.fail("BACnet command ran"))
 
@@ -531,7 +555,7 @@ def test_edge_ui_data_dir_does_not_implicitly_enable_local_sampling(tmp_path: Pa
 def test_enabled_local_ui_group_does_not_issue_bacnet_while_disabled(tmp_path: Path, monkeypatch) -> None:
     db_path = edge_trends_db(tmp_path)
     add_local_group(db_path, enabled=True)
-    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent)
+    agent_config = config(tmp_path, edge_ui_data_dir=db_path.parent, local_edge_trends_enabled=False)
     initialize_database(agent_config.sqlite_path)
 
     monkeypatch.setattr("iot_cx_agent.main.send_heartbeat", lambda *args, **kwargs: Response())
@@ -539,7 +563,6 @@ def test_enabled_local_ui_group_does_not_issue_bacnet_while_disabled(tmp_path: P
     monkeypatch.setattr("iot_cx_agent.main.sample_configured_trends", lambda *args, **kwargs: 0)
     monkeypatch.setattr("iot_cx_agent.main.upload_pending_trend_samples", lambda *args, **kwargs: 0)
     monkeypatch.setattr("iot_cx_agent.main.process_next_job", lambda *args, **kwargs: None)
-    monkeypatch.setattr(agent_main, "_local_edge_trends_disabled_logged", False)
 
     assert run_once(agent_config) is True
     assert fetch_rows(db_path, "trend_runs") == []

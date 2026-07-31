@@ -2,6 +2,7 @@ import argparse
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import requests
@@ -12,12 +13,16 @@ from iot_cx_agent.heartbeat import send_heartbeat
 from iot_cx_agent.jobs import process_next_job
 from iot_cx_agent.status import collect_status, utc_timestamp
 from iot_cx_agent.tunnel import run_tunnel_forever
-from iot_cx_agent.trends import sample_configured_trends, sample_local_edge_trends, upload_pending_trend_samples
+from iot_cx_agent.trends import (
+    sample_configured_trends,
+    sample_local_edge_trends,
+    upload_pending_local_trend_samples,
+    upload_pending_trend_samples,
+)
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("iot-cx-agent")
-_local_edge_trends_disabled_logged = False
 
 
 def run_once(config: AgentConfig) -> bool:
@@ -60,24 +65,34 @@ def run_once(config: AgentConfig) -> bool:
         logger.warning("Heartbeat upload failed: %s", exc)
 
     if sqlite_db_ok:
-        try:
-            maybe_sample_local_edge_trends(config)
-            sample_configured_trends(config)
-            upload_pending_trend_samples(config)
-        except requests.RequestException as exc:
-            logger.warning("Trend sync failed: %s", exc)
-        except Exception:
-            logger.exception("Trend sampling failed")
+        # Each trend step is isolated. Local collection is Edge-owned and must
+        # keep running when the cloud is unreachable, so a failed upload can
+        # never stop sampling, and neither can stop job processing.
+        run_step("Local Edge trend sampling", maybe_sample_local_edge_trends, config)
+        run_step("Local Edge trend upload", upload_pending_local_trend_samples, config)
+        run_step("Cloud trend sampling", sample_configured_trends, config)
+        run_step("Cloud trend upload", upload_pending_trend_samples, config)
         process_next_job(config)
     return heartbeat_success
 
 
+def run_step(description: str, step: Callable[[AgentConfig], object], config: AgentConfig) -> None:
+    """Run one periodic step, logging and swallowing its failure.
+
+    A gateway is unattended, so a raised exception here must never end the
+    agent loop or skip the steps that follow it.
+    """
+    try:
+        step(config)
+    except requests.RequestException as exc:
+        logger.warning("%s failed: %s", description, exc)
+    except Exception:
+        logger.exception("%s failed", description)
+
+
 def maybe_sample_local_edge_trends(config: AgentConfig) -> int:
-    global _local_edge_trends_disabled_logged
     if not config.local_edge_trends_enabled:
-        if not _local_edge_trends_disabled_logged:
-            logger.info("Local Edge trend sampling disabled")
-            _local_edge_trends_disabled_logged = True
+        logger.debug("Local Edge trend sampling disabled")
         return 0
     return sample_local_edge_trends(config)
 

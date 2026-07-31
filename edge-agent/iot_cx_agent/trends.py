@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
@@ -10,7 +11,7 @@ from uuid import uuid4
 
 import requests
 
-from iot_cx_agent.bacnet import BACNET_RUNTIME_BUSY, run_bacnet_read_bulk
+from iot_cx_agent.bacnet import BACNET_RUNTIME_BUSY, bacnet_runtime_lock_held, run_bacnet_read_bulk
 from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.db import (
     mark_trend_samples_uploaded,
@@ -137,8 +138,224 @@ def _log_route_diagnostics(result: dict[str, object], prefix: str = "Trend BACne
     logger.info("%s: %s", prefix, diagnostic)
 
 
+def _chunked(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[index : index + size] for index in range(0, len(items), max(1, size))]
+
+
+def _trend_read_config(config: AgentConfig) -> AgentConfig:
+    """A read configuration that yields the BACnet runtime quickly.
+
+    Operator reads and writes keep the full `bacnet.lock_timeout_sec`. A trend
+    batch waits only `trend_lock_timeout_sec` and then defers to the next agent
+    cycle, so trend collection can never be the reason a live read is slow.
+    """
+    return replace(config, bacnet_lock_timeout_sec=config.trend_lock_timeout_sec)
+
+
+def _sample_local_group(
+    conn: sqlite3.Connection,
+    config: AgentConfig,
+    read_config: AgentConfig,
+    item: dict[str, Any],
+    *,
+    timestamp: str,
+    point_budget: int,
+) -> tuple[int, int]:
+    """Collect one due trend group. Returns (samples written, points attempted)."""
+    group = item["group"]
+    points: list[dict[str, Any]] = item["points"]
+
+    # Never start a group while an operator read or write holds the runtime.
+    # The group stays due and is retried on the next agent cycle.
+    if bacnet_runtime_lock_held(config):
+        logger.info(
+            "Local Edge trend group %s (%s) deferred: BACnet runtime is busy with live work",
+            group["id"],
+            group["name"],
+        )
+        return 0, 0
+
+    run_started = time.monotonic()
+    run_cursor = conn.execute(
+        """
+        INSERT INTO trend_runs (group_id, started_at, requested_count)
+        VALUES (?, ?, ?)
+        """,
+        (group["id"], timestamp, len(points)),
+    )
+    run_id = int(run_cursor.lastrowid)
+
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for point in points:
+        grouped.setdefault(int(point["device_instance"]), []).append(point)
+
+    stored = 0
+    attempted = 0
+    returned_count = 0
+    missing_count = 0
+    error_count = 0
+    deferred_count = 0
+    errors: list[str] = []
+    yielded = False
+
+    for device_instance, device_points in grouped.items():
+        if yielded:
+            deferred_count += len(device_points)
+            continue
+        logger.info(
+            "Local Edge trend route-aware read: group_id=%s device_instance=%s point_count=%s batch_size=%s",
+            group["id"],
+            device_instance,
+            len(device_points),
+            config.trend_read_batch_size,
+        )
+        batches = _chunked(device_points, config.trend_read_batch_size)
+        for batch_index, batch in enumerate(batches):
+            remaining = [point for chunk in batches[batch_index:] for point in chunk]
+            if attempted + len(batch) > point_budget:
+                logger.info(
+                    "Local Edge trend group %s stopped at the per-cycle point budget (%s); %s point(s) deferred",
+                    group["id"],
+                    point_budget,
+                    len(remaining),
+                )
+                deferred_count += len(remaining)
+                yielded = True
+                break
+            # Between batches, hand the runtime back if live work is waiting.
+            if batch_index and bacnet_runtime_lock_held(config):
+                logger.info(
+                    "Local Edge trend group %s yielded to live BACnet work; %s point(s) deferred",
+                    group["id"],
+                    len(remaining),
+                )
+                deferred_count += len(remaining)
+                yielded = True
+                break
+
+            request = {
+                "device_instance": device_instance,
+                "points": [
+                    {
+                        "saved_point_id": str(point["id"]),
+                        "object_type": point["object_type"],
+                        "object_instance": int(point["object_instance"]),
+                    }
+                    for point in batch
+                ],
+            }
+            try:
+                result, error = run_bacnet_read_bulk(read_config, request)
+            except Exception as exc:  # one controller must not end the group
+                errors.append(f"device {device_instance}: {_safe_error(exc)}")
+                logger.exception(
+                    "Local Edge trend read raised for group %s device %s", group["id"], device_instance
+                )
+                result, error = {}, str(exc)
+
+            if error == BACNET_RUNTIME_BUSY:
+                # Deferred work is not a failed read: record no sample, leave the
+                # group due, and try again on the next cycle.
+                logger.info(
+                    "Local Edge trend group %s deferred mid-run: BACnet runtime busy; %s point(s) deferred",
+                    group["id"],
+                    len(remaining),
+                )
+                deferred_count += len(remaining)
+                yielded = True
+                break
+
+            attempted += len(batch)
+            if isinstance(result, dict):
+                _log_route_diagnostics(result, "Local Edge trend BACnet route diagnostics")
+            result_values = result.get("values", []) if isinstance(result, dict) else []
+            values_by_point = {
+                str(value.get("saved_point_id")): value
+                for value in result_values
+                if isinstance(value, dict) and value.get("saved_point_id") is not None
+            }
+            device_error = _safe_error(error)
+            if device_error:
+                errors.append(f"device {device_instance}: {device_error}")
+                logger.warning(
+                    "Local Edge trend read failed for group %s device %s: %s",
+                    group["id"],
+                    device_instance,
+                    device_error,
+                )
+
+            for point in batch:
+                value = values_by_point.get(str(point["id"]))
+                if value is None:
+                    status = "error" if device_error else "missing"
+                    error_text = device_error or "BACnet bulk read returned no result for point"
+                    _record_local_sample(
+                        conn,
+                        trend_point_id=int(point["id"]),
+                        sampled_at=timestamp,
+                        value_text=None,
+                        status=status,
+                        read_source="bulk-missing",
+                        error_text=error_text,
+                        timestamp=timestamp,
+                    )
+                    if status == "error":
+                        error_count += 1
+                    else:
+                        missing_count += 1
+                    stored += 1
+                    continue
+
+                status = str(value.get("status") or "missing")
+                if status == "ok":
+                    returned_count += 1
+                elif status == "missing":
+                    missing_count += 1
+                else:
+                    error_count += 1
+                _record_local_sample(
+                    conn,
+                    trend_point_id=int(point["id"]),
+                    sampled_at=timestamp,
+                    value_text=value.get("raw_value", value.get("value")),
+                    status=status,
+                    read_source=value.get("read_source"),
+                    error_text=value.get("error"),
+                    timestamp=timestamp,
+                )
+                stored += 1
+
+    elapsed_ms = int((time.monotonic() - run_started) * 1000)
+    run_error = "; ".join(errors)[:1000] if errors else None
+    conn.execute(
+        """
+        UPDATE trend_runs
+        SET completed_at = ?, returned_count = ?, deferred_count = ?, duration_ms = ?, error_text = ?
+        WHERE id = ?
+        """,
+        (timestamp, returned_count, deferred_count, elapsed_ms, run_error, run_id),
+    )
+    logger.info(
+        "Local Edge trend group %s complete: samples_written=%s good=%s missing=%s error=%s deferred=%s elapsed_ms=%s error=%s",
+        group["id"],
+        stored,
+        returned_count,
+        missing_count,
+        error_count,
+        deferred_count,
+        elapsed_ms,
+        run_error or "",
+    )
+    return stored, attempted
+
+
 def sample_local_edge_trends(config: AgentConfig) -> int:
-    """Sample enabled Edge UI local trend groups into the UI-owned trend DB."""
+    """Sample enabled Edge UI local trend groups into the UI-owned trend DB.
+
+    Trend configuration is read from the gateway's own trend database on every
+    cycle, so a group created in the Edge UI is picked up without restarting the
+    agent, and collection continues whether or not the cloud is reachable.
+    """
     if not config.local_edge_trends_enabled:
         return 0
     db_path = _edge_trends_db(config)
@@ -151,6 +368,8 @@ def sample_local_edge_trends(config: AgentConfig) -> int:
 
     now = _now()
     timestamp = now.isoformat()
+    read_config = _trend_read_config(config)
+    remaining_budget = config.trend_max_points_per_cycle
     stored = 0
     with _connect_edge_trends(db_path) as conn:
         for item in _load_enabled_local_groups(conn):
@@ -169,125 +388,123 @@ def sample_local_edge_trends(config: AgentConfig) -> int:
             )
             if not due:
                 continue
-
-            run_started = time.monotonic()
-            run_cursor = conn.execute(
-                """
-                INSERT INTO trend_runs (group_id, started_at, requested_count)
-                VALUES (?, ?, ?)
-                """,
-                (group["id"], timestamp, len(points)),
-            )
-            run_id = int(run_cursor.lastrowid)
-            grouped: dict[int, list[dict[str, Any]]] = {}
-            for point in points:
-                grouped.setdefault(int(point["device_instance"]), []).append(point)
-
-            returned_count = 0
-            missing_count = 0
-            error_count = 0
-            errors: list[str] = []
-
-            for device_instance, device_points in grouped.items():
+            if remaining_budget <= 0:
                 logger.info(
-                    "Local Edge trend route-aware read: group_id=%s device_instance=%s point_count=%s",
-                    group["id"],
-                    device_instance,
-                    len(device_points),
+                    "Local Edge trend group %s deferred: per-cycle point budget exhausted", group["id"]
                 )
-                request = {
-                    "device_instance": device_instance,
-                    "points": [
-                        {
-                            "saved_point_id": str(point["id"]),
-                            "object_type": point["object_type"],
-                            "object_instance": int(point["object_instance"]),
-                        }
-                        for point in device_points
-                    ],
-                }
-                result, error = run_bacnet_read_bulk(config, request)
-                if isinstance(result, dict):
-                    _log_route_diagnostics(result, "Local Edge trend BACnet route diagnostics")
-                result_values = result.get("values", []) if isinstance(result, dict) else []
-                values_by_point = {
-                    str(value.get("saved_point_id")): value
-                    for value in result_values
-                    if isinstance(value, dict) and value.get("saved_point_id") is not None
-                }
-                device_error = _safe_error(error)
-                if device_error:
-                    errors.append(f"device {device_instance}: {device_error}")
-                    logger.warning(
-                        "Local Edge trend read failed for group %s device %s: %s",
-                        group["id"],
-                        device_instance,
-                        device_error,
-                    )
+                continue
 
-                for point in device_points:
-                    value = values_by_point.get(str(point["id"]))
-                    if value is None:
-                        status = "error" if device_error else "missing"
-                        error_text = device_error or "BACnet bulk read returned no result for point"
-                        _record_local_sample(
-                            conn,
-                            trend_point_id=int(point["id"]),
-                            sampled_at=timestamp,
-                            value_text=None,
-                            status=status,
-                            read_source="bulk-missing",
-                            error_text=error_text,
-                            timestamp=timestamp,
-                        )
-                        if status == "error":
-                            error_count += 1
-                        else:
-                            missing_count += 1
-                        stored += 1
-                        continue
-
-                    status = str(value.get("status") or "missing")
-                    if status == "ok":
-                        returned_count += 1
-                    elif status == "missing":
-                        missing_count += 1
-                    else:
-                        error_count += 1
-                    _record_local_sample(
-                        conn,
-                        trend_point_id=int(point["id"]),
-                        sampled_at=timestamp,
-                        value_text=value.get("raw_value", value.get("value")),
-                        status=status,
-                        read_source=value.get("read_source"),
-                        error_text=value.get("error"),
-                        timestamp=timestamp,
-                    )
-                    stored += 1
-
-            elapsed_ms = int((time.monotonic() - run_started) * 1000)
-            run_error = "; ".join(errors)[:1000] if errors else None
-            conn.execute(
-                """
-                UPDATE trend_runs
-                SET completed_at = ?, returned_count = ?, deferred_count = ?, duration_ms = ?, error_text = ?
-                WHERE id = ?
-                """,
-                (timestamp, returned_count, missing_count + error_count, elapsed_ms, run_error, run_id),
-            )
-            logger.info(
-                "Local Edge trend group %s complete: samples_written=%s good=%s missing=%s error=%s elapsed_ms=%s error=%s",
-                group["id"],
-                returned_count + missing_count + error_count,
-                returned_count,
-                missing_count,
-                error_count,
-                elapsed_ms,
-                run_error or "",
-            )
+            try:
+                group_stored, attempted = _sample_local_group(
+                    conn,
+                    config,
+                    read_config,
+                    item,
+                    timestamp=timestamp,
+                    point_budget=remaining_budget,
+                )
+            except Exception:
+                # One malformed or failing group must never stop the others, and
+                # must never end the agent loop.
+                logger.exception("Local Edge trend group %s failed", group["id"])
+                conn.commit()
+                continue
+            stored += group_stored
+            remaining_budget -= attempted
         conn.commit()
     return stored
+
+
+def upload_pending_local_trend_samples(config: AgentConfig) -> int:
+    """Send locally collected trend samples to the cloud mirror.
+
+    The Edge remains authoritative: this only copies samples upward. Samples
+    stay in the gateway's outbox until the cloud acknowledges them, so a cloud
+    outage delays replication without losing or duplicating a reading.
+    """
+    if not config.local_edge_trends_enabled:
+        return 0
+    db_path = _edge_trends_db(config)
+    if db_path is None or not db_path.exists():
+        return 0
+
+    now = _now()
+    timestamp = now.isoformat()
+    with _connect_edge_trends(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT o.id AS outbox_id, o.event_id, o.attempt_count,
+                   s.sampled_at, s.value_text, s.status, s.read_source, s.error_text,
+                   p.device_instance, p.object_type, p.object_instance, p.object_name,
+                   g.name AS group_name
+            FROM trend_upload_outbox o
+            JOIN trend_samples s ON s.id = o.trend_sample_id
+            JOIN trend_points p ON p.id = s.trend_point_id
+            JOIN trend_groups g ON g.id = p.group_id
+            WHERE o.state = 'pending'
+              AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= ?)
+            ORDER BY o.id
+            LIMIT ?
+            """,
+            (timestamp, config.trend_local_upload_batch_size),
+        ).fetchall()
+        if not rows:
+            return 0
+
+        outbox_ids = [int(row["outbox_id"]) for row in rows]
+        payload = [
+            {
+                "event_id": str(row["event_id"]),
+                "group_name": str(row["group_name"]),
+                "device_instance": int(row["device_instance"]),
+                "object_type": str(row["object_type"]),
+                "object_instance": int(row["object_instance"]),
+                "object_name": str(row["object_name"] or ""),
+                "sampled_at": str(row["sampled_at"]),
+                "value_text": row["value_text"],
+                "status": str(row["status"]),
+                "read_source": row["read_source"],
+                "error_text": row["error_text"],
+            }
+            for row in rows
+        ]
+        try:
+            response = requests.post(
+                f"{config.cloud_url}/api/edge/{config.gateway_id}/local-trend-samples",
+                headers=auth_headers(config),
+                json=payload,
+                timeout=20,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            prior_attempts = max((int(row["attempt_count"] or 0) for row in rows), default=0)
+            retry_seconds = min(
+                config.trend_upload_retry_max_sec,
+                config.trend_upload_retry_base_sec * (2 ** min(6, max(0, prior_attempts))),
+            )
+            retry_at = (now + timedelta(seconds=retry_seconds)).isoformat()
+            conn.executemany(
+                """
+                UPDATE trend_upload_outbox
+                SET attempt_count = attempt_count + 1, next_attempt_at = ?, last_error = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                [(retry_at, _safe_error(exc), timestamp, outbox_id) for outbox_id in outbox_ids],
+            )
+            conn.commit()
+            raise
+
+        conn.executemany(
+            """
+            UPDATE trend_upload_outbox
+            SET state = 'uploaded', uploaded_at = ?, updated_at = ?, last_error = NULL, next_attempt_at = NULL
+            WHERE id = ?
+            """,
+            [(timestamp, timestamp, outbox_id) for outbox_id in outbox_ids],
+        )
+        conn.commit()
+    logger.info("Uploaded %s local Edge trend sample(s) to the cloud mirror", len(rows))
+    return len(rows)
 
 
 def upload_pending_trend_samples(config: AgentConfig) -> int:
