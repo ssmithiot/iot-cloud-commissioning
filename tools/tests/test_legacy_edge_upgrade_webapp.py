@@ -61,8 +61,10 @@ from tools.legacy_edge_upgrade_webapp import (  # noqa: E402
 
 FINAL_AGENT_COMMIT = "40133f2a81390db92a01b33a9c02c48a07363a7e"
 STALE_AGENT_COMMIT = "0" * 40
-FINAL_UI_COMMIT = "e504879fda1f408c2f9c97d6ada55de8d105230a"
-FINAL_UI_ARTIFACT_SHA256 = "1e634fe2a58bdad7e21827e4a4e706c0c3240a739a378bb7e0b6bdc307f95bad"
+# Edge 0.2.0 RC2: the Trend Viewer correction rebuilt the UI artifact.  RC1 was
+# e504879f / 1e634fe2, whose tags stay immutable.
+FINAL_UI_COMMIT = "cd4c0a5468c6d6d8937de62b6ddcc1119bd17d6e"
+FINAL_UI_ARTIFACT_SHA256 = "78fac819890a53ae30050fbfdc40fafe470ed2d04460e4d1485416a4c57083f9"
 
 
 def test_duplicate_server_launch_does_not_start_an_orphaned_worker(monkeypatch: pytest.MonkeyPatch) -> None:
