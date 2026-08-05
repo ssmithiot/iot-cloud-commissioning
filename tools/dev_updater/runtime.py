@@ -94,7 +94,12 @@ def legacy_port_report(host: str = identity.DEFAULT_HOST) -> str:
 # cover the shapes a secret arrives in: a labelled field, a sudo prompt echo, a
 # GitHub token, an ssh key body, and a URL with credentials inline.
 SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|passphrase)\b(\s*[:=]\s*)(\S+)"), r"\1\2***REDACTED***"),
+    # No leading \b: the names that actually carry secrets here are prefixed --
+    # GATEWAY_PASSWORD, CRADLEPOINT_PASSWORD, IOT_ADMIN_API_TOKEN -- and an
+    # underscore is a word character, so \b never fires before them. Without the
+    # prefix allowance a copied .env line logged verbatim would pass straight
+    # through.
+    (re.compile(r"(?i)([A-Z0-9_.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|passphrase))(\s*[:=]\s*)(\S+)"), r"\1\2***REDACTED***"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}\b"), "***REDACTED-GITHUB-TOKEN***"),
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"), "***REDACTED-GITHUB-TOKEN***"),
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL), "***REDACTED-PRIVATE-KEY***"),

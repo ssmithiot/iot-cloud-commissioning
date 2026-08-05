@@ -33,13 +33,12 @@ SHORTCUT_NAME = "IOT Edge Development Updater"
 MANUFACTURER = "The Internet of Team, LLC"
 APP_VERSION = "0.1.0"
 
-# The banner is a requirement, not decoration: this program deploys release
-# candidates to hand-picked test gateways and must never be mistaken for the
-# updater used on production sites.
-BANNER = "DEVELOPMENT UPDATER \u2014 MANUAL TEST GATEWAYS ONLY"
-BANNER_SUBTITLE = (
-    "Manual, one gateway at a time. No discovery, no batch, no schedule, no fleet push."
-)
+# The only visible difference from the updater this was copied from. Deliberately
+# a plain subtitle rather than a warning treatment: the interface should read as
+# the same familiar tool so muscle memory carries over, with just enough on the
+# page to tell the two apart.
+BANNER = "IOT Edge Development Updater"
+BANNER_SUBTITLE = "Manual Development Use"
 
 # Stable for the lifetime of the product. Windows recognises an upgrade by this
 # code; regenerating it would install a second copy side by side with itself.

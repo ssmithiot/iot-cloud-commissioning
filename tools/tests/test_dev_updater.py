@@ -1,12 +1,21 @@
-"""The Development Updater must be provably separate from Jim's Legacy Updater.
+"""The Development Updater is a copy of the working updater, kept separate.
 
-Every test here answers one of the eighteen questions asked of this build. They
-are grouped by what they protect: the Legacy Updater's continued operation, this
-application's own identity, the immutability of what it deploys, the manual-only
-safety model, and the MSI's side-by-side behaviour.
+Two claims have to hold at once, and they pull against each other:
+
+  * it must BE the proven updater -- same Cradlepoint connection, same nested
+    SSH to the gateway behind it, same phases, checkpoints and rollback; and
+  * it must never touch, read, bind or resemble Jim's installation.
+
+So the tests fall into two halves. One half compares the copy against the
+original and fails if the deployment machinery has drifted. The other compares
+the two products' identities and fails if anything is shared.
+
+Numbers refer to the eighteen checks required of this build.
 """
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import re
 import socket
@@ -16,471 +25,521 @@ from pathlib import Path
 
 import pytest
 
-from tools.dev_updater import identity
-from tools.dev_updater.plan import (
-    AGENT_SERVICE,
-    Component,
-    PlanError,
-    build_plan,
-    preflight_steps,
-)
-from tools.dev_updater.release_source import (
-    ReleaseSourceError,
-    approved_manifests,
-    assert_immutable_ref,
-    resolve_target,
-)
-from tools.dev_updater.runtime import AuditLog, PortUnavailable, port_status, redact, require_port
+from tools.dev_updater import identity, runtime
+from tools.dev_updater import updater_webapp as dev
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MANIFEST_DIR = REPO_ROOT / "tools" / "releases" / "manifests"
-MANIFEST_0_2_0 = MANIFEST_DIR / "edge-0.2.0.json"
 LEGACY_MODULE = REPO_ROOT / "tools" / "legacy_edge_upgrade_webapp.py"
 LEGACY_LAUNCHER = REPO_ROOT / "tools" / "start-legacy-edge-upgrade-webapp.cmd"
-MSI_BUILDER = REPO_ROOT / "deploy" / "dev-updater" / "build-msi.sh"
+LEGACY_MANIFEST = REPO_ROOT / "tools" / "releases" / "manifests" / "edge-0.2.0.json"
+LEGACY_README = REPO_ROOT / "tools" / "README-legacy-edge-upgrade-webapp.md"
+
+DEV_MODULE = REPO_ROOT / "tools" / "dev_updater" / "updater_webapp.py"
+DEV_MANIFEST = REPO_ROOT / "tools" / "dev_updater" / "releases" / "manifests" / "edge-0.2.0-dev.json"
+BUILD_SCRIPT = REPO_ROOT / "deploy" / "dev-updater" / "build-msi.sh"
+ENV_EXAMPLE = REPO_ROOT / "deploy" / "dev-updater" / ".env.example"
+LAUNCHER = REPO_ROOT / "deploy" / "dev-updater" / "IOTEdgeDevUpdater.cmd"
+MSI = REPO_ROOT / "dist" / f"IOTEdgeDevUpdater-{identity.APP_VERSION}-x64.msi"
+
+# Jim's files as they stood before any Development Updater work existed
+# (commit 3979be2). Pinned rather than diffed against HEAD: a hash cannot be
+# satisfied by also committing the change.
+LEGACY_BASELINE_SHA256 = {
+    LEGACY_MODULE: "317b9850093bafe9",
+    LEGACY_LAUNCHER: "4117769e55c2b7a0",
+    LEGACY_MANIFEST: "fa3b58dd646db320",
+    LEGACY_README: "0e00387d7414fcd1",
+}
 
 
-@pytest.fixture()
-def target():
-    return resolve_target(MANIFEST_0_2_0, repo_root=REPO_ROOT)
+def _sha16(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
 
 
-def _armed(component: Component, target):
-    return build_plan(component, target, confirmed=True, agent_confirmed=True)
+def _function_source(path: Path, name: str) -> str:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return ast.unparse(node)
+    raise AssertionError(f"{name} not found in {path}")
 
 
-# --- 1, 2, 18: the Legacy Updater is untouched -------------------------------
-
-
-def test_1_legacy_updater_files_are_unchanged_by_this_work():
-    """Nothing in this change may edit the program Jim is using.
-
-    Compared against the committed blob rather than a pinned hash, so the test
-    keeps working when Jim's updater is intentionally changed by someone else,
-    and fails the moment *this* working tree modifies it.
-    """
-    for path in (LEGACY_MODULE, LEGACY_LAUNCHER):
-        assert path.is_file(), path
-        result = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "diff", "HEAD", "--", str(path.relative_to(REPO_ROOT))],
-            capture_output=True, text=True, check=False,
-        )
-        if result.returncode != 0:
-            pytest.skip("git is unavailable in this environment")
-        assert result.stdout == "", f"{path.name} has uncommitted modifications:\n{result.stdout}"
-
-
-def test_2_legacy_updater_port_is_unchanged():
-    source = LEGACY_MODULE.read_text(encoding="utf-8")
-
-    assert "DEFAULT_PORT = 8766" in source
-    assert identity.LEGACY_PORT == 8766
-    # And this application records it only to stay away from it.
-    assert str(identity.DEFAULT_PORT) not in re.findall(r"DEFAULT_PORT = (\d+)", source)
-
-
-def test_18_the_legacy_updater_still_imports_and_keeps_its_own_identity():
-    """The existing tests keep passing; this one proves the module still loads."""
-    result = subprocess.run(
-        [sys.executable, "-c",
-         "import tools.legacy_edge_upgrade_webapp as legacy;"
-         "print(legacy.DEFAULT_PORT)"],
-        cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+def _method_source(path: Path, name: str) -> str:
+    """One method body, stopping at the next definition at any nesting level."""
+    found = re.search(
+        rf"\n    def {name}\(.*?(?=\n    def |\nclass |\ndef |\Z)",
+        path.read_text(encoding="utf-8"),
+        re.DOTALL,
     )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "8766"
+    assert found, f"{name} not found in {path}"
+    return found.group(0)
 
 
-# --- 3, 4, 17: ports ----------------------------------------------------------
+# --- 1, 2: Jim's updater is untouched ---------------------------------------
 
 
-def test_3_development_updater_uses_a_different_port():
-    assert identity.DEFAULT_PORT != identity.LEGACY_PORT
-    assert identity.DEFAULT_PORT == 8791
+@pytest.mark.parametrize("path", sorted(LEGACY_BASELINE_SHA256, key=str))
+def test_1_legacy_updater_files_are_byte_for_byte_unchanged(path: Path):
+    assert _sha16(path) == LEGACY_BASELINE_SHA256[path], f"{path} changed; Jim's updater must not be modified"
 
 
-def test_4_both_applications_can_hold_their_ports_at_the_same_time():
-    """Two sockets, two ports, no contention: they can run together."""
+def test_1b_the_development_updater_never_imports_the_legacy_module():
+    source = DEV_MODULE.read_text(encoding="utf-8")
+    assert "import legacy_edge_upgrade_webapp" not in source
+    assert "tools.legacy" not in source
+
+
+def test_2_the_only_msi_this_repository_builds_is_this_product():
+    """Jim's updater is a .cmd launcher run from a checkout, not an installed
+    product, so there is no legacy MSI for this build to have disturbed."""
+    built = sorted(p.name for p in (REPO_ROOT / "dist").glob("*.msi")) if (REPO_ROOT / "dist").exists() else []
+    assert all(name.startswith("IOTEdgeDevUpdater-") for name in built), built
+
+
+def test_2b_the_build_stages_no_part_of_the_legacy_updater():
+    script = BUILD_SCRIPT.read_text(encoding="utf-8")
+    assert "cp \"$REPO\"/tools/legacy_edge_upgrade_webapp.py" not in script
+    assert "cp \"$REPO\"/tools/releases/manifests/edge-0.2.0.json" not in script
+
+
+# --- 3, 4: side by side ------------------------------------------------------
+
+
+def test_4_the_two_applications_use_different_ports():
+    assert identity.LEGACY_PORT == 8766
+    assert dev.DEFAULT_PORT == identity.DEFAULT_PORT == 8791
+    assert dev.DEFAULT_PORT != identity.LEGACY_PORT
+
+
+def test_3_both_ports_can_be_held_at_the_same_time():
+    """The real question behind "can both run at once": two listeners, no clash."""
     legacy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     development = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        legacy.bind((identity.DEFAULT_HOST, identity.LEGACY_PORT))
+        legacy.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        development.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        legacy.bind(("127.0.0.1", 0))
         legacy.listen(1)
-        # The Development Updater starts while the Legacy Updater holds 8766.
-        development.bind((identity.DEFAULT_HOST, identity.DEFAULT_PORT))
+        development.bind(("127.0.0.1", 0))
         development.listen(1)
-        assert legacy.getsockname()[1] == identity.LEGACY_PORT
-        assert development.getsockname()[1] == identity.DEFAULT_PORT
-    except OSError as error:  # pragma: no cover - depends on the host
-        pytest.skip(f"a required port is busy on this host: {error}")
+        assert legacy.getsockname()[1] != development.getsockname()[1]
     finally:
         legacy.close()
         development.close()
 
 
-def test_17_a_port_collision_produces_a_clear_startup_error():
+def test_3b_an_occupied_port_is_refused_with_an_actionable_message():
     holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(1)
+    port = holder.getsockname()[1]
     try:
-        holder.bind((identity.DEFAULT_HOST, 0))
-        holder.listen(1)
-        busy = holder.getsockname()[1]
-
-        assert port_status(busy).available is False
-        with pytest.raises(PortUnavailable) as error:
-            require_port(busy)
+        with pytest.raises(runtime.PortUnavailable) as caught:
+            runtime.require_port(port)
+        message = str(caught.value)
+        assert "already in use" in message
+        assert "--port" in message
+        assert str(identity.LEGACY_PORT) in message
     finally:
         holder.close()
 
-    message = str(error.value)
-    assert "cannot start" in message
-    assert str(busy) in message
-    assert "--port" in message and identity.PORT_ENV_VAR in message
-    # It must also say it will not solve the problem by stealing 8766.
-    assert str(identity.LEGACY_PORT) in message
 
-
-def test_17b_the_legacy_port_is_refused_outright():
-    from tools.dev_updater.__main__ import main
-
-    assert main(["--port", str(identity.LEGACY_PORT), "--no-browser"]) == 2
-
-
-# --- 5: identity --------------------------------------------------------------
-
-
-def test_5_development_updater_has_a_wholly_distinct_identity():
-    assert identity.PRODUCT_NAME == "IOT Edge Development Updater"
-    assert identity.APP_NAME == "IOTEdgeDevUpdater"
-    assert identity.APP_VERSION == "0.1.0"
-
-    # Nothing it owns may be named after, or live inside, the Legacy Updater.
-    for value in (identity.PRODUCT_NAME, identity.APP_NAME, identity.WINDOWS_INSTALL_DIR,
-                  identity.WINDOWS_DATA_DIR, identity.WINDOWS_LOG_DIR):
-        assert "legacy" not in value.lower()
-        assert identity.LEGACY_VENV_DIR_NAME not in value
-
-    assert "EdgeDevUpdater" in str(identity.WINDOWS_DATA_DIR)
-    assert identity.pid_path().name == "IOTEdgeDevUpdater.pid"
-    assert re.fullmatch(r"[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}", identity.UPGRADE_CODE)
-    # The three component GUIDs must be distinct from each other.
-    guids = {identity.UPGRADE_CODE, identity.DATA_DIR_COMPONENT_GUID, identity.SHORTCUT_COMPONENT_GUID}
-    assert len(guids) == 3
-
-
-def test_5b_the_banner_is_unmistakable():
-    assert identity.BANNER == "DEVELOPMENT UPDATER — MANUAL TEST GATEWAYS ONLY"
-
-    from tools.dev_updater import webapp
-
-    rendered = webapp.page(webapp.Session()).decode("utf-8")
-    assert identity.BANNER in rendered
-    for required in ("Selected gateway", "Component scope", "Target release",
-                     "Artifact SHA-256", "Checkpoint", "Deployment", "cloud_url"):
-        assert required in rendered, required
-
-
-# --- 6, 7: the MSI ------------------------------------------------------------
-
-
-def test_6_msi_installs_side_by_side():
-    builder = MSI_BUILDER.read_text(encoding="utf-8")
-
-    assert identity.UPGRADE_CODE in builder
-    # perMachine into its own Program Files folder, with no reference to the
-    # Legacy Updater's checkout.
-    assert "ProgramFiles64Folder" in builder
-    assert "IOT Edge Development Updater" in builder
-    assert identity.LEGACY_VENV_DIR_NAME not in builder
-    assert "legacy_edge_upgrade_webapp" not in builder
-
-
-def test_7_msi_uninstall_removes_only_this_application():
-    builder = MSI_BUILDER.read_text(encoding="utf-8")
-
-    # Structural, not a comment: the data and logs directories must carry no
-    # RemoveFolder, so logs and checkpoint records survive an uninstall.
-    removals = re.findall(r'<RemoveFolder[^>]*Id="([^"]+)"', builder)
-    assert removals == ["AppMenuFolder"], removals
-    assert "logs are not removed on uninstall" in builder
-    assert "gateway-update-venv" not in builder
-
-
-MSI = REPO_ROOT / "dist" / "IOTEdgeDevUpdater-0.1.0-x64.msi"
-msi_built = pytest.mark.skipif(not MSI.is_file(), reason="MSI not built; run deploy/dev-updater/build-msi.sh")
-
-
-def _msi_table(name: str) -> str:
-    result = subprocess.run(["msiinfo", "export", str(MSI), name],
-                            capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        pytest.skip("msiinfo (msitools) is not on PATH")
-    return result.stdout
-
-
-@msi_built
-def test_6b_the_built_msi_carries_this_products_own_identity():
-    properties = _msi_table("Property")
-
-    assert "IOT Edge Development Updater" in properties
-    assert identity.UPGRADE_CODE in properties.upper()
-    # A ProductCode distinct from the UpgradeCode, minted per build.
-    product_code = re.search(r"ProductCode\t\{([0-9A-F-]+)\}", properties)
-    assert product_code, properties
-    assert product_code.group(1) != identity.UPGRADE_CODE
-
-    directories = _msi_table("Directory")
-    # Its own Program Files folder and its own ProgramData tree.
-    assert "INSTALLDIR\tProgramFiles64Folder\tIOT Edge Development Updater" in directories
-    assert "DEVUPDATERDATA\tIOTDataFolder\tEdgeDevUpdater" in directories
-    assert "DEVUPDATERLOGS\tDEVUPDATERDATA\tlogs" in directories
-
-
-@msi_built
-def test_7b_the_built_msi_removes_nothing_but_its_own_start_menu_folder():
-    removals = [line.split("\t")[0] for line in _msi_table("RemoveFile").splitlines()[3:] if line.strip()]
-
-    # Exactly one removal, and it is this product's own Start Menu folder.
-    assert removals == ["AppMenuFolder"], removals
-
-    shortcuts = _msi_table("Shortcut")
-    assert "StartMenuLink" in shortcuts and "DesktopLink" in shortcuts
-
-
-@msi_built
-def test_7c_the_built_msi_ships_no_part_of_the_legacy_updater():
-    result = subprocess.run(["msiinfo", "export", str(MSI), "File"],
-                            capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        pytest.skip("msiinfo (msitools) is not on PATH")
-
-    names = result.stdout
-    assert "legacy_edge_upgrade_webapp" not in names
-    assert "start-legacy" not in names
-    assert identity.LEGACY_VENV_DIR_NAME not in names
-    # What it does ship: its own package, the shared helpers, the approved release.
-    for expected in ("identity.py", "plan.py", "release_source.py", "gateway_recovery.py",
-                     "release_manifest.py", "edge-0.2.0.json"):
-        assert expected in names, expected
-
-
-# --- 8, 9, 10: the release source is immutable --------------------------------
-
-
-def test_8_it_reads_the_0_2_0_development_manifest(target):
-    assert target.edge_release == "0.2.0"
-    assert target.edge_ui_commit == "cd4c0a5468c6d6d8937de62b6ddcc1119bd17d6e"
-    assert target.agent_commit == "40133f2a81390db92a01b33a9c02c48a07363a7e"
-    assert target.artifact_name == "gw006-edge-ui-0.2.0-code.tar.gz"
-    assert target.artifact_sha256 == "78fac819890a53ae30050fbfdc40fafe470ed2d04460e4d1485416a4c57083f9"
-    assert target.rollback_release == "0.1.9"
-
-    # Only 0.2.0 is offered; 0.1.9 and 0.1.7 belong to the Legacy Updater.
-    offered = {path.name for path in approved_manifests(MANIFEST_DIR)}
-    assert offered == {"edge-0.2.0.json"}
-
-
-def test_9_it_refuses_an_artifact_whose_hash_does_not_match(tmp_path):
-    manifest = json.loads(MANIFEST_0_2_0.read_text())
-    artifact = tmp_path / "tools" / "releases" / "tampered.tar.gz"
-    artifact.parent.mkdir(parents=True)
-    artifact.write_bytes(b"not the approved artifact")
-    manifest["artifact"] = "tools/releases/tampered.tar.gz"
-    path = tmp_path / "edge-0.2.0.json"
-    path.write_text(json.dumps(manifest))
-
-    with pytest.raises(ReleaseSourceError) as error:
-        resolve_target(path, repo_root=tmp_path)
-
-    assert "SHA-256 does not match" in str(error.value)
-    assert "refused" in str(error.value).lower()
-
-
-def test_10_it_refuses_an_unapproved_or_mutable_target(tmp_path):
-    # A moving reference is refused whatever shape it arrives in.
-    for moving in ("main", "origin/main", "HEAD", "refs/heads/release/edge-agent-0.2.0",
-                   "latest", "cd4c0a5", "v0.2.0"):
-        with pytest.raises(ReleaseSourceError):
-            assert_immutable_ref(moving, field="Edge UI commit")
-
-    assert assert_immutable_ref("CD4C0A5468C6D6D8937DE62B6DDCC1119BD17D6E", field="x") == \
-        "cd4c0a5468c6d6d8937de62b6ddcc1119bd17d6e"
-
-    # An unapproved release is refused even with a perfectly valid manifest.
-    manifest = json.loads(MANIFEST_0_2_0.read_text())
-    manifest["edge_release"] = "0.1.9"
-    path = tmp_path / "edge-0.1.9.json"
-    path.write_text(json.dumps(manifest))
-    with pytest.raises(ReleaseSourceError) as error:
-        resolve_target(path, repo_root=REPO_ROOT)
-    assert "not an approved development release" in str(error.value)
-    assert "Legacy Updater" in str(error.value)
-
-
-# --- 11 to 15: the manual-only safety model -----------------------------------
-
-
-def test_11_no_deployment_is_built_without_explicit_confirmation(target):
-    with pytest.raises(PlanError) as error:
-        build_plan(Component.UI_ONLY, target, confirmed=False)
-    assert "not been confirmed" in str(error.value)
-
-    # No component selected is also refused - there is no default.
-    with pytest.raises(PlanError):
-        build_plan(Component.NONE, target, confirmed=True)
-
-    # An Agent update needs a second, separate confirmation.
-    with pytest.raises(PlanError) as error:
-        build_plan(Component.AGENT_ONLY, target, confirmed=True, agent_confirmed=False)
-    assert "second explicit confirmation" in str(error.value)
-
-
-def test_12_ui_only_leaves_the_agent_untouched(target):
-    plan = build_plan(Component.UI_ONLY, target, confirmed=True)
-
-    for step in plan.steps:
-        if step.read_only:
-            continue
-        assert AGENT_SERVICE not in step.command, step.description
-        assert "/etc/iot-cx-agent" not in step.command, step.description
-        assert "iot-cloud-commissioning" not in step.command, step.description
-    assert "edge-agent" not in plan.stages
-
-
-def test_13_agent_only_leaves_edge_ui_data_and_files_untouched(target):
-    plan = build_plan(Component.AGENT_ONLY, target, confirmed=True, agent_confirmed=True)
-
-    assert "edge-ui" not in plan.stages
-    for step in plan.steps:
-        if step.read_only:
-            continue
-        assert "edge-bacnet-ui-v2-update.tar.gz" not in step.command, step.description
-        assert "systemctl stop edge-bacnet-ui" not in step.command, step.description
-        # Site data is never written by any step, in any mode.
-        assert not re.search(r"rm\s+-rf\s+\S*edge-bacnet-ui-v2/data", step.command)
-
-
-@pytest.mark.parametrize("component", [Component.UI_ONLY, Component.AGENT_ONLY, Component.UI_AND_AGENT])
-def test_14_cloud_url_is_never_changed_automatically(target, component):
-    plan = _armed(component, target)
-
-    for step in plan.steps:
-        assert not re.search(r"cloud_url\s*=", step.command), step.description
-        assert not re.search(r"sed .*cloud_url", step.command), step.description
-        if "cloud_url" in step.command:
-            # It may only ever be read.
-            assert step.read_only or step.command.lstrip().startswith("grep"), step.description
-
-    # And it is reported both before and after, so a change would be visible.
-    descriptions = [step.description for step in plan.steps]
-    assert "cloud_url (read only)" in descriptions
-    assert "cloud_url after update" in descriptions
-
-
-def test_15_the_checkpoint_is_taken_and_verified_before_any_change(target):
-    plan = _armed(Component.UI_AND_AGENT, target)
-    stages = plan.stages
-
-    assert stages.index("checkpoint") < stages.index("edge-ui")
-    assert stages.index("checkpoint") < stages.index("edge-agent")
-
-    checkpoint = [step for step in plan.steps if step.stage == "checkpoint"]
-    verifications = " ".join(step.command for step in checkpoint)
-    assert "sha256sum -c" in verifications, "the checkpoint must be checksum-verified"
-    assert "tar -tzf" in verifications, "the checkpoint must be proven readable"
-
-    # And rollback is code-only: nothing in it deletes gateway data.
-    assert plan.rollback_steps
-    for step in plan.rollback_steps:
-        assert "edge-bacnet-ui-v2/data" not in step.command
-    assert plan.rollback_location.endswith("pre-update-code.tar.gz")
-
-
-def test_15b_preflight_is_read_only(target):
-    for step in preflight_steps():
-        assert step.read_only, step.description
-        assert not re.search(r"\b(systemctl (start|stop|restart)|rm |cp |mv |tar -xz|sed -i|tee )", step.command)
-
-
-# --- 16: logs carry no secrets ------------------------------------------------
-
-
-def test_16_logs_contain_no_secrets(tmp_path):
-    log = AuditLog(tmp_path, operator="steve")
-    log.write(
-        "deploy_requested",
-        gateway="192.168.1.200",
-        password="hunter2",
-        ssh_password="hunter2",
-        github_token="ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-        command="sudo -S -p '' systemctl restart iot-cx-agent.service",
-        note="password: hunter2 and token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-        url="https://user:hunter2@example.invalid/repo.git",
-        key="-----BEGIN OPENSSH PRIVATE KEY-----\nc2VjcmV0\n-----END OPENSSH PRIVATE KEY-----",
+def test_3c_binding_the_legacy_port_names_the_program_it_belongs_to():
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        holder.bind(("127.0.0.1", identity.LEGACY_PORT))
+        holder.listen(1)
+    except OSError:
+        pytest.skip("legacy port already held on this machine")
+    try:
+        with pytest.raises(runtime.PortUnavailable) as caught:
+            runtime.require_port(identity.LEGACY_PORT)
+        assert "Legacy Edge Upgrade Webapp" in str(caught.value)
+    finally:
+        holder.close()
+
+
+# --- 5, 6: the copied .env ---------------------------------------------------
+
+
+def test_5_a_copied_env_is_loaded_from_this_products_own_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    for name in ("CRADLEPOINT_PASSWORD", "GATEWAY_PASSWORD", "IOT_ADMIN_API_TOKEN", "EDGE_UI_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+    # Exactly the shape of the existing updater's file, copied across unedited.
+    (tmp_path / ".env").write_text(
+        "IOT_ADMIN_API_TOKEN=token-value\n"
+        "CRADLEPOINT_PASSWORD=cradle-secret\n"
+        "GATEWAY_PASSWORD=gateway-secret\n"
+        "EDGE_UI_PASSWORD=ui-secret\n",
+        encoding="utf-8",
     )
 
+    status = dev.env_status()
+    defaults = dev.load_env_defaults()
+
+    assert status.exists and status.ok
+    assert status.missing_required == ()
+    assert status.path == tmp_path / ".env"
+    assert defaults["CRADLEPOINT_PASSWORD"] == "cradle-secret"
+    assert defaults["GATEWAY_PASSWORD"] == "gateway-secret"
+
+
+def test_5b_the_env_variable_names_match_the_existing_updater():
+    """Steve copies his file without rewriting it, so the names must agree."""
+    # ast.unparse normalises quoting, so match either quote character.
+    pattern = r"['\"]([A-Z_]+)['\"]: os\.environ\.get"
+    legacy_names = set(re.findall(pattern, _function_source(LEGACY_MODULE, "load_env_defaults")))
+    dev_names = set(re.findall(pattern, _function_source(DEV_MODULE, "load_env_defaults")))
+    assert legacy_names, "the original's variable names could not be read"
+    assert dev_names == legacy_names
+    assert set(dev.REQUIRED_ENV_VARS) <= dev_names
+
+
+def test_6_a_missing_env_is_reported_with_the_path_and_the_variable_names(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    for name in dev.REQUIRED_ENV_VARS + dev.OPTIONAL_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    status = dev.env_status()
+    message = status.message()
+
+    assert not status.exists and not status.ok
+    assert str(tmp_path / ".env") in message
+    for name in dev.REQUIRED_ENV_VARS:
+        assert name in message
+    assert ".env.example" in message
+
+
+def test_6b_a_present_but_incomplete_env_names_the_missing_variable(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    for name in dev.REQUIRED_ENV_VARS + dev.OPTIONAL_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / ".env").write_text("CRADLEPOINT_PASSWORD=only-this-one\n", encoding="utf-8")
+
+    status = dev.env_status()
+
+    assert status.exists and not status.ok
+    assert status.missing_required == ("GATEWAY_PASSWORD",)
+    assert "GATEWAY_PASSWORD" in status.message()
+
+
+def test_6c_the_incomplete_banner_reaches_the_page(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    for name in dev.REQUIRED_ENV_VARS + dev.OPTIONAL_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    assert "Configuration incomplete" in dev.form_page().decode()
+
+
+def test_6d_no_value_is_ever_put_in_a_status_message(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    (tmp_path / ".env").write_text("CRADLEPOINT_PASSWORD=hunter2\n", encoding="utf-8")
+
+    assert "hunter2" not in dev.env_status().message()
+
+
+# --- 7, 8: secrets stay out of the MSI and the logs --------------------------
+
+
+def test_7_the_example_file_carries_names_but_no_values():
+    text = ENV_EXAMPLE.read_text(encoding="utf-8")
+    for name in dev.REQUIRED_ENV_VARS:
+        assert f"{name}=" in text
+    populated = [
+        line for line in text.splitlines()
+        if re.match(r"^[A-Z_]*(PASSWORD|TOKEN|SECRET|PASSPHRASE)[A-Z_]*=.+", line.strip())
+    ]
+    assert populated == []
+
+
+def test_7b_the_build_refuses_to_ship_a_populated_credential():
+    script = BUILD_SCRIPT.read_text(encoding="utf-8")
+    assert "Refusing to build" in script
+    assert 'find "$STAGE" -name ".env"' in script
+
+
+def test_7c_no_env_file_is_tracked_by_git():
+    tracked = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files"],
+        capture_output=True, text=True, check=False,
+    ).stdout.split()
+    assert [name for name in tracked if Path(name).name == ".env"] == []
+
+
+def test_7d_a_dev_updater_env_would_be_ignored_by_git():
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "check-ignore", "deploy/dev-updater/.env"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, "a .env beside the launcher would be committable"
+
+
+@pytest.mark.skipif(not MSI.exists(), reason="MSI not built")
+def test_7e_the_built_msi_contains_no_populated_credential():
+    blob = MSI.read_bytes()
+    for needle in (b"CRADLEPOINT_PASSWORD=", b"GATEWAY_PASSWORD=", b"IOT_ADMIN_API_TOKEN="):
+        for match in re.finditer(re.escape(needle), blob):
+            trailing = blob[match.end(): match.end() + 1]
+            assert trailing in (b"", b"\r", b"\n"), f"{needle!r} appears with a value in the MSI"
+
+
+def test_8_redaction_covers_the_shapes_a_secret_arrives_in():
+    assert "hunter2" not in runtime.redact("GATEWAY_PASSWORD=hunter2")
+    assert "hunter2" not in runtime.redact("password: hunter2")
+    assert "hunter2" not in runtime.redact("sudo -S -p '' hunter2")
+    assert "ghp_" not in runtime.redact("token ghp_" + "a" * 24)
+    assert "swordfish" not in runtime.redact("https://user:swordfish@example.com/x")
+
+
+def test_8b_the_audit_log_writes_no_secret_and_lives_in_its_own_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    log = runtime.AuditLog(operator="steve")
+    log.write("update", gateway_password="hunter2", detail="CRADLEPOINT_PASSWORD=hunter2")
+
     written = log.path.read_text(encoding="utf-8")
+
     assert "hunter2" not in written
-    assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" not in written
-    assert "c2VjcmV0" not in written
-    assert "REDACTED" in written
-
-    # The useful parts survive.
-    record = json.loads(written.splitlines()[0])
-    assert record["gateway"] == "192.168.1.200"
-    assert record["operator"] == "steve"
-    assert record["application"] == identity.APP_NAME
-    assert record["event"] == "deploy_requested"
-    assert "timestamp" in record
+    assert json.loads(written.splitlines()[0])["application"] == identity.APP_NAME
+    assert tmp_path in log.path.parents
 
 
-def test_16b_redaction_covers_the_shapes_a_secret_arrives_in():
-    assert "hunter2" not in redact("PASSWORD=hunter2")
-    assert "hunter2" not in redact("passphrase: hunter2")
-    assert "hunter2" not in redact("https://steve:hunter2@github.com/x.git")
-    assert "ghp_" not in redact("ghp_0123456789ABCDEFGHIJKLMNOPQRSTUVWX")
-    # Ordinary text is left alone.
-    assert redact("deployed edge-ui to 192.168.1.200") == "deployed edge-ui to 192.168.1.200"
+def test_8c_the_copied_log_redactor_is_the_existing_updaters():
+    """The update log itself is written by the copied code, so it inherits the
+    original's redaction rather than a second implementation of it."""
+    assert _method_source(DEV_MODULE, "redact") == _method_source(LEGACY_MODULE, "redact")
 
 
-def test_16c_the_log_directory_belongs_to_this_application_alone(monkeypatch):
-    # On Windows this is %ProgramData%\IOT\EdgeDevUpdater\logs.
-    monkeypatch.delenv(identity.DATA_DIR_ENV_VAR, raising=False)
-    monkeypatch.setenv("ProgramData", r"C:\ProgramData")
-    assert identity.log_dir().as_posix().endswith("IOT/EdgeDevUpdater/logs")
-    assert "EdgeDevUpdater" in identity.WINDOWS_LOG_DIR
-
-    # Wherever it lands, it is inside this application's own data directory and
-    # nowhere near the Legacy Updater, which keeps its state in its checkout.
-    assert identity.log_dir().is_relative_to(identity.data_dir())
-    assert not identity.data_dir().is_relative_to(Path(REPO_ROOT))
+# --- 9, 10: the proven connection path is the one in use ---------------------
 
 
-def test_17c_a_restart_is_not_blocked_by_the_previous_run(monkeypatch):
-    """The probe must ask the same question the server will ask.
+CONNECTION_FUNCTIONS = (
+    "connect_client",
+    "connect_client_keyboard_interactive",
+    "read_shell",
+    "send_shell_command",
+    "wait_for_shell_text",
+    "wait_for_shell_marker",
+)
 
-    Closing the application leaves its accepted connections in TIME_WAIT. The
-    server sets SO_REUSEADDR and would bind straight through that; a probe
-    without it would refuse to restart for the whole TIME_WAIT window and
-    report a conflict that does not exist.
-    """
-    import socket as socket_module
 
-    listener = socket_module.socket(socket_module.AF_INET, socket_module.SOCK_STREAM)
-    listener.setsockopt(socket_module.SOL_SOCKET, socket_module.SO_REUSEADDR, 1)
-    listener.bind((identity.DEFAULT_HOST, 0))
-    listener.listen(1)
-    port = listener.getsockname()[1]
+@pytest.mark.parametrize("name", CONNECTION_FUNCTIONS)
+def test_9_the_connection_code_is_identical_to_the_existing_updater(name: str):
+    """Not "similar to" -- identical. That is the whole basis for trusting it."""
+    assert _function_source(DEV_MODULE, name) == _function_source(LEGACY_MODULE, name)
 
-    # A live listener is a real conflict and must be detected.
-    assert port_status(port).available is False
 
-    # Connect, then close both ends, leaving the port in TIME_WAIT.
-    client = socket_module.create_connection((identity.DEFAULT_HOST, port))
-    accepted, _ = listener.accept()
-    client.close()
-    accepted.close()
-    listener.close()
+@pytest.mark.parametrize("name", ("ensure_cradlepoint_client", "ensure_gateway_client", "ensure_gateway_shell", "run_nested_command"))
+def test_9b_the_gateway_reach_methods_are_identical_to_the_existing_updater(name: str):
+    assert _method_source(DEV_MODULE, name) == _method_source(LEGACY_MODULE, name)
 
-    # The port is now restartable, and the probe must say so.
-    assert port_status(port).available is True, "TIME_WAIT must not block a restart"
+
+def test_9c_no_new_connection_implementation_was_introduced():
+    source = DEV_MODULE.read_text(encoding="utf-8")
+    legacy_source = LEGACY_MODULE.read_text(encoding="utf-8")
+    for call in set(re.findall(r"paramiko\.\w+|socket\.create_connection", source)):
+        assert call in legacy_source, f"{call} is not part of the proven implementation"
+
+
+def test_10_the_gateway_is_only_ever_reached_through_the_cradlepoint():
+    source = DEV_MODULE.read_text(encoding="utf-8")
+    assert 'transport.open_channel("direct-tcpip", (self.request.gateway_host, 22)' in source
+    assert "sock=channel" in source
+    assert "ssh {self.request.gateway_user}@{self.request.gateway_host}" in source
+
+
+def test_10b_the_gateway_address_is_only_an_operator_supplied_default():
+    """192.168.1.200 is a value in a form field the operator can change, and the
+    same default the existing updater offers -- not a hardcoded destination."""
+    legacy_source = LEGACY_MODULE.read_text(encoding="utf-8")
+    occurrences = re.findall(r".*192\.168\.1\.200.*", DEV_MODULE.read_text(encoding="utf-8"))
+    assert occurrences, "the familiar default should still be offered"
+    for line in occurrences:
+        assert line in legacy_source, "the address appears somewhere the original does not have it"
+
+
+# --- 11, 14, 15: components -------------------------------------------------
+
+
+def test_11_the_phase_list_and_component_sets_match_the_existing_updater():
+    legacy_source = LEGACY_MODULE.read_text(encoding="utf-8")
+    dev_source = DEV_MODULE.read_text(encoding="utf-8")
+    for constant in ("PHASES", "UI_ONLY_PHASES", "UPDATE_AGENT_PHASES", "TARGETED_AGENT_ONLY_PHASES"):
+        block = re.search(rf"^{constant} = .*?(?=\n[A-Z_]+ =|\nclass |\ndef )", legacy_source, re.DOTALL | re.MULTILINE)
+        assert block, constant
+        assert block.group(0) in dev_source, constant
+
+
+def test_11b_the_form_keeps_the_same_fields_and_checkbox_mechanism(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    page = dev.form_page().decode()
+
+    for field in ("gateway_id", "site_id", "cradlepoint_host", "cradlepoint_user", "gateway_host", "gateway_user", "dry_run"):
+        assert f'name="{field}"' in page
+    assert page.count('type="checkbox" name="selected_phases"') == len(dev.PHASES)
+    assert "Run Preflight" in page
+    for preset in ("Select all", "Clear all", "Edge UI only", "Edge Agent only"):
+        assert f">{preset}</button>" in page
+
+
+def test_14_edge_ui_only_selects_no_agent_phase():
+    agent_phases = set(dev.UPDATE_AGENT_PHASES) - set(dev.UI_ONLY_PHASES)
+    assert agent_phases, "the two component sets must actually differ"
+    assert not set(dev.UI_ONLY_PHASES) & agent_phases
+    for index in dev.UI_ONLY_PHASES:
+        assert "agent" not in dev.PHASES[index].lower()
+
+
+def test_15_edge_agent_only_selects_no_ui_phase():
+    ui_work = {index for index in dev.UI_ONLY_PHASES if index != 0}  # phase 0 is shared inspection
+    assert not set(dev.TARGETED_AGENT_ONLY_PHASES) & ui_work
+
+
+def test_14b_the_page_presets_tick_exactly_those_sets(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    page = dev.form_page().decode()
+    assert f"const UI_ONLY_PHASES = {list(dev.UI_ONLY_PHASES)};" in page
+    assert f"const AGENT_ONLY_PHASES = {list(dev.TARGETED_AGENT_ONLY_PHASES)};" in page
+
+
+# --- 12, 13: pinned commits --------------------------------------------------
+
+
+def test_13_the_full_forty_character_shas_are_what_is_used_internally():
+    assert re.fullmatch(r"[0-9a-f]{40}", dev.DEFAULT_EDGE_UI_COMMIT)
+    assert re.fullmatch(r"[0-9a-f]{40}", dev.DEFAULT_EDGE_UPDATE_REF)
+
+
+def test_12_the_seven_character_ids_are_what_the_operator_sees(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    page = dev.form_page().decode()
+
+    assert len(dev.DEFAULT_EDGE_UI_COMMIT_SHORT) == 7
+    assert len(dev.DEFAULT_EDGE_UPDATE_REF_SHORT) == 7
+    assert dev.DEFAULT_EDGE_UI_COMMIT_SHORT == dev.DEFAULT_EDGE_UI_COMMIT[:7]
+    assert dev.DEFAULT_EDGE_UPDATE_REF_SHORT == dev.DEFAULT_EDGE_UPDATE_REF[:7]
+    assert f"<code>{dev.DEFAULT_EDGE_UI_COMMIT_SHORT}</code>" in page
+    assert f"<code>{dev.DEFAULT_EDGE_UPDATE_REF_SHORT}</code>" in page
+    assert "release/edge-ui-0.2.0" in page and "release/edge-agent-0.2.0" in page
+
+
+def test_13b_the_targets_are_pinned_commits_not_a_moving_branch():
+    manifest = json.loads(DEV_MANIFEST.read_text(encoding="utf-8"))
+    assert re.fullmatch(r"[0-9a-f]{40}", manifest["edge_ui_tag"])
+    assert re.fullmatch(r"[0-9a-f]{40}", manifest["agent_source_commit"])
+    source = DEV_MODULE.read_text(encoding="utf-8")
+    assert "origin/main" not in source
+
+
+def test_13c_the_development_manifest_is_a_separate_file_from_jims():
+    assert DEV_MANIFEST.exists()
+    assert DEV_MANIFEST != LEGACY_MANIFEST
+    assert "dev_updater" in str(DEV_MANIFEST)
+    assert dev.DEFAULT_RELEASE_MANIFEST.endswith("edge-0.2.0-dev.json")
+    assert "releases/manifests/edge-0.2.0.json" not in DEV_MODULE.read_text(encoding="utf-8")
+
+
+def test_13d_the_pinned_artifact_hash_validates():
+    status = dev.release_package_status(dev.DEFAULT_RELEASE_MANIFEST)
+    assert status.startswith("OK:"), status
+    assert json.loads(DEV_MANIFEST.read_text(encoding="utf-8"))["sha256"] in status
+
+
+# --- 16, 17: the MSI ---------------------------------------------------------
+
+
+def test_16_the_product_has_its_own_identity():
+    assert identity.PRODUCT_NAME == "IOT Edge Development Updater"
+    assert identity.APP_VERSION == "0.1.0"
+    assert identity.WINDOWS_INSTALL_DIR == r"C:\Program Files\IOT Edge Development Updater"
+    assert identity.WINDOWS_DATA_DIR.endswith(r"IOT\EdgeDevUpdater")
+    assert identity.pid_path().name == "IOTEdgeDevUpdater.pid"
+
+
+def test_16b_the_title_states_what_this_is(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    page = dev.form_page().decode()
+    assert "<h1>IOT Edge Development Updater</h1>" in page
+    assert "Manual Development Use" in page
+    assert "<h1>Legacy Edge Upgrade</h1>" not in page
+
+
+@pytest.mark.skipif(not MSI.exists(), reason="MSI not built")
+def test_16c_the_msi_installs_under_its_own_name_and_codes():
+    blob = MSI.read_bytes()
+    assert identity.UPGRADE_CODE.encode() in blob or identity.UPGRADE_CODE.lower().encode() in blob
+    assert b"IOT Edge Development Updater" in blob
+
+
+@pytest.mark.skipif(not MSI.exists(), reason="MSI not built")
+def test_16d_the_msi_ships_the_copied_updater_and_its_own_manifest():
+    blob = MSI.read_bytes()
+    assert b"updater_webapp.py" in blob
+    assert b"edge-0.2.0-dev.json" in blob
+    assert b"legacy_edge_upgrade_webapp.py" not in blob
+
+
+def test_17_uninstall_removes_only_this_products_own_folders():
+    script = BUILD_SCRIPT.read_text(encoding="utf-8")
+    removals = re.findall(r'<RemoveFolder Id="([^"]+)"', script)
+    assert removals == ["AppMenuFolder"], removals
+    # The data directory carries no RemoveFolder, so a copied .env and the logs
+    # survive both upgrade and uninstall.
+    assert "DEVUPDATERDATA" in script
+    assert '<RemoveFolder Id="DEVUPDATERDATA"' not in script
+    assert '<RemoveFolder Id="DEVUPDATERLOGS"' not in script
+
+
+def test_17b_the_upgrade_code_is_this_products_alone():
+    script = BUILD_SCRIPT.read_text(encoding="utf-8")
+    assert identity.UPGRADE_CODE in script
+    for path in (LEGACY_MODULE, LEGACY_LAUNCHER):
+        assert identity.UPGRADE_CODE not in path.read_text(encoding="utf-8", errors="ignore")
+
+
+def test_17c_the_launcher_keeps_its_environment_out_of_the_legacy_checkout():
+    launcher = LAUNCHER.read_text(encoding="utf-8")
+    assert r"%ProgramData%\IOT\EdgeDevUpdater" in launcher
+    assert "tools.dev_updater" in launcher
+    # The virtual environment is created inside this product's own data
+    # directory, not in the legacy checkout. (The legacy venv is named in a
+    # comment for contrast, so match the assignment rather than the word.)
+    venv = re.search(r'^set "VENV=(.+)"', launcher, re.MULTILINE)
+    assert venv, "the launcher must pin its own venv location"
+    assert venv.group(1).startswith("%DATADIR%")
+    assert f"set \"VENV=%DATADIR%\\{identity.LEGACY_VENV_DIR_NAME}\"" not in launcher
+
+
+# --- the manual-only gate ----------------------------------------------------
+
+
+def test_cloud_job_claiming_is_off_unless_explicitly_requested(monkeypatch):
+    """Two updaters polling the same queue would race for the same job."""
+    monkeypatch.delenv(dev.CLAIM_ENV_VAR, raising=False)
+    assert dev.cloud_claiming_enabled() is False
+    monkeypatch.setenv(dev.CLAIM_ENV_VAR, "1")
+    assert dev.cloud_claiming_enabled() is True
+
+
+# --- 18: the existing updater is unaffected ----------------------------------
+
+
+def test_18_the_legacy_updater_still_imports_and_keeps_its_own_settings():
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import importlib.util, sys;"
+         f"sys.path.insert(0, {str(REPO_ROOT)!r});"
+         f"spec = importlib.util.spec_from_file_location('legacy', {str(LEGACY_MODULE)!r});"
+         "m = importlib.util.module_from_spec(spec);"
+         # Dataclasses resolve their module from sys.modules during creation.
+         "sys.modules['legacy'] = m; spec.loader.exec_module(m);"
+         "print(m.DEFAULT_PORT); print(m.DEFAULT_RELEASE_MANIFEST)"],
+        capture_output=True, text=True, cwd=REPO_ROOT, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    port, manifest = result.stdout.split()
+    assert port == "8766"
+    assert manifest.endswith("tools/releases/manifests/edge-0.2.0.json")

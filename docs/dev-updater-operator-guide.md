@@ -1,167 +1,115 @@
 # IOT Edge Development Updater — Operator Guide
 
-**DEVELOPMENT UPDATER — MANUAL TEST GATEWAYS ONLY**
+**IOT Edge Development Updater — Manual Development Use**
 
-This program deploys Edge 0.2.0 release candidates to gateways you name, one at
-a time. It is not the production updater. If you are updating a customer site on
-Edge 0.1.9, close this and use the Legacy Edge Upgrade Webapp on port 8766.
+This is the updater you already know. It is a copy of the working Legacy Edge
+Upgrade Webapp with a different title, a different port, and its own
+configuration directory. The form, the connection, the phases, the checkpoint,
+the update steps and the rollback controls behave exactly as they do in the
+updater you use today, because they are the same code.
 
-## Before you start
+If you are updating a customer site on Edge 0.1.9, close this and use the
+existing updater on port 8766. This one is pinned to Edge 0.2.0.
 
-You need the gateway's address, an SSH user and password, and a reason to be
-touching that specific gateway. The application will not find gateways for you,
-and there is no list to pick from by mistake.
+## First run
 
-Open **Start Menu → IOT Edge Development Updater**. It serves on
-<http://127.0.0.1:8791/> and opens your browser. If port 8791 is busy the
-application refuses to start and tells you so; run it again with `--port 8801`
-or whichever port you prefer.
+1. Install `IOTEdgeDevUpdater-0.1.0-x64.msi`.
+2. Copy your existing working `.env` to
+   `C:\ProgramData\IOT\EdgeDevUpdater\.env`. The variable names are the same,
+   so nothing in the file needs editing.
+3. Open **Start Menu → IOT Edge Development Updater**.
 
-## The seven steps
+It serves on <http://127.0.0.1:8791/>.
 
-### 1. Name the gateway
+If the `.env` is missing, the page says so at the top and the terminal prints
+the path it looked at plus the variable names it needs. If a required variable
+is absent it names that variable. It never shows a value, and never writes one
+to a log.
 
-Type the address — for example `192.168.1.200` — the SSH user (`swadmin`) and
-the password. The password is used for the connection and is never stored, never
-written to the config, and never written to the log.
+If port 8791 is busy the application refuses to start and says so; run it again
+with `--port 8801`, or whichever port you prefer. It will not take port 8766 —
+that belongs to the existing updater, and this program will not interfere with
+it.
 
-Press **Run read-only preflight**.
+Both updaters can be open at the same time.
 
-### 2. Read the preflight
+## Filling in the form
 
-The application connects and *looks*. It runs nothing that writes, restarts or
-configures; every preflight command is checked for that before it is sent.
+The same fields as the existing updater:
 
-You get back: hostname, gateway ID, the current Edge UI commit and version, the
-current Agent commit and version, `cloud_url`, both service states, the trend
-sample count, free disk, and whether sudo will need a password.
+| Field | Example |
+|---|---|
+| Gateway ID | `GW006` |
+| Site ID | auto-fills from the gateway number |
+| Cradlepoint IP | `10.2.0.15` |
+| Cradlepoint user | `BMS_admin` |
+| Gateway host | `192.168.1.200` |
+| Gateway user | `swadmin` |
 
-**Read the `cloud_url` line.** It tells you which Cloud this gateway is talking
-to. The application never changes it — but you should know which one you are
-about to test against before you go further.
+Passwords come from your `.env` and are pre-filled as they are today.
 
-### 3. Pin the release
+The connection is unchanged: SSH to the Cradlepoint, then through to the
+gateway behind it. If the Cradlepoint prompts to accept a host key, that is
+handled for you, as before. Nothing connects directly to the gateway address —
+it is always reached through the Cradlepoint you name.
 
-Choose the approved manifest (`edge-0.2.0.json`) and press **Resolve and verify
-artifact**.
+## Choosing components
 
-The application now pins everything: the exact Edge UI commit, the exact Agent
-commit, the artifact filename and its SHA-256, which it verifies by hashing the
-file. If the artifact has changed by a single byte since the release was
-approved, you get a refusal with both hashes and nothing proceeds.
+Use **Processes to run**, the same checkboxes as always. Three presets tick them
+for you:
 
-A manifest naming a branch, a tag, `origin/main` or a short SHA is refused. Only
-full 40-character commits are accepted, because anything else can move under you
-mid-deployment.
+* **Edge UI only** — the UI phases only. The Agent is not updated, not
+  restarted, and its configuration is left alone.
+* **Edge Agent only** — the Agent phases only. No Edge UI file is replaced and
+  UI runtime data is left alone.
+* **Select all** — both, in the proven order.
 
-### 4. Choose the scope
+You can still tick individual phases for a targeted rerun.
 
-There is no default. Pick one:
+## What it will deploy
 
-* **Edge UI only** — replaces Edge UI code. Does not touch the Agent, its
-  configuration, or `iot-cx-agent.service`.
-* **Edge Agent only** — moves the Agent to the approved commit and restarts it.
-  Does not touch Edge UI files or data.
-* **Edge UI + Edge Agent** — both.
+Shown at the top of the page:
 
-### 5. Confirm
+* Edge UI `cd4c0a5` on `release/edge-ui-0.2.0`
+* Edge Agent `40133f2` on `release/edge-agent-0.2.0`
 
-Tick the confirmation. If you chose anything involving the Agent, tick the second
-one too: the Agent restarts and reconnects to its **existing** `cloud_url`, and
-you are confirming you mean to do that on this gateway.
+Those are the short forms of pinned commits. The full 40-character SHAs are what
+gets checked out, validated, deployed and logged. There is no "latest" and no
+branch tip that can move under you between one run and the next.
 
-Press **Arm deployment**.
+## Running an update
 
-Changing the gateway, the manifest or the scope after this point silently clears
-both confirmations. You will have to confirm again. That is deliberate.
+1. Leave **Dry run** ticked and press **Run Preflight**. Nothing on the gateway
+   changes.
+2. Read the phase results and the validation checklist.
+3. Untick **Dry run**, tick the confirmation boxes, and press the button again.
 
-### 6. Review the plan, then deploy
+A checkpoint is taken before anything is replaced, and the rollback controls at
+the bottom — restore full backup, restore code-only checkpoint, list checkpoints
+— work as they do in the existing updater.
 
-Every command that will run is listed, in order, with its stage. Read it. The
-plan is refused before it ever reaches you if it contains a BACnet command, a
-`cloud_url` assignment, a router service reference, a `git push`, or a BACnet
-port assignment.
+## What is preserved
 
-What happens when you press **Deploy**:
+`cloud_url`, gateway and site identity, `data/**`, `edge-trends.db`, saved
+devices, trend groups and samples, templates, programs, timed overrides, `.env`,
+`start.sh`, BACnet ports, router configuration and gateway credentials. Service
+configuration is left alone except where the component you selected requires a
+restart.
 
-1. Preflight repeats.
-2. A **code-only checkpoint** is created, checksummed with `sha256sum -c`, and
-   proven readable with `tar -tzf`. If the checkpoint cannot be verified, nothing
-   is applied.
-3. The artifact's hash is verified *again*, on the gateway.
-4. The payload is checked to contain no `data/`, no `.env`, no `start.sh`.
-5. Your chosen components are applied.
-6. Postflight reports the resulting commits, service states, `cloud_url` and
-   trend sample count.
+## Differences worth knowing
 
-A failed step stops the run there. It does not continue, because a half-applied
-update with a good checkpoint behind it is recoverable and a fully-applied
-broken one is not.
+**It will not claim cloud jobs.** The existing updater polls the cloud for
+queued gateway updates and runs them unattended. This one does not, unless you
+set `IOT_EDGE_DEV_UPDATER_CLAIM_CLOUD_JOBS=1`. It acts when you press the
+button, and at no other time. Two updaters claiming from the same queue would
+race for the same job.
 
-### 7. If you need to go back
+**Its logs and configuration are its own.** Everything lives under
+`C:\ProgramData\IOT\EdgeDevUpdater`. Uninstalling removes the program and its
+shortcuts; it leaves that directory alone, so your `.env` and your logs survive
+both upgrades and uninstall. Deleting them is your explicit choice.
 
-Press **Roll back**. The checkpoint is at:
-
-```
-/home/swadmin/gw-recovery/<rollback-release>/pre-update-code.tar.gz
-```
-
-Rollback is **code-only**. Trend data, saved devices, trend groups, samples,
-`.env`, `start.sh`, credentials and gateway identity were never in the
-checkpoint, so restoring cannot lose them.
-
-Manual rollback, if the application is unavailable:
-
-```bash
-cd /home/swadmin/gw-recovery/0.1.9 && sha256sum -c pre-update-code.sha256
-sudo systemctl stop edge-bacnet-ui.service
-mkdir -p /tmp/edge-ui-code-restore && tar -xzf pre-update-code.tar.gz -C /tmp/edge-ui-code-restore
-cd /tmp/edge-ui-code-restore && cp -a . /home/swadmin/edge-bacnet-ui-v2/
-sudo chown -R swadmin:swadmin /home/swadmin/edge-bacnet-ui-v2
-sudo systemctl start edge-bacnet-ui.service
-```
-
-## What this application will never do
-
-It has no code path for any of these, and the tests prove it:
-
-* Find gateways on its own, or update anything it found rather than what you typed.
-* Update more than one gateway, run on a schedule, or deploy in the background.
-* Change `cloud_url`, on any gateway, in any mode.
-* Touch `bacrp`, `bacrpm`, `bacwp`, BACnet ports, BACnet locks, or the MSTP router service.
-* Delete anything under `data/`, or overwrite `.env` or `start.sh`.
-* Deploy Edge 0.1.9, or anything the Legacy Updater is responsible for.
-* Modify, upgrade, reconfigure, or uninstall the Legacy Updater.
-* `git push`, publish, or release.
-
-## Logs
-
-`%ProgramData%\IOT\EdgeDevUpdater\logs\IOTEdgeDevUpdater-YYYYMMDD.jsonl`
-
-One JSON object per line: timestamp, operator, gateway, preflight result, current
-and target versions, artifact hash verification, checkpoint path, what changed,
-what was restarted, postflight, and where to roll back from.
-
-Passwords, tokens and private keys are stripped on the way to disk — by field
-name, and by pattern for anything that merely *looks* like a secret inside free
-text. Logs survive uninstall; delete the folder by hand if you want them gone.
-
-## When something goes wrong
-
-**"cannot start: 127.0.0.1:8791 is already in use"** — another copy is running,
-or something else took the port. Close the other copy, or use `--port`.
-
-**"Refusing to use port 8766"** — that is the Legacy Updater's port. Pick another.
-
-**"Release artifact SHA-256 does not match"** — the artifact is not the one the
-release was approved with. Do not work around this. Re-install the MSI or fetch
-the approved artifact again.
-
-**"is a moving reference"** — the manifest names a branch or tag rather than a
-commit. The manifest needs fixing; a development deployment must be reproducible.
-
-**"Preflight failed"** — usually SSH. Check the address, the user, and that the
-gateway is reachable. Nothing was changed.
-
-**"Could not reach GitHub"** — the offline manifest and artifact installed with
-the MSI are still usable. A refresh is a convenience, not a requirement.
+**It cannot affect the existing updater.** Different port, different install
+location, different configuration, different MSI UpgradeCode. It never reads or
+writes the other program's files, and uninstalling one has no effect on the
+other.

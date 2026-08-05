@@ -1,129 +1,155 @@
 # IOT Edge Development Updater
 
-A separately installed Windows application for deploying **Edge 0.2.0 release
-candidates** to hand-picked test gateways.
+A separately installed Windows application for deploying **Edge 0.2.0** to
+gateways you name, one at a time.
 
-> **DEVELOPMENT UPDATER — MANUAL TEST GATEWAYS ONLY**
-> Manual, one gateway at a time. No discovery, no batch, no schedule, no fleet push.
+**IOT Edge Development Updater — Manual Development Use**
 
-This is **not** the updater used for production sites. The Legacy Edge Upgrade
-Webapp that Jim runs for Edge 0.1.9 is a different program, on a different port,
-in a different directory, and this application cannot modify, upgrade,
-reconfigure or remove it.
+It is a **copy of the working updater**, not a new program. The Cradlepoint
+connection, the SSH host-key prompt handling, the nested SSH to the gateway
+behind the Cradlepoint, gateway and site identity validation, the phase list,
+checkpoint creation, the UI and Agent update steps, service restart and
+verification, and the rollback reporting are the proven implementation,
+unmodified. The interface is the same interface.
+
+Only what separation and the 0.2.0 targets require was changed. Every change is
+marked `DEV-UPDATER:` in `tools/dev_updater/updater_webapp.py`:
+
+1. the import path, because the module sits one directory deeper
+2. its own port, configuration directory, log directory and PID file
+3. its own `.env` location, with a clear report when it is missing
+4. its own copy of the release manifest
+5. the product title
+6. cloud job claiming off by default
+7. two preset buttons that tick the existing component checkboxes
 
 ## The two programs side by side
 
 | | Legacy Edge Upgrade Webapp | IOT Edge Development Updater |
 |---|---|---|
-| Purpose | Production sites, Edge 0.1.9 | Test gateways, Edge 0.2.0 RC |
+| Runs | Jim's production work | Steve's development work |
 | Port | **8766** | **8791** |
 | How it is installed | `.cmd` launcher in a Git checkout | Windows MSI |
 | Program files | the Git checkout | `C:\Program Files\IOT Edge Development Updater` |
-| Data / logs | inside the checkout | `%ProgramData%\IOT\EdgeDevUpdater` |
-| Python environment | `.gateway-update-venv` in the checkout | `%ProgramData%\IOT\EdgeDevUpdater\venv` |
-| Start Menu entry | none | *IOT Edge Development Updater* |
-| Releases it can deploy | whatever its manifest names | **0.2.0 only** |
+| Configuration + logs | inside the checkout | `C:\ProgramData\IOT\EdgeDevUpdater` |
+| `.env` | inside the checkout | `C:\ProgramData\IOT\EdgeDevUpdater\.env` |
+| Python environment | `.gateway-update-venv` in the checkout | `C:\ProgramData\IOT\EdgeDevUpdater\venv` |
+| Start Menu / Desktop entry | none | *IOT Edge Development Updater* |
+| MSI UpgradeCode | none — not an installed product | `90FF1484-46DC-4848-890C-432F735E079D` |
+| Cloud job claiming | on | **off** unless explicitly enabled |
 
-Nothing in the right-hand column is shared with the left. They can run at the
-same time, and are expected to.
+Nothing in the right-hand column is shared with the left. They install, run and
+uninstall independently, and are expected to run at the same time.
 
-## Ports and conflict detection
-
-The Development Updater serves on **127.0.0.1:8791**.
-
-* The port is configurable: `--port N`, or the `IOT_EDGE_DEV_UPDATER_PORT`
-  environment variable.
-* Availability is **detected, never assumed**. At startup the application binds
-  the port for real — without `SO_REUSEADDR`, so a socket in `TIME_WAIT` cannot
-  produce a false pass. If the bind fails it prints what is wrong, how to pick a
-  different port, and exits with status 2 instead of serving.
-* Passing `--port 8766` is refused outright: that port belongs to the Legacy
-  Updater.
-* The Legacy Updater's port is *reported* on the page, read-only, so both can be
-  seen at once. It is never bound.
+The Development Updater never imports, reads or writes the Legacy Updater's
+module, launcher, manifest, configuration or logs.
+`tools/tests/test_dev_updater.py` pins the Legacy Updater's file hashes and
+fails if any of them changes.
 
 ## Install
 
 1. Copy `IOTEdgeDevUpdater-0.1.0-x64.msi` to the Windows machine.
 2. Double-click it, or `msiexec /i IOTEdgeDevUpdater-0.1.0-x64.msi`.
-3. Start it from **Start Menu → IOT Edge Development Updater**, or the desktop
+3. Copy your existing working updater `.env` to:
+
+   ```
+   C:\ProgramData\IOT\EdgeDevUpdater\.env
+   ```
+
+4. Start it from **Start Menu → IOT Edge Development Updater**, or the desktop
    shortcut.
 
-First run creates a private virtual environment under
-`%ProgramData%\IOT\EdgeDevUpdater\venv` and installs `paramiko` into it. That
-needs Python 3.10+ (`py -3`) and internet access **once**; afterwards it runs
-offline. The Legacy Updater's own environment is untouched.
+Installing does not require the Legacy Updater to be stopped.
 
-Silent install: `msiexec /i IOTEdgeDevUpdater-0.1.0-x64.msi /qn`
+## Configuration
 
-## Uninstall
+The `.env` uses **the same variable names as the existing updater**, so the
+existing file can be copied across without rewriting it.
 
-Settings → Apps → *IOT Edge Development Updater* → Uninstall, or
-`msiexec /x IOTEdgeDevUpdater-0.1.0-x64.msi /qn`.
+| Variable | Required | Purpose |
+|---|---|---|
+| `CRADLEPOINT_PASSWORD` | yes | Cradlepoint jump host |
+| `GATEWAY_PASSWORD` | yes | gateway account behind it |
+| `IOT_ADMIN_API_TOKEN` | no | only for cloud job claiming, which is off |
+| `EDGE_UI_PASSWORD` | no | post-update UI authentication check |
 
-Removes the program files and its shortcuts. **Logs and checkpoint records in
-`%ProgramData%\IOT\EdgeDevUpdater` are NEVER removed on uninstall** — delete
-that folder by hand if you want them gone. Nothing belonging to the Legacy
-Updater is touched, because the MSI has no knowledge of it.
+`.env.example` beside the application lists these with descriptions and no
+values. It is the only `.env`-shaped file in the MSI.
 
-## Release source
+If the file is missing, the application says which path it looked at and which
+variable names it needs. If a required name is absent, it names that variable.
+**Values are never displayed and never written to a log.**
 
-Deployments resolve to exact, immutable bytes or they do not happen:
+The `.env` is not in Git, not in the MSI, is preserved across MSI upgrades, and
+is not removed on uninstall — the data directory carries no `RemoveFolder`, so
+deleting it is a deliberate act.
 
-* The manifest is `tools/releases/manifests/edge-0.2.0.json`, shipped inside the
-  MSI so the tool works on a bench with no internet.
-* `edge_ui_tag` and `agent_source_commit` must each be a full 40-character
-  commit. A branch, a tag, `origin/main`, `HEAD`, or an abbreviated SHA is
-  refused with a message saying why.
-* The artifact's SHA-256 is verified against the manifest before anything else
-  happens, and verified **again on the gateway** after upload.
-* Only releases in `APPROVED_DEV_RELEASES` (currently `0.2.0`) can be selected.
-  0.1.9 is deliberately unreachable from this program.
+## Ports
 
-The manifest list may be refreshed from GitHub, but a refresh cannot widen what
-may be deployed — everything still goes through the same pinning and hash check.
+The Development Updater serves on **127.0.0.1:8791**.
 
-## GitHub access
+* Configurable with `--port N` or `IOT_EDGE_DEV_UPDATER_PORT`.
+* Availability is **detected, never assumed**: the port is bound for real at
+  startup. On failure the application prints what is wrong and how to choose a
+  different port, and exits with status 2 rather than serving.
+* The Legacy Updater's port 8766 is reported read-only at startup so both can be
+  seen at once. It is never bound, and nothing here can stop that process.
 
-`ssmithiot/iot-cloud-commissioning` is **public**, so the manifest and the
-release artifact are both retrievable **without credentials**. The application
-sends no token by default and there is nowhere in the shipped product for one to
-be embedded.
+## What it deploys
 
-If the repository is ever made private, supply a token at runtime by either:
+Pinned commits, resolved from this product's own manifest copy at
+`tools/dev_updater/releases/manifests/edge-0.2.0-dev.json`:
 
-* setting `IOT_EDGE_DEV_UPDATER_GITHUB_TOKEN`, or
-* creating `%ProgramData%\IOT\EdgeDevUpdater\github-token` containing the token.
+| Component | Branch | Commit |
+|---|---|---|
+| Edge UI | `release/edge-ui-0.2.0` | `cd4c0a5468c6d6d8937de62b6ddcc1119bd17d6e` |
+| Edge Agent | `release/edge-agent-0.2.0` | `40133f2a81390db92a01b33a9c02c48a07363a7e` |
 
-Tokens are never written to source, the MSI, config files, installer properties,
-or logs. Retrieval failures say exactly which of the two is configured and that
-the offline copy can be used instead.
+The interface shows the seven-character forms — `cd4c0a5` and `40133f2`. The
+full 40-character SHAs are what is used for checkout, validation, deployment and
+logging. There is no `origin/main` target and no moving "latest".
 
-## Build from source
+The Edge UI artifact `gw006-edge-ui-0.2.0-code.tar.gz` ships inside the MSI so
+the updater works on a bench with no internet, and its SHA-256 is verified
+before anything is sent to a gateway.
 
-Requires `wixl` and `wixl-heat` from **msitools**. No Wine, no root.
+## Components
 
-```bash
-deploy/dev-updater/build-msi.sh [output-directory]   # default: ./dist
+Use the **Processes to run** checkboxes, exactly as in the existing updater.
+Presets tick the same boxes:
+
+* **Edge UI only** — phases 0–5. No agent phase runs; the agent is not
+  restarted and its configuration is untouched.
+* **Edge Agent only** — phases 0, 7, 9, 10, 11. No UI file is replaced and UI
+  runtime data is untouched.
+* **Select all** — both, in the proven order.
+
+## What is preserved on the gateway
+
+Inherited from the copied implementation, not reimplemented: `cloud_url`,
+gateway and site identity, `data/**`, `edge-trends.db`, saved devices, trend
+groups and samples, templates, programs, timed overrides, `.env`, `start.sh`,
+BACnet ports, router configuration, gateway credentials, and service
+configuration except where the selected component requires a restart.
+
+## Cloud job claiming
+
+The updater this was copied from polls the cloud for queued gateway-update jobs
+and runs them unattended. Jim's launcher suppresses that with `-NoClaim`, which
+works by blanking the admin token in the process environment — and that cannot
+work here, because a copied `.env` supplies the token from a file.
+
+So claiming is **off** in the Development Updater. It acts only when you press
+Update. Set `IOT_EDGE_DEV_UPDATER_CLAIM_CLOUD_JOBS=1` if you specifically want
+it polling; two updaters claiming from the same queue would race for the same
+job.
+
+## Building the MSI
+
+```
+deploy/dev-updater/build-msi.sh [output-directory]
 ```
 
-Prints the MSI path, size, SHA-256 and the source commit it was built from.
-
-## Safety model
-
-* Gateways are typed in by hand. There is no discovery, and no path from
-  discovery to deployment.
-* Preflight is read-only, and every preflight step is checked for that before it
-  is sent.
-* Component scope has **no default** — Edge UI only, Edge Agent only, or both
-  must be chosen deliberately.
-* An Edge Agent update requires a **second, separate** confirmation.
-* A verified checkpoint is taken, checksummed and proven readable **before** any
-  change is applied.
-* `cloud_url` is displayed before and after, and never written. A gateway on
-  development, staging or production Cloud stays where it is.
-* Changing the gateway, the target, or the component scope silently revokes any
-  confirmation already given.
-* Rollback is code-only. Trend data, saved devices, `.env`, `start.sh` and
-  gateway identity are never in the checkpoint and cannot be lost by restoring
-  it.
+Needs `wixl` and `wixl-heat` from msitools; no Wine and no root. The build
+refuses to produce an MSI if a `.env` or a populated credential variable is
+found in the staged tree.

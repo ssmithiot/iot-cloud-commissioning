@@ -41,7 +41,8 @@ mkdir -p "$STAGE/tools/dev_updater" "$STAGE/tools/releases/manifests" "$OUT_DIR"
 
 echo "==> Staging $PRODUCT $VERSION"
 
-# The application itself.
+# The application itself: updater_webapp.py is the copy of the working updater,
+# plus the identity/runtime helpers that keep it separate from Jim's.
 cp "$REPO"/tools/dev_updater/*.py            "$STAGE/tools/dev_updater/"
 
 # The shared, side-effect-free helpers it imports. gateway_recovery is the
@@ -49,22 +50,52 @@ cp "$REPO"/tools/dev_updater/*.py            "$STAGE/tools/dev_updater/"
 # Updater's own module is NOT staged - this product never loads it.
 cp "$REPO"/tools/release_manifest.py         "$STAGE/tools/"
 cp "$REPO"/tools/gateway_recovery.py         "$STAGE/tools/"
+cp "$REPO"/tools/release_preflight.py        "$STAGE/tools/"
 touch "$STAGE/tools/__init__.py"
 
-# The approved development release, shipped offline so the updater works on a
-# bench with no internet. Only approved releases are staged.
-cp "$REPO"/tools/releases/manifests/edge-0.2.0.json "$STAGE/tools/releases/manifests/"
+# This product's own manifest copy. Jim's
+# tools/releases/manifests/edge-0.2.0.json is neither staged nor read.
+mkdir -p "$STAGE/tools/dev_updater/releases/manifests"
+cp "$REPO"/tools/dev_updater/releases/manifests/edge-0.2.0-dev.json "$STAGE/tools/dev_updater/releases/manifests/"
+
+# The approved release artifact, shipped offline so the updater works on a bench
+# with no internet, staged at the path the manifest names relative to the
+# install root. Only approved releases are staged.
 cp "$REPO"/tools/releases/gw006-edge-ui-0.2.0-code.tar.gz "$STAGE/tools/releases/"
 
 cp "$REPO"/deploy/dev-updater/README.md              "$STAGE/README.md"
 cp "$REPO"/docs/dev-updater-operator-guide.md        "$STAGE/OPERATOR-GUIDE.md"
 cp "$REPO"/deploy/dev-updater/IOTEdgeDevUpdater.cmd  "$STAGE/$APP.cmd"
 cp "$REPO"/deploy/dev-updater/requirements.txt       "$STAGE/requirements.txt"
+# Variable names and descriptions only. The real .env is never built into the
+# MSI; Steve copies his own into %ProgramData% after installing.
+cp "$REPO"/deploy/dev-updater/.env.example           "$STAGE/.env.example"
+
+# A secret reaching the MSI would be shipped to every machine that installs it,
+# so the build refuses rather than trusting the copy list above to stay correct.
+if find "$STAGE" -name ".env" -print -quit | grep -q .; then
+  echo "Refusing to build: a .env file is present in the staged tree." >&2
+  exit 1
+fi
+if grep -rIlE '^[A-Z_]*(PASSWORD|TOKEN|SECRET|PASSPHRASE)[A-Z_]*=.+' "$STAGE" 2>/dev/null | grep -v '\.env\.example$' | grep -q .; then
+  echo "Refusing to build: a populated credential variable is present in the staged tree." >&2
+  exit 1
+fi
+
+# Read the pinned targets out of the staged manifest, so this file can never
+# disagree with what the application will actually deploy.
+DEV_MANIFEST="$STAGE/tools/dev_updater/releases/manifests/edge-0.2.0-dev.json"
+UI_SHA="$(python3 -c "import json;print(json.load(open('$DEV_MANIFEST'))['edge_ui_tag'])")"
+AGENT_SHA="$(python3 -c "import json;print(json.load(open('$DEV_MANIFEST'))['agent_source_commit'])")"
+ARTIFACT_SHA="$(python3 -c "import json;print(json.load(open('$DEV_MANIFEST'))['sha256'])")"
 
 printf '%s\n' \
   "$PRODUCT $VERSION" \
   "Built from commit: $(git -C "$REPO" rev-parse HEAD)" \
   "Branch: $(git -C "$REPO" rev-parse --abbrev-ref HEAD)" \
+  "Edge UI commit:    $UI_SHA (${UI_SHA:0:7}) on release/edge-ui-0.2.0" \
+  "Edge Agent commit: $AGENT_SHA (${AGENT_SHA:0:7}) on release/edge-agent-0.2.0" \
+  "Edge UI artifact SHA-256: $ARTIFACT_SHA" \
   "Development Updater port: 8791" \
   "Legacy Updater port (never used): 8766" \
   > "$STAGE/VERSION.txt"
