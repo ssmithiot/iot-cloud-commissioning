@@ -102,14 +102,14 @@ Pinned commits, resolved from this product's own manifest copy at
 
 | Component | Branch | Commit |
 |---|---|---|
-| Edge UI | `release/edge-ui-0.2.0` | `3246bffd263f2e4a2bfaf033155052caf9a8bba7` |
+| Edge UI | `release/edge-ui-0.2.0` | `0bab9442c4f736312d41bdeab08b3ef2d8141db0` |
 | Edge Agent | `release/edge-agent-0.2.0` | `40133f2a81390db92a01b33a9c02c48a07363a7e` |
 
-The interface shows the seven-character forms — `3246bff` and `40133f2`. The
+The interface shows the seven-character forms — `0bab944` and `40133f2`. The
 full 40-character SHAs are what is used for checkout, validation, deployment and
-logging. There is no `origin/main` target and no moving "latest": the Edge UI
-branch has commits above this one, and the updater deploys the approved commit
-rather than the branch tip.
+logging. There is no `origin/main` target and no moving "latest": the updater
+deploys the approved commit, which is a fixed SHA whether or not the branch
+later moves above it.
 
 The Edge UI artifact `gw006-edge-ui-0.2.0-dev-code.tar.gz` ships inside the MSI
 so the updater works on a bench with no internet, and its SHA-256 is verified

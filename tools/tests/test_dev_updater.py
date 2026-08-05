@@ -449,11 +449,30 @@ def test_13d_the_pinned_artifact_hash_validates():
 
 
 def test_13e_the_approved_targets_are_the_ones_pinned():
-    """The Edge UI target moved to 3246bff; the Agent target did not move."""
-    assert dev.DEFAULT_EDGE_UI_COMMIT == "3246bffd263f2e4a2bfaf033155052caf9a8bba7"
-    assert dev.DEFAULT_EDGE_UI_COMMIT_SHORT == "3246bff"
+    """The Edge UI target moved to 0bab944; the Agent target did not move."""
+    assert dev.DEFAULT_EDGE_UI_COMMIT == "0bab9442c4f736312d41bdeab08b3ef2d8141db0"
+    assert dev.DEFAULT_EDGE_UI_COMMIT_SHORT == "0bab944"
     assert dev.DEFAULT_EDGE_UPDATE_REF == "40133f2a81390db92a01b33a9c02c48a07363a7e"
     assert dev.DEFAULT_EDGE_UPDATE_REF_SHORT == "40133f2"
+
+
+def test_13e2_no_superseded_edge_ui_target_survives_anywhere():
+    """Each retarget leaves the previous SHA behind in a manifest, a document or
+    a staged copy, where it reads as still current. None of them may remain."""
+    superseded = ("cd4c0a5", "3246bff", "760bde8", "02e9746")
+    # Everything an operator or the build reads. Not this file: it has to spell
+    # the retired SHAs out to look for them.
+    searched = (
+        DEV_MANIFEST,
+        DEV_MODULE,
+        REPO_ROOT / "deploy" / "dev-updater" / "README.md",
+        REPO_ROOT / "docs" / "dev-updater-operator-guide.md",
+        REPO_ROOT / "deploy" / "dev-updater" / "build-msi.sh",
+    )
+    for path in searched:
+        text = path.read_text(encoding="utf-8")
+        for old in superseded:
+            assert old not in text, f"{path.name} still names {old}"
 
 
 def test_13f_this_product_ships_its_own_artifact_not_jims():

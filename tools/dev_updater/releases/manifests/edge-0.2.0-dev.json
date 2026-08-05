@@ -1,9 +1,9 @@
 {
   "edge_release": "0.2.0",
   "base_release": "0.1.9",
-  "edge_ui_tag": "3246bffd263f2e4a2bfaf033155052caf9a8bba7",
+  "edge_ui_tag": "0bab9442c4f736312d41bdeab08b3ef2d8141db0",
   "artifact": "tools/dev_updater/releases/gw006-edge-ui-0.2.0-dev-code.tar.gz",
-  "sha256": "7b5d3268ce25f07b610ab58b98df90d95e4f23994b0bffeb46d7479ac1f57b9a",
+  "sha256": "4603aaeb7c5165fe8f54d7fcd97684418896abd4fc9c9a5c4eebde71674930b5",
   "agent_source_commit": "40133f2a81390db92a01b33a9c02c48a07363a7e",
   "local_edge_trends_default_enabled": true,
   "preserves": ["data/", ".env", "start.sh", "gateway identity", "credentials"],
