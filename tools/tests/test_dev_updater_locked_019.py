@@ -95,6 +95,14 @@ def test_cloud_claiming_is_off_unless_the_explicit_switch_is_set(monkeypatch):
     monkeypatch.delenv("IOT_EDGE_DEV_UPDATER_CLAIM_CLOUD_JOBS", raising=False)
     assert "CLAIM_CLOUD_JOBS" in DEV.read_text()
 
+def test_development_audit_log_is_separate_and_redacted(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    log = dev.LiveLog("test", dev.Redactor(["secret-value"]))
+    log.append("UI_SOURCE_COMMIT=abc\npassword=secret-value\n")
+    written = log.audit_path.read_text()
+    assert log.audit_path.parent == tmp_path / "logs"
+    assert "secret-value" not in written and "UI_SOURCE_COMMIT=abc" in written
+
 def test_two_distinct_local_listeners_can_run_together():
     legacy, development = socket.socket(), socket.socket()
     try:

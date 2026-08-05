@@ -314,10 +314,15 @@ class LiveLog:
     def __init__(self, job_id: str, redactor: Redactor) -> None:
         self.job_id = job_id
         self.redactor = redactor
+        identity.log_dir().mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+        self.audit_path = identity.log_dir() / f"{identity.APP_NAME}-{stamp}.log"
 
     def append(self, text: str) -> None:
         safe = self.redactor.redact(text)
         print(safe, end="", flush=True)
+        with self.audit_path.open("a", encoding="utf-8") as audit:
+            audit.write(safe)
         with JOBS_LOCK:
             job = JOBS.get(self.job_id)
             if job is not None:
