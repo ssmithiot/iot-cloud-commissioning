@@ -338,6 +338,7 @@ def load_env_defaults() -> dict[str, str]:
         "IOT_EDGE_DEV_UI_COMMIT": os.environ.get("IOT_EDGE_DEV_UI_COMMIT", ""),
         "IOT_EDGE_DEV_AGENT_COMMIT": os.environ.get("IOT_EDGE_DEV_AGENT_COMMIT", ""),
         "IOT_EDGE_DEV_UPDATER_PORT": os.environ.get("IOT_EDGE_DEV_UPDATER_PORT", ""),
+        "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
     }
     env_path = identity.env_path()
     if not env_path.exists():
@@ -900,8 +901,9 @@ def parse_bool(fields: dict[str, list[str]], key: str) -> bool:
 
 def resolve_requested_commits(fields: dict[str, list[str]]) -> tuple[object, object]:
     """Resolve only explicit immutable object IDs; branch names are rejected."""
-    edge_ui = resolve_commit(EDGE_UI_REPOSITORY, value(fields, "edge_ui_commit") or configured_default("IOT_EDGE_DEV_UI_COMMIT", DEFAULT_EDGE_UI_INPUT))
-    edge_agent = resolve_commit(EDGE_AGENT_REPOSITORY, value(fields, "edge_agent_commit") or configured_default("IOT_EDGE_DEV_AGENT_COMMIT", DEFAULT_EDGE_AGENT_INPUT))
+    token = load_env_defaults()["GITHUB_TOKEN"]
+    edge_ui = resolve_commit(EDGE_UI_REPOSITORY, value(fields, "edge_ui_commit") or configured_default("IOT_EDGE_DEV_UI_COMMIT", DEFAULT_EDGE_UI_INPUT), token=token)
+    edge_agent = resolve_commit(EDGE_AGENT_REPOSITORY, value(fields, "edge_agent_commit") or configured_default("IOT_EDGE_DEV_AGENT_COMMIT", DEFAULT_EDGE_AGENT_INPUT), token=token)
     return edge_ui, edge_agent
 
 
@@ -934,7 +936,7 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
     artifact_sha256 = ""
     if ui_phases_selected(selected_phases):
         try:
-            artifact = materialize_ui_artifact(edge_ui.full_sha)
+            artifact = materialize_ui_artifact(edge_ui.full_sha, token=load_env_defaults()["GITHUB_TOKEN"])
         except UIArtifactError as exc:
             raise ValueError(f"UI artifact creation failed closed: {exc}") from exc
         artifact_path, artifact_sha256 = str(artifact.path), artifact.sha256
@@ -2219,7 +2221,7 @@ class LegacyEdgeUpgradeHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/resolve-commits":
                 edge_ui, edge_agent = resolve_requested_commits(fields)
                 try:
-                    artifact = materialize_ui_artifact(edge_ui.full_sha)
+                    artifact = materialize_ui_artifact(edge_ui.full_sha, token=load_env_defaults()["GITHUB_TOKEN"])
                 except UIArtifactError as exc:
                     raise ValueError(f"UI artifact creation failed closed: {exc}") from exc
                 self.respond_json({"edge_ui": {**edge_ui.__dict__, "short_sha": edge_ui.full_sha[:7], "artifact_filename": artifact.path.name, "artifact_sha256": artifact.sha256}, "edge_agent": edge_agent.__dict__})

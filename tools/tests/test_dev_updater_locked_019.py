@@ -84,6 +84,14 @@ def test_full_and_short_sha_resolution_is_explicit_and_full_length():
     with pytest.raises(CommitResolutionError):
         resolve_commit(EDGE_AGENT_REPOSITORY, "b" * 7, opener=lambda *_args, **_kwargs: Response({"sha": full}))
 
+def test_github_token_is_sent_only_as_an_authorization_header():
+    seen = []
+    def opener(request, **_kwargs):
+        seen.append(request.headers)
+        return Response({"sha": "a" * 40})
+    resolve_commit(EDGE_AGENT_REPOSITORY, "a" * 7, token="token-for-test", opener=opener)
+    assert seen[0]["Authorization"] == "Bearer token-for-test"
+
 def test_final_execution_requires_reviewed_resolved_commits(monkeypatch):
     resolved = type("Resolved", (), {"full_sha": "a" * 40})()
     monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields: (resolved, resolved))
@@ -173,7 +181,7 @@ def test_ui_only_materializes_the_resolved_ui_artifact_and_agent_only_does_not(m
     artifact = type("Artifact", (), {"path": tmp_path / "ui.tar.gz", "sha256": "c" * 64})()
     calls = []
     monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields: (resolved_ui, resolved_agent))
-    monkeypatch.setattr(dev, "materialize_ui_artifact", lambda sha: calls.append(sha) or artifact)
+    monkeypatch.setattr(dev, "materialize_ui_artifact", lambda sha, **_kwargs: calls.append(sha) or artifact)
     base = b"gateway_id=GW1&cloud_url=https%3A%2F%2Fexample.test&admin_api_token=x&cradlepoint_host=10.0.0.1&cradlepoint_password=x&gateway_password=x&ui_password=x"
     ui_request = dev.parse_upgrade_request(base + b"&selected_phases=1")
     assert calls == ["a" * 40] and ui_request.ui_artifact_sha256 == "c" * 64

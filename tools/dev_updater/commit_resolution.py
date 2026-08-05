@@ -19,17 +19,32 @@ class ResolvedCommit:
     entered_ref: str
     full_sha: str
 
-def resolve_commit(repository: str, entered_ref: str, *, opener=request.urlopen) -> ResolvedCommit:
+def resolve_commit(repository: str, entered_ref: str, *, token: str = "", opener=request.urlopen) -> ResolvedCommit:
     """Resolve a full or unambiguous abbreviated object ID through GitHub."""
     ref = entered_ref.strip()
     if not SHA_PATTERN.fullmatch(ref):
         raise CommitResolutionError("Enter a full 40-character SHA or an unambiguous SHA prefix of at least 7 hexadecimal characters.")
     url = f"https://api.github.com/repos/{repository}/commits/{parse.quote(ref, safe='')}"
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     try:
-        with opener(request.Request(url, headers={"Accept": "application/vnd.github+json"}), timeout=15) as response:
+        with opener(request.Request(url, headers=headers), timeout=15) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except (error.HTTPError, error.URLError, TimeoutError, ValueError) as exc:
-        raise CommitResolutionError(f"Cannot resolve {ref} in {repository}; it is invalid, unavailable, or ambiguous.") from exc
+    except error.HTTPError as exc:
+        if exc.code == 401:
+            raise CommitResolutionError("GitHub authentication unavailable: set GITHUB_TOKEN in the Development Updater .env.") from exc
+        if exc.code == 403:
+            raise CommitResolutionError(f"GitHub repository inaccessible: token lacks access to {repository}.") from exc
+        if exc.code == 404:
+            if token:
+                raise CommitResolutionError(f"GitHub commit nonexistent in {repository}: {ref}.") from exc
+            raise CommitResolutionError(f"GitHub repository inaccessible: set GITHUB_TOKEN to access {repository}.") from exc
+        if exc.code == 422 and len(ref) < 40:
+            raise CommitResolutionError(f"GitHub short SHA ambiguous or nonexistent in {repository}: {ref}.") from exc
+        raise CommitResolutionError(f"GitHub commit nonexistent in {repository}: {ref}.") from exc
+    except (error.URLError, TimeoutError, ValueError) as exc:
+        raise CommitResolutionError(f"GitHub authentication or network unavailable while resolving {ref} in {repository}.") from exc
     full_sha = str(payload.get("sha", ""))
     if not re.fullmatch(r"[0-9a-f]{40}", full_sha) or not full_sha.startswith(ref.lower()):
         raise CommitResolutionError(f"Cannot resolve {ref} unambiguously in {repository}.")
