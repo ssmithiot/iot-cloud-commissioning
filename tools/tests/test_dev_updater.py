@@ -448,6 +448,30 @@ def test_13d_the_pinned_artifact_hash_validates():
     assert json.loads(DEV_MANIFEST.read_text(encoding="utf-8"))["sha256"] in status
 
 
+def test_13e_the_approved_targets_are_the_ones_pinned():
+    """The Edge UI target moved to 3246bff; the Agent target did not move."""
+    assert dev.DEFAULT_EDGE_UI_COMMIT == "3246bffd263f2e4a2bfaf033155052caf9a8bba7"
+    assert dev.DEFAULT_EDGE_UI_COMMIT_SHORT == "3246bff"
+    assert dev.DEFAULT_EDGE_UPDATE_REF == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+    assert dev.DEFAULT_EDGE_UPDATE_REF_SHORT == "40133f2"
+
+
+def test_13f_this_product_ships_its_own_artifact_not_jims():
+    """Both manifests once named the same tarball. Retargeting the Edge UI
+    commit means rebuilding it -- which would have broken the checksum in Jim's
+    manifest -- so this product now builds and ships its own."""
+    dev_manifest = json.loads(DEV_MANIFEST.read_text(encoding="utf-8"))
+    legacy_manifest = json.loads(LEGACY_MANIFEST.read_text(encoding="utf-8"))
+
+    assert dev_manifest["artifact"] != legacy_manifest["artifact"]
+    assert dev_manifest["sha256"] != legacy_manifest["sha256"]
+    assert dev_manifest["artifact"].startswith("tools/dev_updater/releases/")
+    assert (REPO_ROOT / dev_manifest["artifact"]).is_file()
+    # Jim's artifact still matches the checksum his manifest declares.
+    legacy_artifact = REPO_ROOT / legacy_manifest["artifact"]
+    assert hashlib.sha256(legacy_artifact.read_bytes()).hexdigest() == legacy_manifest["sha256"]
+
+
 # --- 16, 17: the MSI ---------------------------------------------------------
 
 

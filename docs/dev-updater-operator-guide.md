@@ -70,7 +70,7 @@ You can still tick individual phases for a targeted rerun.
 
 Shown at the top of the page:
 
-* Edge UI `cd4c0a5` on `release/edge-ui-0.2.0`
+* Edge UI `3246bff` on `release/edge-ui-0.2.0`
 * Edge Agent `40133f2` on `release/edge-agent-0.2.0`
 
 Those are the short forms of pinned commits. The full 40-character SHAs are what

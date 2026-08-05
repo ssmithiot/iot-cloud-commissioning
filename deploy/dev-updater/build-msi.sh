@@ -37,7 +37,7 @@ command -v wixl-heat >/dev/null || { echo "wixl-heat not found. Install msitools
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 STAGE="$WORK/stage"
-mkdir -p "$STAGE/tools/dev_updater" "$STAGE/tools/releases/manifests" "$OUT_DIR"
+mkdir -p "$STAGE/tools/dev_updater" "$OUT_DIR"
 
 echo "==> Staging $PRODUCT $VERSION"
 
@@ -60,8 +60,12 @@ cp "$REPO"/tools/dev_updater/releases/manifests/edge-0.2.0-dev.json "$STAGE/tool
 
 # The approved release artifact, shipped offline so the updater works on a bench
 # with no internet, staged at the path the manifest names relative to the
-# install root. Only approved releases are staged.
-cp "$REPO"/tools/releases/gw006-edge-ui-0.2.0-code.tar.gz "$STAGE/tools/releases/"
+# install root. This is this product's own build of its own pinned Edge UI
+# commit: Jim's tools/releases/gw006-edge-ui-0.2.0-code.tar.gz is a different
+# commit, is named by his manifest's checksum, and is neither staged nor
+# rebuilt here.
+mkdir -p "$STAGE/tools/dev_updater/releases"
+cp "$REPO"/tools/dev_updater/releases/gw006-edge-ui-0.2.0-dev-code.tar.gz "$STAGE/tools/dev_updater/releases/"
 
 cp "$REPO"/deploy/dev-updater/README.md              "$STAGE/README.md"
 cp "$REPO"/docs/dev-updater-operator-guide.md        "$STAGE/OPERATOR-GUIDE.md"
