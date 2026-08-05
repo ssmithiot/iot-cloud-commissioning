@@ -4,6 +4,8 @@ import ast
 import hashlib
 import json
 import socket
+import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,7 @@ from tools.dev_updater.commit_resolution import (
     EDGE_AGENT_REPOSITORY,
     resolve_commit,
 )
+from tools.dev_updater import ui_artifact
 
 ROOT = Path(__file__).resolve().parents[2]
 LEGACY = ROOT / "tools/legacy_edge_upgrade_webapp.py"
@@ -100,3 +103,60 @@ def test_two_distinct_local_listeners_can_run_together():
         assert legacy.getsockname()[1] != development.getsockname()[1]
     finally:
         legacy.close(); development.close()
+
+def ui_checkout(root: Path, *, include_required: bool = True) -> tuple[Path, str]:
+    root.mkdir(); subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.test"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+    names = ui_artifact.REQUIRED_FILES if include_required else ui_artifact.REQUIRED_FILES[:-1]
+    for name in names:
+        (root / name).write_text(name)
+    for directory in ui_artifact.REQUIRED_DIRS:
+        (root / directory).mkdir(); (root / directory / "asset.txt").write_text(directory)
+    (root / ".env").write_text("SECRET=value")
+    (root / "tests").mkdir(); (root / "tests" / "bad.py").write_text("bad")
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
+    return root, subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+
+def test_ui_artifact_is_built_from_the_exact_clean_commit_and_is_allowlisted(tmp_path):
+    source, commit = ui_checkout(tmp_path / "source")
+    built = ui_artifact.build_from_checkout(source, commit, tmp_path / "artifact.tar.gz")
+    assert built.commit == commit and built.sha256 == ui_artifact.sha256(built.path)
+    ui_artifact.verify_contents(built.path)
+    with tarfile.open(built.path, "r:gz") as archive:
+        names = archive.getnames()
+    assert ".env" not in names and not any(name.startswith("tests/") for name in names)
+
+def test_ui_artifact_rejects_missing_runtime_file_and_hash_tampering(tmp_path):
+    source, commit = ui_checkout(tmp_path / "source", include_required=False)
+    with pytest.raises(ui_artifact.UIArtifactError, match="missing"):
+        ui_artifact.build_from_checkout(source, commit, tmp_path / "bad.tar.gz")
+    source, commit = ui_checkout(tmp_path / "source2")
+    built = ui_artifact.build_from_checkout(source, commit, tmp_path / "good.tar.gz")
+    built.path.write_bytes(b"not a tarball")
+    with pytest.raises((ui_artifact.UIArtifactError, tarfile.ReadError)):
+        ui_artifact.verify_contents(built.path)
+
+def test_two_ui_commits_produce_commit_bound_artifacts(tmp_path):
+    source, first = ui_checkout(tmp_path / "source")
+    one = ui_artifact.build_from_checkout(source, first, tmp_path / "one.tar.gz")
+    (source / "app.py").write_text("second commit")
+    subprocess.run(["git", "-C", str(source), "commit", "-am", "second", "-q"], check=True)
+    second = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    two = ui_artifact.build_from_checkout(source, second, tmp_path / "two.tar.gz")
+    assert one.commit != two.commit and one.sha256 != two.sha256
+
+def test_ui_only_materializes_the_resolved_ui_artifact_and_agent_only_does_not(monkeypatch, tmp_path):
+    resolved_ui = type("Resolved", (), {"full_sha": "a" * 40})()
+    resolved_agent = type("Resolved", (), {"full_sha": "b" * 40})()
+    artifact = type("Artifact", (), {"path": tmp_path / "ui.tar.gz", "sha256": "c" * 64})()
+    calls = []
+    monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields: (resolved_ui, resolved_agent))
+    monkeypatch.setattr(dev, "materialize_ui_artifact", lambda sha: calls.append(sha) or artifact)
+    base = b"gateway_id=GW1&cloud_url=https%3A%2F%2Fexample.test&admin_api_token=x&cradlepoint_host=10.0.0.1&cradlepoint_password=x&gateway_password=x&ui_password=x"
+    ui_request = dev.parse_upgrade_request(base + b"&selected_phases=1")
+    assert calls == ["a" * 40] and ui_request.ui_artifact_sha256 == "c" * 64
+    calls.clear()
+    agent_request = dev.parse_upgrade_request(base + b"&selected_phases=7")
+    assert calls == [] and agent_request.ui_artifact_path == ""

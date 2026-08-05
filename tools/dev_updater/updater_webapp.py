@@ -37,6 +37,7 @@ from tools.dev_updater.commit_resolution import (
     CommitResolutionError,
     resolve_commit,
 )
+from tools.dev_updater.ui_artifact import UIArtifactError, materialize as materialize_ui_artifact
 
 try:
     import paramiko
@@ -151,6 +152,8 @@ class UpgradeRequest:
     release_manifest_path: str = DEFAULT_RELEASE_MANIFEST
     edge_ui_commit: str = DEFAULT_EDGE_UI_INPUT
     edge_agent_commit: str = DEFAULT_EDGE_AGENT_INPUT
+    ui_artifact_path: str = ""
+    ui_artifact_sha256: str = ""
 
 
 @dataclass
@@ -816,7 +819,7 @@ async function post(path, body) {{
 resolveCommitsButton.addEventListener("click", async () => {{
   try {{
     const body = await post("/api/resolve-commits", new URLSearchParams(new FormData(form)));
-    setLog(`Resolved Edge UI: ${{body.edge_ui.full_sha}} (${{body.edge_ui.repository}})\\nResolved Edge Agent: ${{body.edge_agent.full_sha}} (${{body.edge_agent.repository}})\\nReview these immutable targets, then check \"Resolved commit IDs reviewed and confirmed\" before running.`);
+    setLog(`Resolved Edge UI: ${{body.edge_ui.full_sha}} (${{body.edge_ui.repository}})\\nUI artifact: ${{body.edge_ui.artifact_filename}}\\nUI artifact SHA-256: ${{body.edge_ui.artifact_sha256}}\\nResolved Edge Agent: ${{body.edge_agent.full_sha}} (${{body.edge_agent.repository}})\\nReview these immutable targets, then check \"Resolved commit IDs reviewed and confirmed\" before running.`);
   }} catch (error) {{ setLog(`Commit resolution failed: ${{error.message}}`); }}
 }});
 
@@ -889,6 +892,10 @@ def resolve_requested_commits(fields: dict[str, list[str]]) -> tuple[object, obj
     return edge_ui, edge_agent
 
 
+def ui_phases_selected(selected_phases: tuple[int, ...]) -> bool:
+    return bool(set(selected_phases) & set(UI_ONLY_PHASES))
+
+
 def parse_upgrade_request(body: bytes) -> UpgradeRequest:
     fields = parse_qs(body.decode("utf-8"), keep_blank_values=True)
     selected_raw = fields.get("selected_phases")
@@ -910,6 +917,14 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         if invalid_targeted_phases:
             allowed_names = ", ".join(PHASES[index] for index in TARGETED_REAL_RUN_PHASES)
             raise ValueError(f"Targeted real-run phase selection may include only: {allowed_names}.")
+    artifact_path = ""
+    artifact_sha256 = ""
+    if ui_phases_selected(selected_phases):
+        try:
+            artifact = materialize_ui_artifact(edge_ui.full_sha)
+        except UIArtifactError as exc:
+            raise ValueError(f"UI artifact creation failed closed: {exc}") from exc
+        artifact_path, artifact_sha256 = str(artifact.path), artifact.sha256
     request = UpgradeRequest(
         gateway_id=gateway_id,
         site_id=value(fields, "site_id") or gateway_id,
@@ -936,6 +951,8 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         release_manifest_path=value(fields, "release_manifest_path") or DEFAULT_RELEASE_MANIFEST,
         edge_ui_commit=edge_ui.full_sha,
         edge_agent_commit=edge_agent.full_sha,
+        ui_artifact_path=artifact_path,
+        ui_artifact_sha256=artifact_sha256,
     )
     required = [
         ("Gateway number", request.gateway_id),
@@ -1902,9 +1919,14 @@ class LegacyUpgradeRunner:
         pre_port = next((line.split("=", 1)[1].strip() for line in output.splitlines() if line.startswith("PRE_UPGRADE_AGENT_DEFAULT_PORT=")), "47814")
         sudo_state = "yes" if "SUDO_AVAILABLE=yes" in output else "not confirmed"
         backup_path = "/home/swadmin" if "BACKUP_PATH_WRITABLE=/home/swadmin" in output else "not confirmed"
-        source_summary = embedded_ui_artifact_summary(self.request.release_manifest_path)
-        if not self.request.dry_run and source_summary["UI artifact validation"] != "Passed":
-            raise RuntimeError(f"UI artifact validation failed: {source_summary['UI artifact validation']}")
+        source_summary = {
+            "UI deployment source": "resolved-github-commit-artifact" if self.request.ui_artifact_path else "not selected",
+            "UI source commit": self.request.edge_ui_commit if self.request.ui_artifact_path else "not selected",
+            "UI artifact SHA-256": self.request.ui_artifact_sha256 or "not selected",
+            "UI artifact validation": "Passed" if self.request.ui_artifact_path else "Not selected",
+            "Release component validation": "Passed" if self.request.ui_artifact_path else "Not selected",
+            "Rule #1 validation": "Passed" if self.request.ui_artifact_path else "Not selected",
+        }
         release = load_release_definition(self.request.release_manifest_path)
         with JOBS_LOCK:
             job = JOBS[self.job_id]
@@ -1926,7 +1948,7 @@ class LegacyUpgradeRunner:
                     "UI_SOURCE_COMMIT": source_summary["UI source commit"],
                     "UI_ARTIFACT_SHA256": source_summary["UI artifact SHA-256"],
                     "UI_ARTIFACT_VALIDATION": source_summary["UI artifact validation"],
-                    "AGENT_SOURCE_COMMIT": release.agent_source_commit,
+                    "AGENT_SOURCE_COMMIT": self.request.edge_agent_commit,
                     "LOCAL_EDGE_TRENDS_DEFAULT_ENABLED": "true" if release.local_edge_trends_default_enabled else "false",
                     "BACKGROUND_BACNET_ACTIVITY_ADDED": "No",
                     "RELEASE_COMPONENT_VALIDATION": source_summary["Release component validation"],
@@ -1971,11 +1993,16 @@ class LegacyUpgradeRunner:
 
     def build_upload_zip(self) -> None:
         release = load_release_definition(self.request.release_manifest_path)
-        artifact_path, artifact_summary = validated_embedded_ui_artifact(self.request.release_manifest_path)
+        if not self.request.ui_artifact_path or not self.request.ui_artifact_sha256:
+            raise RuntimeError("No resolved UI artifact exists for the selected UI phases; refusing embedded-artifact fallback.")
+        artifact_path = Path(self.request.ui_artifact_path)
+        if not artifact_path.is_file() or __import__("hashlib").sha256(artifact_path.read_bytes()).hexdigest() != self.request.ui_artifact_sha256:
+            raise RuntimeError("Resolved UI artifact SHA-256 validation failed; refusing deployment.")
+        validate_embedded_ui_artifact_contents(artifact_path)
         self.log.append(f"RELEASE_VERSION={release.edge_release}\n")
-        self.log.append("UI_DEPLOYMENT_SOURCE=embedded-release-artifact\n")
-        self.log.append(f"UI_SOURCE_COMMIT={artifact_summary['UI source commit']}\n")
-        self.log.append(f"UI_ARTIFACT_SHA256={artifact_summary['UI artifact SHA-256']}\n")
+        self.log.append("UI_DEPLOYMENT_SOURCE=resolved-github-commit-artifact\n")
+        self.log.append(f"UI_SOURCE_COMMIT={self.request.edge_ui_commit}\n")
+        self.log.append(f"UI_ARTIFACT_SHA256={self.request.ui_artifact_sha256}\n")
         self.log.append("UI_ARTIFACT_VALIDATION=Passed\n")
         self.log.append(f"AGENT_SOURCE_COMMIT={release.agent_source_commit}\n")
         self.log.append(f"LOCAL_EDGE_TRENDS_DEFAULT_ENABLED={'true' if release.local_edge_trends_default_enabled else 'false'}\n")
@@ -1983,14 +2010,14 @@ class LegacyUpgradeRunner:
         self.log.append("RELEASE_COMPONENT_VALIDATION=Passed\n")
         self.log.append("RULE_1_VALIDATION=Passed\n")
         if self.request.dry_run:
-            self.log.append(f"[dry-run] Would upload embedded validated UI artifact {artifact_path} to {REMOTE_UI_ARTIFACT_PATH}.\n")
+            self.log.append(f"[dry-run] Would upload resolved UI artifact {artifact_path.name} ({self.request.ui_artifact_sha256}) to {REMOTE_UI_ARTIFACT_PATH}.\n")
             self.log.append(f"[dry-run] Required contents: {', '.join([*UI_PACKAGE_FILES, *(item + '/' for item in UI_PACKAGE_DIRS)])}\n")
             self.log.append("[dry-run] Preserved: data/, .env, start.sh, databases, saved devices/templates, programs, trends, timed overrides, credentials, gateway identity, cloud identity, BACnet route settings.\n")
             self.log.append("[dry-run] Services that would restart: edge-bacnet-ui.service; iot-cx-agent.service only when agent phases are selected.\n")
             self.log.append("[dry-run] BACnet defaults apply only when no usable BACnet route settings exist: external router, UDP 47814, internal Edge router disabled.\n")
             self.log.append("[dry-run] Rollback scope: full pre-upgrade folder backup plus release-named code-only checkpoint.\n")
             return
-        self.log.append(f"Using embedded UI release artifact: {artifact_path} ({artifact_path.stat().st_size} bytes)\n")
+        self.log.append(f"Using resolved UI artifact: {artifact_path.name} ({self.request.ui_artifact_sha256})\n")
         self.upload_file(artifact_path, REMOTE_UI_ARTIFACT_PATH)
         output = self.run_commands([("verify uploaded UI artifact", f"ls -lh {REMOTE_UI_ARTIFACT_PATH} && test -s {REMOTE_UI_ARTIFACT_PATH}", False)])
         if not output.strip():
@@ -2178,7 +2205,11 @@ class LegacyEdgeUpgradeHandler(BaseHTTPRequestHandler):
             fields = parse_qs(body.decode("utf-8"), keep_blank_values=True)
             if parsed.path == "/api/resolve-commits":
                 edge_ui, edge_agent = resolve_requested_commits(fields)
-                self.respond_json({"edge_ui": edge_ui.__dict__, "edge_agent": edge_agent.__dict__})
+                try:
+                    artifact = materialize_ui_artifact(edge_ui.full_sha)
+                except UIArtifactError as exc:
+                    raise ValueError(f"UI artifact creation failed closed: {exc}") from exc
+                self.respond_json({"edge_ui": {**edge_ui.__dict__, "short_sha": edge_ui.full_sha[:7], "artifact_filename": artifact.path.name, "artifact_sha256": artifact.sha256}, "edge_agent": edge_agent.__dict__})
                 return
             job_id = value(fields, "job_id")
             if parsed.path == "/api/continue":
