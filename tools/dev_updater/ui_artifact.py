@@ -73,6 +73,11 @@ def build_from_checkout(source: Path, commit: str, output: Path) -> UIArtifact:
         import gzip
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as zipped:
             with tarfile.open(fileobj=zipped, mode="w", format=tarfile.GNU_FORMAT) as archive:
+                directories = sorted({parent.as_posix() for relative in selected for parent in relative.parents if parent.as_posix() != "."})
+                for directory in directories:
+                    info = tarfile.TarInfo(directory)
+                    info.type = tarfile.DIRTYPE; info.mode = 0o755; info.uid = info.gid = 0; info.uname = info.gname = ""; info.mtime = 0
+                    archive.addfile(info)
                 for relative in selected:
                     info = archive.gettarinfo(source / relative, arcname=relative.as_posix())
                     info.uid = info.gid = 0; info.uname = info.gname = ""; info.mtime = 0

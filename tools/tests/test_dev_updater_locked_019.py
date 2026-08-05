@@ -124,6 +124,7 @@ def test_ui_artifact_is_built_from_the_exact_clean_commit_and_is_allowlisted(tmp
     built = ui_artifact.build_from_checkout(source, commit, tmp_path / "artifact.tar.gz")
     assert built.commit == commit and built.sha256 == ui_artifact.sha256(built.path)
     ui_artifact.verify_contents(built.path)
+    dev.validate_embedded_ui_artifact_contents(built.path)
     with tarfile.open(built.path, "r:gz") as archive:
         names = archive.getnames()
     assert ".env" not in names and not any(name.startswith("tests/") for name in names)
