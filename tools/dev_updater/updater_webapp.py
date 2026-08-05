@@ -335,6 +335,9 @@ def load_env_defaults() -> dict[str, str]:
         "CRADLEPOINT_PASSWORD": os.environ.get("CRADLEPOINT_PASSWORD", ""),
         "GATEWAY_PASSWORD": os.environ.get("GATEWAY_PASSWORD", ""),
         "EDGE_UI_PASSWORD": os.environ.get("EDGE_UI_PASSWORD", ""),
+        "IOT_EDGE_DEV_UI_COMMIT": os.environ.get("IOT_EDGE_DEV_UI_COMMIT", ""),
+        "IOT_EDGE_DEV_AGENT_COMMIT": os.environ.get("IOT_EDGE_DEV_AGENT_COMMIT", ""),
+        "IOT_EDGE_DEV_UPDATER_PORT": os.environ.get("IOT_EDGE_DEV_UPDATER_PORT", ""),
     }
     env_path = identity.env_path()
     if not env_path.exists():
@@ -348,6 +351,11 @@ def load_env_defaults() -> dict[str, str]:
         if key in defaults:
             defaults[key] = raw_value.strip().strip('"').strip("'")
     return defaults
+
+
+def configured_default(name: str, built_in: str) -> str:
+    """Read an optional Development Updater default without changing field editability."""
+    return load_env_defaults().get(name, "").strip() or built_in
 
 
 def cloud_json_request(
@@ -688,11 +696,11 @@ def form_page(message: str = "") -> bytes:
     <input type="password" name="gateway_password" value="{gw_password}" autocomplete="off" required>
   </label>
   <label>Edge UI Git commit
-    <input name="edge_ui_commit" value="{DEFAULT_EDGE_UI_INPUT}" pattern="[0-9A-Fa-f]{{7,40}}" required>
+    <input name="edge_ui_commit" value="{configured_default('IOT_EDGE_DEV_UI_COMMIT', DEFAULT_EDGE_UI_INPUT)[:7]}" pattern="[0-9A-Fa-f]{{7,40}}" required>
     <span class="hint">{EDGE_UI_REPOSITORY}; enter a full SHA or unambiguous 7+ character prefix.</span>
   </label>
   <label>Edge Agent Git commit
-    <input name="edge_agent_commit" value="{DEFAULT_EDGE_AGENT_INPUT}" pattern="[0-9A-Fa-f]{{7,40}}" required>
+    <input name="edge_agent_commit" value="{configured_default('IOT_EDGE_DEV_AGENT_COMMIT', DEFAULT_EDGE_AGENT_INPUT)[:7]}" pattern="[0-9A-Fa-f]{{7,40}}" required>
     <span class="hint">{EDGE_AGENT_REPOSITORY}; resolved full SHA is required before execution.</span>
   </label>
   <label>Git ref
@@ -892,8 +900,8 @@ def parse_bool(fields: dict[str, list[str]], key: str) -> bool:
 
 def resolve_requested_commits(fields: dict[str, list[str]]) -> tuple[object, object]:
     """Resolve only explicit immutable object IDs; branch names are rejected."""
-    edge_ui = resolve_commit(EDGE_UI_REPOSITORY, value(fields, "edge_ui_commit") or DEFAULT_EDGE_UI_INPUT)
-    edge_agent = resolve_commit(EDGE_AGENT_REPOSITORY, value(fields, "edge_agent_commit") or DEFAULT_EDGE_AGENT_INPUT)
+    edge_ui = resolve_commit(EDGE_UI_REPOSITORY, value(fields, "edge_ui_commit") or configured_default("IOT_EDGE_DEV_UI_COMMIT", DEFAULT_EDGE_UI_INPUT))
+    edge_agent = resolve_commit(EDGE_AGENT_REPOSITORY, value(fields, "edge_agent_commit") or configured_default("IOT_EDGE_DEV_AGENT_COMMIT", DEFAULT_EDGE_AGENT_INPUT))
     return edge_ui, edge_agent
 
 
@@ -2283,7 +2291,7 @@ def run_server(port: int) -> BaseServer:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=f"{identity.PRODUCT_NAME} manual checkpoint webapp.")
-    parser.add_argument("--port", type=int, default=int(os.environ.get(identity.PORT_ENV_VAR, DEFAULT_PORT)))
+    parser.add_argument("--port", type=int, default=int(configured_default("IOT_EDGE_DEV_UPDATER_PORT", str(DEFAULT_PORT))))
     args = parser.parse_args()
     try:
         server = run_server(args.port)

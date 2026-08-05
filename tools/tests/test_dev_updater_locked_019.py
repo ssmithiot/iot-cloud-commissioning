@@ -103,6 +103,17 @@ def test_development_audit_log_is_separate_and_redacted(tmp_path, monkeypatch):
     assert log.audit_path.parent == tmp_path / "logs"
     assert "secret-value" not in written and "UI_SOURCE_COMMIT=abc" in written
 
+def test_development_env_commit_and_port_defaults_are_loaded_and_shown_short(tmp_path, monkeypatch):
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
+    ui_sha, agent_sha = "a" * 40, "b" * 40
+    (tmp_path / ".env").write_text(
+        f"IOT_EDGE_DEV_UI_COMMIT={ui_sha}\nIOT_EDGE_DEV_AGENT_COMMIT={agent_sha}\nIOT_EDGE_DEV_UPDATER_PORT=8791\n"
+    )
+    page = dev.form_page().decode()
+    assert f'name="edge_ui_commit" value="{ui_sha[:7]}"' in page
+    assert f'name="edge_agent_commit" value="{agent_sha[:7]}"' in page
+    assert dev.configured_default("IOT_EDGE_DEV_UPDATER_PORT", "8791") == "8791"
+
 def test_two_distinct_local_listeners_can_run_together():
     legacy, development = socket.socket(), socket.socket()
     try:
