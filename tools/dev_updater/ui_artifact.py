@@ -99,6 +99,25 @@ def _cached(commit: str, root: Path) -> UIArtifact | None:
     except (OSError, ValueError, UIArtifactError): return None
     return UIArtifact(EDGE_UI_REPOSITORY, commit, artifact, record["sha256"])
 
+def git_askpass_environment(token: str, temporary: Path) -> dict[str, str]:
+    """Return isolated smart-HTTP PAT credentials without URL or argv leakage."""
+    environment = os.environ.copy()
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    if not token:
+        return environment
+    helper = temporary / ("git-askpass.cmd" if os.name == "nt" else "git-askpass.sh")
+    if os.name == "nt":
+        helper.write_text("@echo off\r\nsetlocal DisableDelayedExpansion\r\necho %~1 | findstr /I \"username\" >nul && (echo x-access-token) || (echo %IOT_EDGE_DEV_GIT_TOKEN%)\r\n", encoding="utf-8")
+    else:
+        helper.write_text("#!/bin/sh\ncase \"$1\" in *Username*|*username*) printf '%s\\n' x-access-token ;; *) printf '%s\\n' \"$IOT_EDGE_DEV_GIT_TOKEN\" ;; esac\n", encoding="utf-8")
+        helper.chmod(0o700)
+    environment.update({"GIT_ASKPASS": str(helper), "GIT_ASKPASS_REQUIRE": "force", "IOT_EDGE_DEV_GIT_TOKEN": token})
+    return environment
+
+def _safe_git_error(exc: BaseException, token: str) -> str:
+    detail = getattr(exc, "stderr", "") or str(exc)
+    return str(detail).replace(token, "[redacted]").strip()[:1000]
+
 def materialize(commit: str, *, root: Path | None = None, token: str = "") -> UIArtifact:
     """Use a verified full-SHA cache or clone a fresh detached checkout."""
     if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
@@ -108,13 +127,11 @@ def materialize(commit: str, *, root: Path | None = None, token: str = "") -> UI
     with tempfile.TemporaryDirectory(prefix="iot-edge-ui-") as temporary:
         checkout = Path(temporary) / "source"
         try:
-            environment = os.environ.copy()
-            if token:
-                environment.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader", "GIT_CONFIG_VALUE_0": f"Authorization: Bearer {token}"})
+            environment = git_askpass_environment(token, Path(temporary))
             subprocess.run(["git", "clone", "--no-checkout", "--filter=blob:none", REPOSITORY_URL, str(checkout)], check=True, capture_output=True, text=True, env=environment)
             subprocess.run(["git", "-C", str(checkout), "checkout", "--detach", commit], check=True, capture_output=True, text=True, env=environment)
         except (OSError, subprocess.CalledProcessError) as exc:
-            detail = str(exc).replace(token, "[redacted]") if token else str(exc)
+            detail = _safe_git_error(exc, token)
             raise UIArtifactError(f"could not materialize UI commit {commit}: {detail}") from exc
         artifact = root / f"edge-ui-{commit}.tar.gz"
         built = build_from_checkout(checkout, commit, artifact)

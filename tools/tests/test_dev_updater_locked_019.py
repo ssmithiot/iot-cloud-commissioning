@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import socket
 import subprocess
 import tarfile
@@ -91,6 +92,22 @@ def test_github_token_is_sent_only_as_an_authorization_header():
         return Response({"sha": "a" * 40})
     resolve_commit(EDGE_AGENT_REPOSITORY, "a" * 7, token="token-for-test", opener=opener)
     assert seen[0]["Authorization"] == "Bearer token-for-test"
+
+def test_git_askpass_uses_pat_basic_credentials_without_token_leakage(tmp_path):
+    token = "private-token-for-test"
+    environment = ui_artifact.git_askpass_environment(token, tmp_path)
+    helper = Path(environment["GIT_ASKPASS"])
+    assert helper.exists() and environment["GIT_TERMINAL_PROMPT"] == "0"
+    assert token not in helper.read_text()
+    assert token not in " ".join(["git", "clone", "--no-checkout", ui_artifact.REPOSITORY_URL])
+    assert subprocess.check_output([str(helper), "Username for 'https://github.com':"], text=True, env=environment).strip() == "x-access-token"
+    assert subprocess.check_output([str(helper), "Password for 'https://x-access-token@github.com':"], text=True, env=environment).strip() == token
+    assert ui_artifact._safe_git_error(RuntimeError(f"clone failed {token}"), token) == "clone failed [redacted]"
+
+@pytest.mark.skipif(not os.environ.get("GITHUB_TOKEN"), reason="private GitHub integration token not available on this build host")
+def test_private_edge_ui_commit_clones_and_checks_out_with_pat(tmp_path):
+    artifact = ui_artifact.materialize("0bab9442c4f736312d41bdeab08b3ef2d8141db0", root=tmp_path, token=os.environ["GITHUB_TOKEN"])
+    assert artifact.commit == "0bab9442c4f736312d41bdeab08b3ef2d8141db0"
 
 def test_final_execution_requires_reviewed_resolved_commits(monkeypatch):
     resolved = type("Resolved", (), {"full_sha": "a" * 40})()
