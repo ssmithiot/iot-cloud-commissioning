@@ -1557,21 +1557,11 @@ APP_SCRIPT = r"""
     }
     const agent = versionAtLeast(gateway.agent_version, edgeAgentReleaseVersion);
     const ui = versionAtLeast(gateway.ui_version, edgeUiReleaseVersion);
-    let reason = "Up to date";
-    if (!agent.current || !ui.current) {
-      if (!agent.known || !ui.known) {
-        reason = "Update required";
-      } else if (!agent.current && !ui.current) {
-        reason = "Full update required";
-      } else if (!ui.current) {
-        reason = "UI update required";
-      } else {
-        reason = "Agent update required";
-      }
-    }
+    const current = agent.current && ui.current;
+    const reason = current ? edgeUiReleaseVersion : "Update Needed";
     return {
       reason,
-      updateRequired: reason !== "Up to date",
+      updateRequired: !current,
       requiredAgentVersion: edgeAgentReleaseVersion,
       requiredUiVersion: edgeUiReleaseVersion
     };

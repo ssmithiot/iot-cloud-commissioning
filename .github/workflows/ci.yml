@@ -38,6 +38,10 @@ jobs:
           pip install -r cloud-api/requirements.txt -r edge-agent/requirements.txt
 
       - name: Cloud API tests
+        env:
+          EDGE_RELEASE_VERSION: "0.2.0"
+          EDGE_UI_RELEASE_COMMIT: "2adae3adeb339806330db0e481cba3179fff2ff1"
+          EDGE_AGENT_RELEASE_COMMIT: "40133f2a81390db92a01b33a9c02c48a07363a7e"
         run: |
           python -m pytest cloud-api/tests -q \
             --deselect "cloud-api/tests/test_api.py::test_gateway_workspace_contains_discovery_progress_ui"
