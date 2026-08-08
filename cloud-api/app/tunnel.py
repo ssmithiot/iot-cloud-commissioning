@@ -134,6 +134,17 @@ class TunnelManager:
     def active_count(self) -> int:
         return len(self._tunnels)
 
+    async def close_gateway(self, gateway_id: str, *, code: int = 1000) -> bool:
+        tunnel = self._tunnels.pop(gateway_id, None)
+        if tunnel is None:
+            return False
+        tunnel.fail_pending()
+        try:
+            await tunnel.websocket.close(code=code)
+        except RuntimeError:
+            pass
+        return True
+
 
 class TunnelSessionManager:
     def __init__(self, ttl_seconds: int = 300) -> None:
@@ -167,6 +178,11 @@ class TunnelSessionManager:
         expired = [session_id for session_id, session in self._sessions.items() if session.expires_at <= now]
         for session_id in expired:
             self._sessions.pop(session_id, None)
+
+    def revoke_gateway(self, gateway_id: str) -> None:
+        for session_id, session in list(self._sessions.items()):
+            if session.gateway_id == gateway_id:
+                self._sessions.pop(session_id, None)
 
 
 class TunnelAuthGate:

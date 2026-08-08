@@ -178,6 +178,24 @@ class EdgeNode(Base):
     heartbeats: Mapped[list["EdgeHeartbeat"]] = relationship(back_populates="edge_node")
 
 
+class GatewayTunnelRequest(Base):
+    """Durable operator authority for a temporary gateway tunnel.
+
+    This is intentionally not a live connection registry; active sockets stay
+    in TunnelManager memory and disappear safely on a Cloud restart.
+    """
+
+    __tablename__ = "gateway_tunnel_requests"
+
+    gateway_id: Mapped[str] = mapped_column(String(120), ForeignKey("edge_nodes.gateway_id"), primary_key=True)
+    requested_duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requested_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="closed")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class EdgeHeartbeat(Base):
     __tablename__ = "edge_heartbeats"
     __table_args__ = (

@@ -45,6 +45,7 @@ from app.models import (
     GatewayAlertState,
     GatewayCredential,
     GatewayGroup,
+    GatewayTunnelRequest,
     GatewayUpdateRequest,
     PointTrendConfig,
     PointTrendSample,
@@ -119,6 +120,7 @@ from app.schemas import (
     TrendConfigRepairOut,
     TunnelSessionCreateIn,
     TunnelSessionOut,
+    TunnelOpenIn,
     TunnelStatusOut,
 )
 from app.tunnel import (
@@ -165,6 +167,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lifespan)
 logger = logging.getLogger("iot-cloud-api.tunnel")
+# One Uvicorn process is the supported deployment topology. This guards the
+# capacity check and durable request creation as one local operation.
+_tunnel_request_lock = __import__("threading").Lock()
+_tunnel_expiry_tasks: dict[str, asyncio.Task[None]] = {}
 request_logger = logging.getLogger("iot-cloud-api.requests")
 app_started_monotonic = time.monotonic()
 
@@ -2038,8 +2044,117 @@ def ui_gateway_tunnel_status(
     db: Session = Depends(get_db),
 ) -> TunnelStatusOut:
     _require_gateway_site_access(db, auth, gateway_id)
+    request = _current_tunnel_request(db, gateway_id)
     connected = tunnel_manager.is_connected(gateway_id)
-    return TunnelStatusOut(connected=connected, status="connected" if connected else "not_connected")
+    if request is None:
+        return TunnelStatusOut(connected=False, status="closed")
+    remaining = max(0, int((request.expires_at - utc_now()).total_seconds()))
+    return TunnelStatusOut(
+        connected=connected,
+        status="connected" if connected else "opening",
+        expires_at=request.expires_at,
+        remaining_seconds=remaining,
+    )
+
+
+def _current_tunnel_request(db: Session, gateway_id: str) -> GatewayTunnelRequest | None:
+    request = db.get(GatewayTunnelRequest, gateway_id)
+    if request is None or request.state != "open" or request.expires_at is None:
+        return None
+    expires_at = _aware_utc(request.expires_at)
+    if expires_at is None or expires_at <= utc_now():
+        request.state = "closed"
+        db.commit()
+        return None
+    request.expires_at = expires_at
+    return request
+
+
+def _active_tunnel_request_count(db: Session) -> int:
+    return len(
+        db.scalars(
+            select(GatewayTunnelRequest).where(
+                GatewayTunnelRequest.state == "open",
+                GatewayTunnelRequest.expires_at > utc_now(),
+            )
+        ).all()
+    )
+
+
+async def _expire_active_tunnel(gateway_id: str, expires_at: datetime) -> None:
+    try:
+        await asyncio.sleep(max(0, (expires_at - utc_now()).total_seconds()))
+        with SessionLocal() as db:
+            request = _current_tunnel_request(db, gateway_id)
+            if request is not None:
+                return
+        tunnel_session_manager.revoke_gateway(gateway_id)
+        await tunnel_manager.close_gateway(gateway_id, code=1000)
+    finally:
+        _tunnel_expiry_tasks.pop(gateway_id, None)
+
+
+def _schedule_tunnel_expiry(gateway_id: str, expires_at: datetime) -> None:
+    prior = _tunnel_expiry_tasks.get(gateway_id)
+    # A valid replacement socket belongs to the same durable request and
+    # therefore shares its expiry. Keep that task rather than letting a
+    # cancelled old task remove the replacement's registry entry.
+    if prior is not None and not prior.done():
+        return
+    _tunnel_expiry_tasks[gateway_id] = asyncio.create_task(_expire_active_tunnel(gateway_id, expires_at))
+
+
+@app.post("/api/ui/gateways/{gateway_id}/tunnel/open", response_model=TunnelStatusOut)
+def ui_open_gateway_tunnel(
+    gateway_id: str,
+    payload: TunnelOpenIn,
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> TunnelStatusOut:
+    _require_gateway_site_access(db, auth, gateway_id)
+    if settings.gateway_tunnel_websockets_disabled:
+        raise HTTPException(status_code=503, detail="Gateway tunnels are currently disabled")
+    with _tunnel_request_lock:
+        request = _current_tunnel_request(db, gateway_id)
+        if request is None:
+            if settings.gateway_tunnel_max_active <= 0 or _active_tunnel_request_count(db) >= settings.gateway_tunnel_max_active:
+                raise HTTPException(status_code=409, detail="Tunnel capacity reached")
+            now = utc_now()
+            request = db.get(GatewayTunnelRequest, gateway_id)
+            if request is None:
+                request = GatewayTunnelRequest(gateway_id=gateway_id, requested_duration_minutes=payload.duration_minutes)
+                db.add(request)
+            request.requested_duration_minutes = payload.duration_minutes
+            request.requested_at = now
+            request.expires_at = now + timedelta(minutes=payload.duration_minutes)
+            request.requested_by = auth.email or auth.auth_type
+            request.state = "open"
+            db.commit()
+    return TunnelStatusOut(
+        connected=tunnel_manager.is_connected(gateway_id),
+        status="connected" if tunnel_manager.is_connected(gateway_id) else "opening",
+        expires_at=request.expires_at,
+        remaining_seconds=max(0, int((request.expires_at - utc_now()).total_seconds())),
+    )
+
+
+@app.post("/api/ui/gateways/{gateway_id}/tunnel/close", response_model=TunnelStatusOut)
+async def ui_close_gateway_tunnel(
+    gateway_id: str,
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> TunnelStatusOut:
+    _require_gateway_site_access(db, auth, gateway_id)
+    request = db.get(GatewayTunnelRequest, gateway_id)
+    if request is not None:
+        request.state = "closed"
+        db.commit()
+    task = _tunnel_expiry_tasks.pop(gateway_id, None)
+    if task is not None:
+        task.cancel()
+    tunnel_session_manager.revoke_gateway(gateway_id)
+    await tunnel_manager.close_gateway(gateway_id, code=1000)
+    return TunnelStatusOut(connected=False, status="closed")
 
 
 @app.post("/api/ui/gateways/{gateway_id}/tunnel-session", response_model=TunnelSessionOut)
@@ -2095,6 +2210,12 @@ async def edge_tunnel(
             tunnel_metrics.record_rejected()
             await websocket.close(code=1008)
             return
+        request = _current_tunnel_request(db, gateway_id)
+        if request is None:
+            tunnel_metrics.record_rejected()
+            await websocket.close(code=1008)
+            return
+        expires_at = request.expires_at
     except HTTPException:
         tunnel_metrics.record_rejected()
         await websocket.close(code=1008)
@@ -2110,6 +2231,11 @@ async def edge_tunnel(
     tunnel, replaced_tunnel = tunnel_manager.register(gateway_id, websocket)
     if replaced_tunnel is not None:
         tunnel_metrics.record_duplicate_replacement()
+        try:
+            await replaced_tunnel.websocket.close(code=1012)
+        except RuntimeError:
+            pass
+    _schedule_tunnel_expiry(gateway_id, expires_at)
     try:
         while True:
             tunnel.resolve_response(await websocket.receive_json())
@@ -2130,9 +2256,9 @@ async def proxy_gateway_tunnel(
     path: str,
     request: Request,
     _: AdminAuthContext = Depends(require_job_operator_auth),
-    db: Session = Depends(get_db),
 ) -> Response:
-    _get_gateway_or_404(db, gateway_id)
+    with SessionLocal() as db:
+        _get_gateway_or_404(db, gateway_id)
     return await _proxy_gateway_tunnel_request(
         gateway_id=gateway_id,
         path=path,
@@ -2158,9 +2284,9 @@ async def proxy_gateway_tunnel_session(
     session_id: str,
     request: Request,
     path: str = "",
-    db: Session = Depends(get_db),
 ) -> Response:
-    _get_gateway_or_404(db, gateway_id)
+    with SessionLocal() as db:
+        _get_gateway_or_404(db, gateway_id)
     try:
         tunnel_session_manager.get(gateway_id=gateway_id, session_id=session_id)
     except TunnelUnavailable as exc:

@@ -4033,36 +4033,6 @@ APP_SCRIPT = r"""
     if (remoteTunnelLink) {
       remoteTunnelLink.hidden = currentUser?.role === "viewer";
       remoteTunnelLink.href = `/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/tunnel/`;
-      remoteTunnelLink.onclick = async (event) => {
-        event.preventDefault();
-        remoteTunnelLink.setAttribute("aria-busy", "true");
-        if (tunnelActionStatus) {
-          tunnelActionStatus.textContent = "Connecting";
-        }
-        const tunnelWindow = window.open("about:blank", "_blank");
-        try {
-          const session = await api(`/api/ui/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/tunnel-session`, {
-            method: "POST",
-            body: JSON.stringify({ ttl_minutes: 5 })
-          });
-          if (!tunnelWindow) {
-            throw new Error("Popup blocked. Allow popups for this site and try again.");
-          }
-          try {
-            tunnelWindow.opener = null;
-          } catch (_) {}
-          tunnelWindow.location.assign(session.url);
-          setText("status", "Tunnel opened in a new tab.");
-        } catch (error) {
-          if (tunnelWindow) tunnelWindow.close();
-          setText("status", errorMessage(error), true);
-        } finally {
-          remoteTunnelLink.removeAttribute("aria-busy");
-          if (tunnelActionStatus) {
-            tunnelActionStatus.textContent = "Ready";
-          }
-        }
-      };
     }
     if (directConnect.available && directConnect.url && currentUser && currentUser.role !== "viewer") {
       directStatus.textContent = `${directConnect.host}:${directConnect.port}`;
@@ -4353,30 +4323,59 @@ APP_SCRIPT = r"""
       ]);
       byId("gateway-title").textContent = `${gateway.gateway_id} Remote Console`;
       byId("heartbeat-summary").textContent = `${gateway.effective_status} | heartbeat ${gateway.heartbeat_age_seconds ?? "unknown"}s ago`;
-      byId("tunnel-summary").textContent = tunnelStatus.connected ? "connected" : "not connected";
-      if (!tunnelStatus.connected) {
+      byId("tunnel-summary").textContent = tunnelStatus.status || "closed";
+      if (tunnelStatus.status === "closed") {
         setText(
           "status",
-          "Gateway tunnel is not connected. Direct Connect may still be available. Heartbeat and job polling are separate from tunnel status.",
-          true
+          "No tunnel is open. Select a duration and open one when remote console access is needed."
         );
-      } else {
+      } else if (tunnelStatus.connected) {
         setText(
           "status",
           "Gateway tunnel is connected. Opening the live remote console requires the protected tunnel relay flow."
         );
+      } else {
+        setText("status", "Opening tunnel. Waiting for the gateway...");
       }
       const directLink = byId("direct-connect-link");
       if (directConnect.available && directConnect.url && me.role !== "viewer") {
         directLink.href = directConnect.url;
         directLink.hidden = false;
       }
-      const openTunnelButton = byId("open-tunnel-console");
+      const openTunnelButton = byId("open-tunnel-request");
+      const closeTunnelButton = byId("close-tunnel-request");
+      const openConsoleButton = byId("open-tunnel-console");
       const tunnelFallback = byId("tunnel-session-link");
       const tunnelTtl = byId("tunnel-ttl-minutes");
-      openTunnelButton.disabled = !tunnelStatus.connected;
+      openTunnelButton.hidden = tunnelStatus.status !== "closed";
+      closeTunnelButton.hidden = tunnelStatus.status === "closed";
+      openConsoleButton.hidden = !tunnelStatus.connected;
+      openConsoleButton.disabled = !tunnelStatus.connected;
       openTunnelButton.addEventListener("click", async () => {
         openTunnelButton.disabled = true;
+        try {
+          await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel/open`, {
+            method: "POST",
+            body: JSON.stringify({ duration_minutes: Number(tunnelTtl?.value || 30) })
+          });
+          window.location.reload();
+        } catch (error) {
+          setText("status", errorMessage(error), true);
+          openTunnelButton.disabled = false;
+        }
+      });
+      closeTunnelButton.addEventListener("click", async () => {
+        closeTunnelButton.disabled = true;
+        try {
+          await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel/close`, { method: "POST" });
+          window.location.reload();
+        } catch (error) {
+          setText("status", errorMessage(error), true);
+          closeTunnelButton.disabled = false;
+        }
+      });
+      openConsoleButton.addEventListener("click", async () => {
+        openConsoleButton.disabled = true;
         tunnelFallback.hidden = true;
         tunnelFallback.removeAttribute("href");
         const tunnelWindow = window.open("about:blank", "_blank");
@@ -4403,7 +4402,7 @@ APP_SCRIPT = r"""
           }
           setText("status", errorMessage(error), true);
         } finally {
-          openTunnelButton.disabled = !tunnelStatus.connected;
+          openConsoleButton.disabled = !tunnelStatus.connected;
         }
       });
     } catch (error) {
@@ -7553,14 +7552,16 @@ def tunnel_console_html(gateway_id: str) -> str:
         Open a short-lived authenticated tunnel session in a new tab for the full gateway UI.
       </div>
       <div class="toolbar">
-        <label for="tunnel-ttl-minutes">Session time</label>
-        <select id="tunnel-ttl-minutes" aria-label="Tunnel session time">
-          <option value="5" selected>5 minutes</option>
+        <label for="tunnel-ttl-minutes">Tunnel duration</label>
+        <select id="tunnel-ttl-minutes" aria-label="Tunnel duration">
+          <option value="5">5 minutes</option>
           <option value="15">15 minutes</option>
-          <option value="30">30 minutes</option>
+          <option value="30" selected>30 minutes</option>
           <option value="60">60 minutes</option>
         </select>
-        <button id="open-tunnel-console" type="button" disabled>Open Tunnel Console</button>
+        <button id="open-tunnel-request" type="button">Open Tunnel</button>
+        <button id="open-tunnel-console" type="button" hidden>Open Console</button>
+        <button id="close-tunnel-request" class="secondary" type="button" hidden>Close Tunnel</button>
         <a id="tunnel-session-link" class="button secondary" href="#" target="_blank" rel="noopener noreferrer" hidden>Popup blocked? Open tunnel manually</a>
       </div>
     </section>

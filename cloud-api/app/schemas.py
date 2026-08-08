@@ -289,6 +289,12 @@ class DirectConnectOut(BaseModel):
 class TunnelStatusOut(BaseModel):
     connected: bool
     status: str
+    expires_at: datetime | None = None
+    remaining_seconds: int | None = None
+
+
+class TunnelOpenIn(BaseModel):
+    duration_minutes: int = Field(default=30, ge=5, le=60)
 
 
 class TunnelSessionCreateIn(BaseModel):

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import base64
 from concurrent.futures import ThreadPoolExecutor
@@ -546,10 +547,7 @@ def test_gateway_workspace_restores_remote_tunnel_action_next_to_direct_connect(
     assert "width: auto;" in response.text
     assert "flex: 0 0 auto;" in response.text
     assert 'id="tunnel-action-status" class="gateway-action-status">Ready</span>' in response.text
-    assert 'tunnelActionStatus.textContent = "Connecting";' in response.text
-    assert 'tunnelActionStatus.textContent = "Ready";' in response.text
-    assert "/tunnel-session" in response.text
-    assert 'body: JSON.stringify({ ttl_minutes: 5 })' in response.text
+    assert 'remoteTunnelLink.href = `/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/tunnel/`;' in response.text
     assert 'id="tunnel-status"' in response.text
 
 
@@ -1360,7 +1358,26 @@ def test_tunnel_status_remains_friendly_when_disconnected() -> None:
     response = client.get("/api/ui/gateways/GW001/tunnel-status", headers=admin_headers())
 
     assert response.status_code == 200
-    assert response.json() == {"connected": False, "status": "not_connected"}
+    assert response.json()["connected"] is False
+    assert response.json()["status"] == "closed"
+
+
+def create_open_tunnel_request(gateway_id: str) -> None:
+    from app.models import GatewayTunnelRequest
+
+    now = utc_now()
+    with SessionLocal() as db:
+        db.add(
+            GatewayTunnelRequest(
+                gateway_id=gateway_id,
+                requested_duration_minutes=30,
+                requested_at=now,
+                expires_at=now + timedelta(minutes=30),
+                requested_by="test",
+                state="open",
+            )
+        )
+        db.commit()
 
 
 def test_gateway_tunnel_registration_requires_matching_gateway_token() -> None:
@@ -1369,6 +1386,85 @@ def test_gateway_tunnel_registration_requires_matching_gateway_token() -> None:
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
             pass
+
+
+def test_gateway_tunnel_requires_operator_open_request() -> None:
+    raw_token = create_gateway_token("GW001")
+
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+            pass
+
+    assert exc.value.code == 1008
+
+
+def test_open_close_tunnel_request_is_gateway_scoped_and_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module.settings, "gateway_tunnel_websockets_disabled", False)
+    monkeypatch.setattr(main_module.settings, "gateway_tunnel_max_active", 1)
+    create_gateway_token("GW010", token_prefix="gw01001")
+    create_gateway_token("GW011", token_prefix="gw01101")
+
+    opened = client.post("/api/ui/gateways/GW010/tunnel/open", headers=admin_headers(), json={"duration_minutes": 15})
+    repeated = client.post("/api/ui/gateways/GW010/tunnel/open", headers=admin_headers(), json={"duration_minutes": 60})
+    blocked = client.post("/api/ui/gateways/GW011/tunnel/open", headers=admin_headers(), json={"duration_minutes": 15})
+
+    assert opened.status_code == 200
+    assert repeated.status_code == 200
+    assert repeated.json()["expires_at"] == opened.json()["expires_at"]
+    assert blocked.status_code == 409
+    assert blocked.json() == {"detail": "Tunnel capacity reached"}
+
+    closed = client.post("/api/ui/gateways/GW010/tunnel/close", headers=admin_headers())
+    reopened = client.post("/api/ui/gateways/GW011/tunnel/open", headers=admin_headers(), json={"duration_minutes": 15})
+    assert closed.json()["status"] == "closed"
+    assert reopened.status_code == 200
+
+
+def test_expired_open_request_rejects_gateway_websocket() -> None:
+    raw_token = create_gateway_token("GW001")
+    from app.models import GatewayTunnelRequest
+
+    with SessionLocal() as db:
+        db.add(
+            GatewayTunnelRequest(
+                gateway_id="GW001", requested_duration_minutes=5, requested_at=utc_now() - timedelta(minutes=10),
+                expires_at=utc_now() - timedelta(seconds=1), requested_by="test", state="open"
+            )
+        )
+        db.commit()
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+            pass
+    assert exc.value.code == 1008
+
+
+def test_tunnel_expiry_closes_active_registry_entry() -> None:
+    from app.models import GatewayTunnelRequest
+    from app.tunnel import tunnel_manager
+
+    create_gateway_token("GW001")
+    now = utc_now()
+    with SessionLocal() as db:
+        db.add(
+            GatewayTunnelRequest(
+                gateway_id="GW001", requested_duration_minutes=5, requested_at=now - timedelta(minutes=5),
+                expires_at=now - timedelta(seconds=1), requested_by="test", state="open"
+            )
+        )
+        db.commit()
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def close(self, code: int = 1000) -> None:
+            self.closed = True
+
+    socket = FakeWebSocket()
+    tunnel_manager.register("GW001", socket)  # type: ignore[arg-type]
+    asyncio.run(main_module._expire_active_tunnel("GW001", now - timedelta(seconds=1)))
+    assert socket.closed is True
+    assert tunnel_manager.is_connected("GW001") is False
 
 
 def test_gateway_tunnel_websocket_diagnostic_disable_rejects_before_db(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1409,15 +1505,18 @@ def test_gateway_tunnel_auth_gate_rejects_overload_before_db(monkeypatch: pytest
 
 def test_gateway_tunnel_registration_updates_status() -> None:
     raw_token = create_gateway_token("GW001")
+    create_open_tunnel_request("GW001")
 
     with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
         connected = client.get("/api/ui/gateways/GW001/tunnel-status", headers=admin_headers())
         assert connected.status_code == 200
-        assert connected.json() == {"connected": True, "status": "connected"}
+        assert connected.json()["connected"] is True
+        assert connected.json()["status"] == "connected"
 
     disconnected = client.get("/api/ui/gateways/GW001/tunnel-status", headers=admin_headers())
     assert disconnected.status_code == 200
-    assert disconnected.json() == {"connected": False, "status": "not_connected"}
+    assert disconnected.json()["connected"] is False
+    assert disconnected.json()["status"] == "opening"
 
 
 def test_gateway_tunnel_does_not_hold_db_session_while_connected() -> None:
@@ -1437,6 +1536,7 @@ def test_gateway_tunnel_does_not_hold_db_session_while_connected() -> None:
     assert "db" not in inspect.signature(edge_tunnel).parameters
 
     raw_token = create_gateway_token("GW001")
+    create_open_tunnel_request("GW001")
 
     # First connect performs the token-telemetry write (commit releases the
     # connection even on the old broken code); the second, inside the
@@ -1458,6 +1558,7 @@ def test_gateway_tunnel_duplicate_connection_replaces_without_stale_cleanup_corr
     from app.tunnel import tunnel_manager, tunnel_metrics
 
     raw_token = create_gateway_token("GW001")
+    create_open_tunnel_request("GW001")
 
     with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
         assert tunnel_manager.is_connected("GW001") is True
@@ -1553,14 +1654,14 @@ def test_gateway_tunnel_reconnect_burst_fast_rejects_overload_and_keeps_core_rou
     assert health_latency < 0.25
     assert public_auth.status_code == 200
     assert public_auth_latency < 0.5
-    assert accepted > 0
+    assert accepted == 0
     assert rejected_1013 > 0
-    assert accepted + rejected_1013 == gateway_count
+    assert rejected_1013 < gateway_count
     assert snapshot["auth_gate_in_use"] == 0
     assert snapshot["auth_gate_limit"] == auth_limit
     assert snapshot["auth_attempts_total"] == gateway_count
     assert snapshot["accepted_total"] == accepted
-    assert snapshot["rejected_total"] == rejected_1013
+    assert snapshot["rejected_total"] == gateway_count
     assert tunnel_manager.active_count() == 0
     assert app_engine.pool.checkedout() == 0
 
@@ -2538,9 +2639,9 @@ def test_tunnel_console_direct_navigation_renders_friendly_shell() -> None:
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Remote Console" in response.text
-    assert "Gateway tunnel is not connected" in response.text
+    assert "Open Tunnel" in response.text
     assert "Direct Connect" in response.text
-    assert "Heartbeat and job polling" in response.text
+    assert "Select a duration" in response.text
     assert "Missing admin credentials" not in response.text
     assert "initTunnelConsole" in response.text
     assert "/tunnel-session" in response.text
