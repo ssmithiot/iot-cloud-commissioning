@@ -120,6 +120,18 @@ def test_cloud_claiming_is_off_unless_the_explicit_switch_is_set(monkeypatch):
     monkeypatch.delenv("IOT_EDGE_DEV_UPDATER_CLAIM_CLOUD_JOBS", raising=False)
     assert "CLAIM_CLOUD_JOBS" in DEV.read_text()
 
+
+def test_cloud_claimed_commits_are_exact_and_fail_closed_without_local_fallback():
+    ui_commit = "a" * 40
+    agent_commit = "b" * 40
+    claimed = {"target_ui_commit": ui_commit, "target_agent_commit": agent_commit}
+    assert dev.claimed_release_commit(claimed, "target_ui_commit") == ui_commit
+    assert dev.claimed_release_commit(claimed, "target_agent_commit") == agent_commit
+    with pytest.raises(ValueError, match="refusing local-default fallback"):
+        dev.claimed_release_commit({}, "target_ui_commit")
+    with pytest.raises(ValueError, match="refusing local-default fallback"):
+        dev.claimed_release_commit({"target_agent_commit": "short"}, "target_agent_commit")
+
 def test_development_audit_log_is_separate_and_redacted(tmp_path, monkeypatch):
     monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
     log = dev.LiveLog("test", dev.Redactor(["secret-value"]))
