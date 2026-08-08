@@ -1,6 +1,6 @@
 """Add immutable component commits to gateway update requests.
 
-Revision ID: 0024_gateway_update_target_commits
+Revision ID: 0024_update_target_commits
 Revises: 0023_edge_release_targets
 """
 
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0024_gateway_update_target_commits"
+revision: str = "0024_update_target_commits"
 down_revision: str | Sequence[str] | None = "0023_edge_release_targets"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

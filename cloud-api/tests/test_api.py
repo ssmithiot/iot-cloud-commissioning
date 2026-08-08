@@ -1081,8 +1081,8 @@ def test_release_authority_migration_adds_only_the_two_nullable_commit_fields() 
 
     assert "0022_edge_local_trend_samples.py" in revision_files
     assert "0023_edge_release_targets.py" in revision_files
-    assert "0024_gateway_update_target_commits.py" in revision_files
-    migration = (migration_dir / "0024_gateway_update_target_commits.py").read_text()
+    assert "0024_update_target_commits.py" in revision_files
+    migration = (migration_dir / "0024_update_target_commits.py").read_text()
     assert "target_ui_commit" in migration and "target_agent_commit" in migration
     assert migration.count("op.add_column") == 2
     assert hasattr(GatewayUpdateRequest, "target_agent_version")
