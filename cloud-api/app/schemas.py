@@ -405,6 +405,8 @@ class GatewayUpdateRequestOut(BaseModel):
     update_scope: str
     target_agent_version: str | None
     target_ui_version: str | None
+    target_agent_commit: str | None
+    target_ui_commit: str | None
     provisioning: bool
     token_writing: bool
     bacnet_configuration_preserved: bool

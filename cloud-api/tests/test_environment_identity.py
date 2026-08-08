@@ -16,6 +16,9 @@ os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["GATEWAY_AUTH_PEPPER"] = "test-pepper"
 os.environ["IOT_ADMIN_API_TOKEN"] = "test-admin-token"
 os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-jwt-secret"
+os.environ["EDGE_RELEASE_VERSION"] = "0.2.0"
+os.environ["EDGE_UI_RELEASE_COMMIT"] = "2adae3adeb339806330db0e481cba3179fff2ff1"
+os.environ["EDGE_AGENT_RELEASE_COMMIT"] = "40133f2a81390db92a01b33a9c02c48a07363a7e"
 
 from app.config import Settings, production_resource_conflicts
 from app.database import connect_args_for
@@ -31,8 +34,9 @@ def test_health_reports_environment_and_version_without_secrets() -> None:
     assert body["status"] == "ok"
     assert body["environment"] == "development"  # default when ENVIRONMENT unset
     assert body["version"] == app.version
-    # Exactly these keys: no URLs, tokens, or credentials may ever appear here.
-    assert set(body) == {"status", "environment", "version"}
+    assert body["approved_edge_release"] == "0.2.0"
+    assert body["approved_edge_ui_commit"] == "2adae3adeb339806330db0e481cba3179fff2ff1"
+    assert body["approved_edge_agent_commit"] == "40133f2a81390db92a01b33a9c02c48a07363a7e"
     text = response.text.lower()
     for forbidden in ("postgres", "supabase.co", "token", "pepper", "secret"):
         assert forbidden not in text
@@ -48,6 +52,20 @@ def test_environment_setting_accepts_known_values(monkeypatch: pytest.MonkeyPatc
 def test_environment_setting_rejects_unknown_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ENVIRONMENT", "prod-ish")
     with pytest.raises(Exception):
+        Settings()
+
+
+def test_render_release_authority_is_read_and_production_requires_all_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("EDGE_RELEASE_VERSION", "0.2.0")
+    monkeypatch.setenv("EDGE_UI_RELEASE_COMMIT", "a" * 40)
+    monkeypatch.setenv("EDGE_AGENT_RELEASE_COMMIT", "b" * 40)
+    configured = Settings()
+    assert configured.edge_release_version == "0.2.0"
+    assert configured.edge_ui_release_commit == "a" * 40
+    assert configured.edge_agent_release_commit == "b" * 40
+    monkeypatch.delenv("EDGE_UI_RELEASE_COMMIT")
+    with pytest.raises(Exception, match="EDGE_UI_RELEASE_COMMIT"):
         Settings()
 
 

@@ -256,6 +256,8 @@ class GatewayUpdateRequest(Base):
     update_scope: Mapped[str] = mapped_column(String(20), nullable=False, default="agent")
     target_agent_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
     target_ui_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    target_agent_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    target_ui_commit: Mapped[str | None] = mapped_column(String(40), nullable=True)
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="queued", index=True)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

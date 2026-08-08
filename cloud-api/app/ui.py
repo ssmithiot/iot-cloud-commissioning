@@ -1590,18 +1590,17 @@ APP_SCRIPT = r"""
   }
 
   function gatewayVersionCell(gateway) {
-    const version = edgeAppVersion(gateway);
     const update = gatewayUpdateState(gateway.gateway_id);
     if (update?.status === "queued" || update?.status === "running") {
       return `<strong>Update ${escapeHtml(update.status)}</strong>`;
     }
-    const actionLabel = update?.status === "failed" ? "Retry UI" : "Update UI";
+    const actionLabel = update?.status === "failed" ? "Retry Update" : "Update";
     const releaseStatus = gatewayReleaseStatus(gateway);
     const releaseReason = releaseStatus.reason;
-    if (releaseReason === "Up to date") {
-      return `<strong>${escapeHtml(version)}</strong>`;
+    if (!releaseStatus.updateRequired) {
+      return `<strong>${escapeHtml(releaseStatus.requiredAgentVersion)}</strong>`;
     }
-    return `<strong>${escapeHtml(version)}</strong><small class="edge-app-update-notice">Update needed</small><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
+    return `<strong>Update Needed</strong><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
   }
 
   async function refreshGatewayUpdates() {
