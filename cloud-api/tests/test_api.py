@@ -518,17 +518,13 @@ def test_dashboard_registry_sort_restores_from_session_storage() -> None:
     assert "direction: dashboardSort.direction === \"asc\" ? \"desc\" : \"asc\"" in response.text
 
 
-def test_dashboard_release_comparison_states_are_019() -> None:
+def test_dashboard_release_comparison_uses_kiss_statuses() -> None:
     response = client.get("/app")
 
     assert response.status_code == 200
-    assert 'const edgeAgentReleaseVersion = "0.1.9";' in response.text
-    assert 'const edgeUiReleaseVersion = "0.1.9";' in response.text
-    assert 'reason = "Update required";' in response.text
-    assert 'reason = "UI update required";' in response.text
-    assert 'reason = "Agent update required";' in response.text
-    assert 'reason = "Full update required";' in response.text
-    assert 'let reason = "Up to date";' in response.text
+    assert 'const reason = current ? edgeUiReleaseVersion : "Update Needed";' in response.text
+    for retired in ("Up to date", "UI update required", "Agent update required", "Full update required", "Update required"):
+        assert retired not in response.text
     assert "<strong>Update Needed</strong>" in response.text
     assert "Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed" not in response.text
     assert "<small>${escapeHtml(releaseStatus.reason)}</small>" in response.text
@@ -970,14 +966,14 @@ def test_gateway_update_explicit_ui_only_recovery_remains_available() -> None:
 @pytest.mark.parametrize(
     ("agent_version", "ui_version", "expected_status", "update_required"),
     [
-        ("0.1.9", "0.1.9", "Up to date", False),
-        ("0.1.9", "current", "Up to date", False),
-        ("0.1.9", "0.1.8", "UI update required", True),
-        ("0.1.8", "0.1.9", "Agent update required", True),
-        ("0.1.8", "0.1.8", "Full update required", True),
-        ("0.1.7", "0.1.7", "Full update required", True),
-        ("", "0.1.9", "Update required", True),
-        ("0.1.9", "", "Update required", True),
+        ("0.2.0", "0.2.0", "0.2.0", False),
+        ("0.2.0", "current", "0.2.0", False),
+        ("0.2.0", "0.1.9", "Update Needed", True),
+        ("0.1.9", "0.2.0", "Update Needed", True),
+        ("0.1.9", "0.1.9", "Update Needed", True),
+        ("0.1.7", "0.1.7", "Update Needed", True),
+        ("", "0.2.0", "Update Needed", True),
+        ("0.2.0", "", "Update Needed", True),
     ],
 )
 def test_gateway_release_status_is_consistent_on_dashboard_refresh(
@@ -1003,8 +999,8 @@ def test_gateway_release_status_is_consistent_on_dashboard_refresh(
         gateway = response.json()[0]
         assert gateway["agent_version"] == agent_version
         assert gateway["ui_version"] == ui_version
-        assert gateway["required_agent_version"] == "0.1.9"
-        assert gateway["required_ui_version"] == "0.1.9"
+        assert gateway["required_agent_version"] == "0.2.0"
+        assert gateway["required_ui_version"] == "0.2.0"
         assert gateway["gateway_release_status"] == expected_status
         assert gateway["gateway_release_reason"] == expected_status
         assert gateway["gateway_update_required"] is update_required
@@ -1037,8 +1033,10 @@ def test_gateway_update_default_full_non_provisioning_for_rollout_versions(agent
     assert queued.status_code == 200
     request = queued.json()[0]
     assert request["update_scope"] == "full_non_provisioning"
-    assert request["target_agent_version"] == "0.1.9"
-    assert request["target_ui_version"] == "0.1.9"
+    assert request["target_agent_version"] == "0.2.0"
+    assert request["target_ui_version"] == "0.2.0"
+    assert request["target_agent_commit"] == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+    assert request["target_ui_commit"] == "2adae3adeb339806330db0e481cba3179fff2ff1"
     assert request["provisioning"] is False
     assert request["token_writing"] is False
     assert request["bacnet_configuration_preserved"] is True
@@ -1046,8 +1044,10 @@ def test_gateway_update_default_full_non_provisioning_for_rollout_versions(agent
         stored = db.scalar(select(GatewayUpdateRequest).where(GatewayUpdateRequest.gateway_id == "GW001"))
         assert stored is not None
         assert stored.update_scope == "edge_release"
-        assert stored.target_agent_version == "0.1.9"
-        assert stored.target_ui_version == "0.1.9"
+        assert stored.target_agent_version == "0.2.0"
+        assert stored.target_ui_version == "0.2.0"
+        assert stored.target_agent_commit == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+        assert stored.target_ui_commit == "2adae3adeb339806330db0e481cba3179fff2ff1"
 
 
 def test_gateway_update_uses_existing_release_target_schema_for_full_non_provisioning_request() -> None:
@@ -1061,14 +1061,18 @@ def test_gateway_update_uses_existing_release_target_schema_for_full_non_provisi
     request = queued.json()[0]
 
     assert request["update_scope"] == "full_non_provisioning"
-    assert request["target_agent_version"] == "0.1.9"
-    assert request["target_ui_version"] == "0.1.9"
+    assert request["target_agent_version"] == "0.2.0"
+    assert request["target_ui_version"] == "0.2.0"
+    assert request["target_agent_commit"] == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+    assert request["target_ui_commit"] == "2adae3adeb339806330db0e481cba3179fff2ff1"
     with SessionLocal() as db:
         stored = db.scalar(select(GatewayUpdateRequest).where(GatewayUpdateRequest.gateway_id == "GW001"))
         assert stored is not None
         assert stored.update_scope == "edge_release"
-        assert stored.target_agent_version == "0.1.9"
-        assert stored.target_ui_version == "0.1.9"
+        assert stored.target_agent_version == "0.2.0"
+        assert stored.target_ui_version == "0.2.0"
+        assert stored.target_agent_commit == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+        assert stored.target_ui_commit == "2adae3adeb339806330db0e481cba3179fff2ff1"
 
 
 def test_release_authority_migration_adds_only_the_two_nullable_commit_fields() -> None:
