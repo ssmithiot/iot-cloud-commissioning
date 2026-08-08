@@ -105,9 +105,7 @@ class Settings(BaseSettings):
     tunnel_request_timeout_sec: float = Field(default=900.0, validation_alias="TUNNEL_REQUEST_TIMEOUT_SEC")
     gateway_tunnel_websockets_disabled: bool = Field(default=False, validation_alias="GATEWAY_TUNNEL_WEBSOCKETS_DISABLED")
     gateway_tunnel_auth_concurrency: int = Field(default=5, ge=1, le=100, validation_alias="GATEWAY_TUNNEL_AUTH_CONCURRENCY")
-    # Zero is deliberately fail-closed: a deployment must explicitly choose a
-    # safe concurrency limit before any operator can open a gateway tunnel.
-    gateway_tunnel_max_active: int = Field(default=0, ge=0, le=100, validation_alias="GATEWAY_TUNNEL_MAX_ACTIVE")
+    gateway_tunnel_max_active: int = Field(default=10, ge=0, le=100, validation_alias="GATEWAY_TUNNEL_MAX_ACTIVE")
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
