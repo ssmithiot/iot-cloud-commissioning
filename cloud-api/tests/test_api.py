@@ -42,16 +42,18 @@ from scripts.create_gateway_credential import DEFAULT_SCOPES, create_gateway_cre
 
 @pytest.fixture(autouse=True)
 def reset_database() -> None:
-    from app.tunnel import tunnel_auth_gate, tunnel_manager, tunnel_metrics
+    from app.tunnel import tunnel_allowlist, tunnel_auth_gate, tunnel_manager, tunnel_metrics
 
     engine.dispose()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     tunnel_manager._tunnels.clear()
+    tunnel_allowlist.clear()
     tunnel_auth_gate.reset()
     tunnel_metrics.reset()
     yield
     tunnel_manager._tunnels.clear()
+    tunnel_allowlist.clear()
     tunnel_auth_gate.reset()
     tunnel_metrics.reset()
     engine.dispose()
@@ -1364,6 +1366,7 @@ def test_tunnel_status_remains_friendly_when_disconnected() -> None:
 
 def create_open_tunnel_request(gateway_id: str) -> None:
     from app.models import GatewayTunnelRequest
+    from app.tunnel import tunnel_allowlist
 
     now = utc_now()
     with SessionLocal() as db:
@@ -1378,6 +1381,7 @@ def create_open_tunnel_request(gateway_id: str) -> None:
             )
         )
         db.commit()
+    tunnel_allowlist.allow(gateway_id, now + timedelta(minutes=30))
 
 
 def test_gateway_tunnel_registration_requires_matching_gateway_token() -> None:
@@ -1388,17 +1392,31 @@ def test_gateway_tunnel_registration_requires_matching_gateway_token() -> None:
             pass
 
 
-def test_gateway_tunnel_requires_operator_open_request() -> None:
+def test_gateway_tunnel_requires_operator_open_request(monkeypatch: pytest.MonkeyPatch) -> None:
     raw_token = create_gateway_token("GW001")
+    calls = {"db": 0, "auth": 0}
+
+    def unexpected_db():
+        calls["db"] += 1
+        raise AssertionError("unrequested tunnel must not open a DB session")
+
+    def unexpected_auth(**kwargs):
+        calls["auth"] += 1
+        raise AssertionError("unrequested tunnel must not authenticate")
+
+    monkeypatch.setattr(main_module, "SessionLocal", unexpected_db)
+    monkeypatch.setattr(main_module, "require_gateway_auth", unexpected_auth)
 
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
             pass
 
     assert exc.value.code == 1008
+    assert calls == {"db": 0, "auth": 0}
 
 
 def test_open_close_tunnel_request_is_gateway_scoped_and_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.tunnel import tunnel_allowlist
     monkeypatch.setattr(main_module.settings, "gateway_tunnel_websockets_disabled", False)
     monkeypatch.setattr(main_module.settings, "gateway_tunnel_max_active", 1)
     create_gateway_token("GW010", token_prefix="gw01001")
@@ -1409,6 +1427,8 @@ def test_open_close_tunnel_request_is_gateway_scoped_and_idempotent(monkeypatch:
     blocked = client.post("/api/ui/gateways/GW011/tunnel/open", headers=admin_headers(), json={"duration_minutes": 15})
 
     assert opened.status_code == 200
+    assert tunnel_allowlist.allows("GW010") is True
+    assert tunnel_allowlist.allows("GW011") is False
     assert repeated.status_code == 200
     assert repeated.json()["expires_at"] == opened.json()["expires_at"]
     assert blocked.status_code == 409
@@ -1417,6 +1437,7 @@ def test_open_close_tunnel_request_is_gateway_scoped_and_idempotent(monkeypatch:
     closed = client.post("/api/ui/gateways/GW010/tunnel/close", headers=admin_headers())
     reopened = client.post("/api/ui/gateways/GW011/tunnel/open", headers=admin_headers(), json={"duration_minutes": 15})
     assert closed.json()["status"] == "closed"
+    assert tunnel_allowlist.allows("GW010") is False
     assert reopened.status_code == 200
 
 
@@ -1495,10 +1516,10 @@ def test_gateway_tunnel_auth_gate_rejects_overload_before_db(monkeypatch: pytest
     finally:
         tunnel_auth_gate.release()
 
-    assert exc.value.code == 1013
+    assert exc.value.code == 1008
     assert app_engine.pool.checkedout() == 0
     snapshot = tunnel_metrics.snapshot(active_tunnels=0, auth_gate_in_use=tunnel_auth_gate.in_use, auth_gate_limit=1)
-    assert snapshot["auth_attempts_total"] == 1
+    assert snapshot["auth_attempts_total"] == 0
     assert snapshot["rejected_total"] == 1
     assert snapshot["accepted_total"] == 0
 
@@ -1655,11 +1676,10 @@ def test_gateway_tunnel_reconnect_burst_fast_rejects_overload_and_keeps_core_rou
     assert public_auth.status_code == 200
     assert public_auth_latency < 0.5
     assert accepted == 0
-    assert rejected_1013 > 0
-    assert rejected_1013 < gateway_count
+    assert rejected_1013 == 0
     assert snapshot["auth_gate_in_use"] == 0
     assert snapshot["auth_gate_limit"] == auth_limit
-    assert snapshot["auth_attempts_total"] == gateway_count
+    assert snapshot["auth_attempts_total"] == 0
     assert snapshot["accepted_total"] == accepted
     assert snapshot["rejected_total"] == gateway_count
     assert tunnel_manager.active_count() == 0

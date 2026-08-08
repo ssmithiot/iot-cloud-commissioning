@@ -128,6 +128,7 @@ from app.tunnel import (
     TunnelResponse,
     TunnelUnavailable,
     tunnel_auth_gate,
+    tunnel_allowlist,
     tunnel_manager,
     tunnel_metrics,
     tunnel_session_manager,
@@ -162,6 +163,18 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         Base.metadata.create_all(bind=engine)
     else:
         require_current_schema(engine)
+    try:
+        with SessionLocal() as db:
+            requests = db.scalars(
+                select(GatewayTunnelRequest)
+                .where(GatewayTunnelRequest.state == "open", GatewayTunnelRequest.expires_at > utc_now())
+                .order_by(GatewayTunnelRequest.expires_at)
+                .limit(settings.gateway_tunnel_max_active)
+            ).all()
+            tunnel_allowlist.replace({request.gateway_id: _aware_utc(request.expires_at) for request in requests if _aware_utc(request.expires_at)})
+    except Exception:
+        # A recovery failure must never turn an old durable row into access.
+        tunnel_allowlist.clear()
     yield
 
 
@@ -2084,6 +2097,7 @@ def _active_tunnel_request_count(db: Session) -> int:
 async def _expire_active_tunnel(gateway_id: str, expires_at: datetime) -> None:
     try:
         await asyncio.sleep(max(0, (expires_at - utc_now()).total_seconds()))
+        tunnel_allowlist.remove(gateway_id)
         with SessionLocal() as db:
             request = _current_tunnel_request(db, gateway_id)
             if request is not None:
@@ -2130,6 +2144,7 @@ def ui_open_gateway_tunnel(
             request.requested_by = auth.email or auth.auth_type
             request.state = "open"
             db.commit()
+            tunnel_allowlist.allow(gateway_id, request.expires_at)
     return TunnelStatusOut(
         connected=tunnel_manager.is_connected(gateway_id),
         status="connected" if tunnel_manager.is_connected(gateway_id) else "opening",
@@ -2152,6 +2167,7 @@ async def ui_close_gateway_tunnel(
     task = _tunnel_expiry_tasks.pop(gateway_id, None)
     if task is not None:
         task.cancel()
+    tunnel_allowlist.remove(gateway_id)
     tunnel_session_manager.revoke_gateway(gateway_id)
     await tunnel_manager.close_gateway(gateway_id, code=1000)
     return TunnelStatusOut(connected=False, status="closed")
@@ -2184,6 +2200,14 @@ async def edge_tunnel(
     if settings.gateway_tunnel_websockets_disabled:
         tunnel_metrics.record_rejected()
         await websocket.close(code=1013)
+        return
+
+    # This is intentionally before authentication, SQLAlchemy, and the
+    # concurrency gate: unattended legacy Agents knock every five seconds.
+    # Unrequested gateways must be as cheap as the global kill switch.
+    if not tunnel_allowlist.allows(gateway_id):
+        tunnel_metrics.record_rejected()
+        await websocket.close(code=1008)
         return
 
     tunnel_metrics.record_auth_attempt()

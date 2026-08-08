@@ -27,6 +27,39 @@ class TunnelRequestFailed(Exception):
     pass
 
 
+class TunnelAllowlist:
+    """Small in-memory gate for operator-authorized tunnel attempts."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._expires: dict[str, datetime] = {}
+
+    def allow(self, gateway_id: str, expires_at: datetime) -> None:
+        with self._lock:
+            self._expires[gateway_id] = expires_at
+
+    def allows(self, gateway_id: str, now: datetime | None = None) -> bool:
+        now = now or datetime.now(timezone.utc)
+        with self._lock:
+            expires_at = self._expires.get(gateway_id)
+            if expires_at is None or expires_at <= now:
+                self._expires.pop(gateway_id, None)
+                return False
+            return True
+
+    def remove(self, gateway_id: str) -> None:
+        with self._lock:
+            self._expires.pop(gateway_id, None)
+
+    def replace(self, requests: Mapping[str, datetime]) -> None:
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            self._expires = {gateway_id: expires_at for gateway_id, expires_at in requests.items() if expires_at > now}
+
+    def clear(self) -> None:
+        self.replace({})
+
+
 @dataclass(frozen=True)
 class TunnelConsoleSession:
     session_id: str
@@ -284,6 +317,7 @@ class TunnelMetrics:
 
 
 tunnel_manager = TunnelManager()
+tunnel_allowlist = TunnelAllowlist()
 tunnel_session_manager = TunnelSessionManager()
 tunnel_auth_gate = TunnelAuthGate()
 tunnel_metrics = TunnelMetrics()
