@@ -3997,7 +3997,8 @@ APP_SCRIPT = r"""
     setFieldValue("store-hours-sat", site.store_hours_saturday || site.store_hours_sat);
     setFieldValue("store-hours-sun", site.store_hours_sunday || site.store_hours_sun);
     setFieldValue("network-status-notes", site.network_status_notes);
-    byId("tunnel-status").textContent = tunnelStatus.connected ? "connected" : "not connected";
+    const tunnelRemaining = tunnelStatus.remaining_seconds == null ? "" : ` — ${Math.ceil(tunnelStatus.remaining_seconds / 60)}m remaining`;
+    byId("tunnel-status").textContent = tunnelStatus.connected ? `connected${tunnelRemaining}` : (tunnelStatus.status === "opening" ? "connecting tunnel..." : "not connected");
 
     const summaryName = byId("site-summary-name");
     const summaryAddress = byId("site-summary-address");
@@ -4032,7 +4033,40 @@ APP_SCRIPT = r"""
     }
     if (remoteTunnelLink) {
       remoteTunnelLink.hidden = currentUser?.role === "viewer";
-      remoteTunnelLink.href = `/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/tunnel/`;
+      remoteTunnelLink.onclick = async (event) => {
+        event.preventDefault();
+        if (remoteTunnelLink.dataset.busy === "true") return;
+        remoteTunnelLink.dataset.busy = "true";
+        remoteTunnelLink.setAttribute("aria-disabled", "true");
+        const gatewayId = document.body.dataset.gatewayId;
+        const ttl = Number(byId("workspace-tunnel-ttl")?.value || 5);
+        const popup = window.open("about:blank", "_blank");
+        if (tunnelActionStatus) tunnelActionStatus.textContent = "Opening tunnel...";
+        try {
+          await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel/open`, { method: "POST", body: JSON.stringify({ duration_minutes: ttl }) });
+          if (tunnelActionStatus) tunnelActionStatus.textContent = "Connecting tunnel...";
+          const deadline = Date.now() + 30000;
+          while (Date.now() < deadline) {
+            const status = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`);
+            byId("tunnel-status").textContent = status.connected ? `connected — ${Math.ceil((status.remaining_seconds || 0) / 60)}m remaining` : "connecting tunnel...";
+            if (status.connected) {
+              const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST", body: JSON.stringify({ ttl_minutes: ttl }) });
+              if (popup) popup.location.assign(session.url);
+              else window.open(session.url, "_blank", "noopener,noreferrer");
+              if (tunnelActionStatus) tunnelActionStatus.textContent = "Connected";
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
+          throw new Error("Tunnel is still connecting. Please try again shortly.");
+        } catch (error) {
+          if (popup) popup.close();
+          if (tunnelActionStatus) tunnelActionStatus.textContent = errorMessage(error);
+        } finally {
+          remoteTunnelLink.dataset.busy = "false";
+          remoteTunnelLink.removeAttribute("aria-disabled");
+        }
+      };
     }
     if (directConnect.available && directConnect.url && currentUser && currentUser.role !== "viewer") {
       directStatus.textContent = `${directConnect.host}:${directConnect.port}`;
@@ -6747,7 +6781,8 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       align-items: center;
     }}
     .event-ticker {{
-      max-height: 180px;
+      /* About fifty standard event rows before this panel scrolls. */
+      max-height: 2400px;
       margin: 0;
       padding: 0;
       display: grid;
@@ -7231,7 +7266,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
           <div class="grid">
             <div class="span-4"><label>Tunnel Status</label><pre id="tunnel-status">Loading...</pre></div>
             <div class="span-4"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
-            <div class="span-12"><label>Action</label><div class="gateway-access-actions"><a id="remote-tunnel-link" class="button secondary" href="/gateways/{escaped_gateway_id}/tunnel/">Remote Tunnel</a><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div><span id="tunnel-action-status" class="gateway-action-status">Ready</span></div>
+            <div class="span-12"><label>Action</label><div class="gateway-access-actions"><label for="workspace-tunnel-ttl">Tunnel duration</label><select id="workspace-tunnel-ttl" aria-label="Tunnel duration"><option value="5" selected>5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select><a id="remote-tunnel-link" class="button secondary" href="/gateways/{escaped_gateway_id}/tunnel/">Remote Tunnel</a><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div><span id="tunnel-action-status" class="gateway-action-status">Ready</span></div>
           </div>
         </article>
         <article class="workspace-tile site-summary">
@@ -7554,9 +7589,9 @@ def tunnel_console_html(gateway_id: str) -> str:
       <div class="toolbar">
         <label for="tunnel-ttl-minutes">Tunnel duration</label>
         <select id="tunnel-ttl-minutes" aria-label="Tunnel duration">
-          <option value="5">5 minutes</option>
+          <option value="5" selected>5 minutes</option>
           <option value="15">15 minutes</option>
-          <option value="30" selected>30 minutes</option>
+          <option value="30">30 minutes</option>
           <option value="60">60 minutes</option>
         </select>
         <button id="open-tunnel-request" type="button">Open Tunnel</button>

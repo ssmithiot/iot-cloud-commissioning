@@ -538,7 +538,8 @@ def test_gateway_workspace_restores_remote_tunnel_action_next_to_direct_connect(
 
     assert response.status_code == 200
     assert 'id="remote-tunnel-link"' in response.text
-    assert '<div class="span-12"><label>Action</label><div class="gateway-access-actions"><a id="remote-tunnel-link"' in response.text
+    assert 'id="workspace-tunnel-ttl"' in response.text
+    assert '<option value="5" selected>5 minutes</option>' in response.text
     assert 'Remote Tunnel</a><a id="direct-connect-link"' in response.text
     assert 'id="direct-connect-link"' in response.text
     assert ".gateway-access-actions" in response.text
@@ -549,7 +550,11 @@ def test_gateway_workspace_restores_remote_tunnel_action_next_to_direct_connect(
     assert "width: auto;" in response.text
     assert "flex: 0 0 auto;" in response.text
     assert 'id="tunnel-action-status" class="gateway-action-status">Ready</span>' in response.text
-    assert 'remoteTunnelLink.href = `/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/tunnel/`;' in response.text
+    assert '/tunnel/open' in response.text
+    assert 'duration_minutes: ttl' in response.text
+    assert 'Opening tunnel...' in response.text
+    assert 'Connecting tunnel...' in response.text
+    assert '/tunnel-session' in response.text
     assert 'id="tunnel-status"' in response.text
 
 
