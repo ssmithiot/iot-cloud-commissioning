@@ -70,7 +70,7 @@ def test_identity_isolated_and_version_mapping_is_explicit(monkeypatch):
     monkeypatch.setenv("ProgramData", r"C:\ProgramData")
     assert identity.DEFAULT_PORT == 8791
     assert identity.LEGACY_PORT == 8766
-    assert identity.APP_VERSION == "0.2.0-dev.1"
+    assert identity.APP_VERSION == "0.2.1"
     assert identity.MSI_PRODUCT_VERSION == "0.2.1"
     assert identity.env_path().name == ".env"
     assert "EdgeDevUpdater" in str(identity.env_path())
@@ -78,7 +78,7 @@ def test_identity_isolated_and_version_mapping_is_explicit(monkeypatch):
 def test_form_keeps_the_original_phase_values_and_displays_commit_controls(tmp_path, monkeypatch):
     monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
     page = dev.form_page().decode()
-    assert "Updater Version 0.2.0-dev.1" in page
+    assert "Updater Version 0.2.1" in page
     assert page.count('type="checkbox" name="selected_phases"') == len(dev.PHASES)
     for index, phase in enumerate(dev.PHASES):
         assert f'value="{index}" checked> {phase}' in page
