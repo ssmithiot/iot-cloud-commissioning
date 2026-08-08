@@ -1,6 +1,7 @@
+import re
 from typing import Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,11 @@ class Settings(BaseSettings):
     environment: Literal["development", "staging", "production"] = Field(
         default="development", validation_alias="ENVIRONMENT"
     )
+    # Render is the release authority.  These values describe an approved
+    # release only; reading them must never enqueue or execute an update.
+    edge_release_version: str | None = Field(default=None, validation_alias="EDGE_RELEASE_VERSION")
+    edge_ui_release_commit: str | None = Field(default=None, validation_alias="EDGE_UI_RELEASE_COMMIT")
+    edge_agent_release_commit: str | None = Field(default=None, validation_alias="EDGE_AGENT_RELEASE_COMMIT")
     # Escape hatch for the staging safety guard below. Leave false in staging.
     allow_production_resources: bool = Field(default=False, validation_alias="ALLOW_PRODUCTION_RESOURCES")
     # Comma-separated substrings that identify production resources (hosts,
@@ -104,6 +110,20 @@ class Settings(BaseSettings):
         env_file=(".env", "../.env"),
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def require_valid_production_release_authority(self) -> "Settings":
+        if self.environment != "production":
+            return self
+        if not self.edge_release_version or not re.fullmatch(r"\d+\.\d+\.\d+", self.edge_release_version):
+            raise ValueError("EDGE_RELEASE_VERSION must be a semantic version in production")
+        for name, value in (
+            ("EDGE_UI_RELEASE_COMMIT", self.edge_ui_release_commit),
+            ("EDGE_AGENT_RELEASE_COMMIT", self.edge_agent_release_commit),
+        ):
+            if not value or not re.fullmatch(r"[0-9a-fA-F]{40}", value):
+                raise ValueError(f"{name} must be a 40-character hexadecimal SHA in production")
+        return self
 
 
 settings = Settings()

@@ -34,7 +34,7 @@ from app.auth import (
     require_supabase_user_auth,
 )
 from app.access import is_platform_admin, require_site_access, visible_site_ids
-from app.config import production_resource_conflicts, settings
+from app.config import Settings, production_resource_conflicts, settings
 from app.database import Base, SessionLocal, engine, get_db
 from app.models import (
     BacnetWriteBatch,
@@ -426,11 +426,29 @@ def _scoped_gateway_statement(db: Session, auth: AdminAuthContext):
     return statement
 
 
-EDGE_RELEASE_VERSION = "0.1.9"
-EDGE_AGENT_RELEASE_VERSION = EDGE_RELEASE_VERSION
-EDGE_UI_RELEASE_VERSION = EDGE_RELEASE_VERSION
 FULL_NON_PROVISIONING_PUBLIC_SCOPE = "full_non_provisioning"
 FULL_NON_PROVISIONING_STORED_SCOPE = "edge_release"
+
+
+def _approved_release_version() -> str:
+    # Development keeps the historic display default; production is validated
+    # by Settings at startup and can never reach this fallback.
+    return (settings.edge_release_version or "0.1.9").strip()
+
+
+def _approved_release_targets() -> tuple[str, str, str]:
+    # Re-read the environment only when an operator submits an update.  This
+    # makes a reviewed Render release promotion effective without creating any
+    # work at startup, and never accepts browser-provided commit values.
+    active_settings = Settings()
+    version = (active_settings.edge_release_version or "").strip()
+    ui_commit = (active_settings.edge_ui_release_commit or "").strip().lower()
+    agent_commit = (active_settings.edge_agent_release_commit or "").strip().lower()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise HTTPException(status_code=503, detail="Approved release version configuration is unavailable")
+    if not re.fullmatch(r"[0-9a-f]{40}", ui_commit) or not re.fullmatch(r"[0-9a-f]{40}", agent_commit):
+        raise HTTPException(status_code=503, detail="Approved release commit configuration is unavailable")
+    return version, ui_commit, agent_commit
 
 
 def _stored_gateway_update_scope(scope: str) -> str:
@@ -448,13 +466,13 @@ def _gateway_update_public_scope(update: GatewayUpdateRequest) -> str:
 def _gateway_update_target_agent_version(update: GatewayUpdateRequest) -> str | None:
     if update.target_agent_version:
         return update.target_agent_version
-    return EDGE_RELEASE_VERSION if _gateway_update_public_scope(update) == FULL_NON_PROVISIONING_PUBLIC_SCOPE else None
+    return _approved_release_version() if _gateway_update_public_scope(update) == FULL_NON_PROVISIONING_PUBLIC_SCOPE else None
 
 
 def _gateway_update_target_ui_version(update: GatewayUpdateRequest) -> str | None:
     if update.target_ui_version:
         return update.target_ui_version
-    return EDGE_RELEASE_VERSION if _gateway_update_public_scope(update) == FULL_NON_PROVISIONING_PUBLIC_SCOPE else None
+    return _approved_release_version() if _gateway_update_public_scope(update) == FULL_NON_PROVISIONING_PUBLIC_SCOPE else None
 
 
 def _version_at_least(actual: str | None, required: str) -> tuple[bool, bool]:
@@ -474,24 +492,19 @@ def _version_at_least(actual: str | None, required: str) -> tuple[bool, bool]:
 
 
 def _gateway_release_status(agent_version: str | None, ui_version: str | None) -> dict[str, object]:
-    agent_current, agent_known = _version_at_least(agent_version, EDGE_AGENT_RELEASE_VERSION)
-    ui_current, ui_known = _version_at_least(ui_version, EDGE_UI_RELEASE_VERSION)
-    if agent_current and ui_current:
-        reason = "Up to date"
-    elif not agent_known or not ui_known:
-        reason = "Update required"
-    elif not agent_current and not ui_current:
-        reason = "Full update required"
-    elif not ui_current:
-        reason = "UI update required"
-    else:
-        reason = "Agent update required"
+    approved_version = _approved_release_version()
+    agent_current, agent_known = _version_at_least(agent_version, approved_version)
+    ui_current, ui_known = _version_at_least(ui_version, approved_version)
+    # The normal operator status intentionally answers one question only.
+    # Component commits and transition details remain diagnostics, not UI text.
+    current = agent_current and ui_current
+    reason = approved_version if current else "Update Needed"
     return {
         "gateway_release_status": reason,
         "gateway_release_reason": reason,
-        "gateway_update_required": reason != "Up to date",
-        "required_agent_version": EDGE_AGENT_RELEASE_VERSION,
-        "required_ui_version": EDGE_UI_RELEASE_VERSION,
+        "gateway_update_required": not current,
+        "required_agent_version": approved_version,
+        "required_ui_version": approved_version,
     }
 
 
@@ -510,6 +523,8 @@ def _gateway_update_out(update: GatewayUpdateRequest, edge_node: EdgeNode) -> di
         "update_scope": public_scope,
         "target_agent_version": _gateway_update_target_agent_version(update),
         "target_ui_version": _gateway_update_target_ui_version(update),
+        "target_agent_commit": update.target_agent_commit,
+        "target_ui_commit": update.target_ui_commit,
         "provisioning": False,
         "token_writing": False,
         "bacnet_configuration_preserved": public_scope == FULL_NON_PROVISIONING_PUBLIC_SCOPE,
@@ -1346,10 +1361,17 @@ def root() -> RedirectResponse:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health() -> dict[str, str | None]:
     # Environment identity for humans and tooling (staging vs production).
     # Never include secrets, URLs, tokens, or credentials here.
-    return {"status": "ok", "environment": settings.environment, "version": app.version}
+    return {
+        "status": "ok",
+        "environment": settings.environment,
+        "version": app.version,
+        "approved_edge_release": settings.edge_release_version,
+        "approved_edge_ui_commit": settings.edge_ui_release_commit,
+        "approved_edge_agent_commit": settings.edge_agent_release_commit,
+    }
 
 
 @app.get("/health/db")
@@ -1795,6 +1817,7 @@ def ui_request_gateway_updates(
     if not gateway_ids:
         raise HTTPException(status_code=400, detail="Select at least one gateway to update")
 
+    approved_version, approved_ui_commit, approved_agent_commit = _approved_release_targets()
     now = utc_now()
     updates: list[GatewayUpdateRequest] = []
     for gateway_id in gateway_ids:
@@ -1812,12 +1835,14 @@ def ui_request_gateway_updates(
                 gateway_id=gateway_id,
                 requested_by=auth.email or "admin-token",
                 update_scope=_stored_gateway_update_scope(payload.update_scope),
-                target_agent_version=payload.target_agent_version
-                if payload.update_scope in {"agent", "edge_release", "full_non_provisioning"}
-                else None,
-                target_ui_version=payload.target_ui_version
-                if payload.update_scope in {"ui_only", "edge_release", "full_non_provisioning"}
-                else None,
+                target_agent_version=approved_version
+                if payload.update_scope in {"agent", "edge_release", "full_non_provisioning"} else None,
+                target_ui_version=approved_version
+                if payload.update_scope in {"ui_only", "edge_release", "full_non_provisioning"} else None,
+                target_agent_commit=approved_agent_commit
+                if payload.update_scope in {"agent", "edge_release", "full_non_provisioning"} else None,
+                target_ui_commit=approved_ui_commit
+                if payload.update_scope in {"ui_only", "edge_release", "full_non_provisioning"} else None,
                 status="queued",
                 requested_at=now,
             )
@@ -3409,8 +3434,8 @@ def admin_complete_gateway_update(
         # Gateway identity, tokens, BACnet settings, and routing are preserved
         # by the gateway updater workflow and intentionally untouched here.
         edge_node = _get_gateway_with_site_or_404(db, update.gateway_id)
-        edge_node.agent_version = _gateway_update_target_agent_version(update) or EDGE_RELEASE_VERSION
-        edge_node.ui_version = _gateway_update_target_ui_version(update) or EDGE_RELEASE_VERSION
+        edge_node.agent_version = _gateway_update_target_agent_version(update) or _approved_release_version()
+        edge_node.ui_version = _gateway_update_target_ui_version(update) or _approved_release_version()
     db.commit()
     return _gateway_update_out(update, _get_gateway_with_site_or_404(db, update.gateway_id))
 

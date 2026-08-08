@@ -26,6 +26,9 @@ os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["GATEWAY_AUTH_PEPPER"] = "test-pepper"
 os.environ["IOT_ADMIN_API_TOKEN"] = "test-admin-token"
 os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-jwt-secret"
+os.environ["EDGE_RELEASE_VERSION"] = "0.2.0"
+os.environ["EDGE_UI_RELEASE_COMMIT"] = "2adae3adeb339806330db0e481cba3179fff2ff1"
+os.environ["EDGE_AGENT_RELEASE_COMMIT"] = "40133f2a81390db92a01b33a9c02c48a07363a7e"
 
 from app import main as main_module
 from app.auth import GatewayAuthContext, hash_gateway_token
@@ -235,7 +238,14 @@ def test_health() -> None:
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "environment": "development", "version": app.version}
+    assert response.json() == {
+        "status": "ok",
+        "environment": "development",
+        "version": app.version,
+        "approved_edge_release": "0.2.0",
+        "approved_edge_ui_commit": "2adae3adeb339806330db0e481cba3179fff2ff1",
+        "approved_edge_agent_commit": "40133f2a81390db92a01b33a9c02c48a07363a7e",
+    }
 
 
 def test_settings_load_database_url_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -448,8 +458,8 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert "gatewayReleaseStatus(gateway).updateRequired" in response.text
     assert "const releaseStatus = gatewayReleaseStatus(gateway);" in response.text
     assert "gatewayReleaseReason(gateway)" in response.text
-    assert 'return `<strong>${escapeHtml(version)}</strong>`;' in response.text
-    assert 'Update needed' in response.text
+    assert 'return `<strong>${escapeHtml(releaseStatus.requiredAgentVersion)}</strong>`;' in response.text
+    assert '<strong>Update Needed</strong>' in response.text
     assert 'Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed' not in response.text
     assert 'data-request-update="${escapeHtml(gateway.gateway_id)}"' in response.text
     assert "target_agent_version: edgeAgentReleaseVersion" in response.text
@@ -487,10 +497,10 @@ def test_dashboard_edge_app_cell_uses_short_release_labels_and_preserves_update_
     response = client.get("/app")
 
     assert response.status_code == 200
-    assert 'return `<strong>${escapeHtml(version)}</strong>`;' in response.text
+    assert 'return `<strong>${escapeHtml(releaseStatus.requiredAgentVersion)}</strong>`;' in response.text
     assert "Agent ${escapeHtml(gateway.agent_version" not in response.text
     assert "UI ${escapeHtml(gateway.ui_version" not in response.text
-    assert 'Update needed' in response.text
+    assert '<strong>Update Needed</strong>' in response.text
     assert "Release: ${escapeHtml(releaseStatus.requiredUiVersion)}" not in response.text
     assert "Mode: Full non-provisioning update" not in response.text
     assert '<button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>' in response.text
@@ -519,7 +529,7 @@ def test_dashboard_release_comparison_states_are_019() -> None:
     assert 'reason = "Agent update required";' in response.text
     assert 'reason = "Full update required";' in response.text
     assert 'let reason = "Up to date";' in response.text
-    assert "Update needed" in response.text
+    assert "<strong>Update Needed</strong>" in response.text
     assert "Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed" not in response.text
     assert "<small>${escapeHtml(releaseStatus.reason)}</small>" in response.text
 
@@ -882,8 +892,10 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     assert request["gateway_id"] == "GW001"
     assert request["status"] == "queued"
     assert request["update_scope"] == "full_non_provisioning"
-    assert request["target_agent_version"] == "0.1.9"
-    assert request["target_ui_version"] == "0.1.9"
+    assert request["target_agent_version"] == "0.2.0"
+    assert request["target_ui_version"] == "0.2.0"
+    assert request["target_agent_commit"] == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+    assert request["target_ui_commit"] == "2adae3adeb339806330db0e481cba3179fff2ff1"
     assert request["provisioning"] is False
     assert request["token_writing"] is False
     assert request["bacnet_configuration_preserved"] is True
@@ -892,15 +904,17 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     assert listed.status_code == 200
     assert listed.json()[0]["request_id"] == request["request_id"]
     assert listed.json()[0]["update_scope"] == "full_non_provisioning"
-    assert listed.json()[0]["target_agent_version"] == "0.1.9"
-    assert listed.json()[0]["target_ui_version"] == "0.1.9"
+    assert listed.json()[0]["target_agent_version"] == "0.2.0"
+    assert listed.json()[0]["target_ui_version"] == "0.2.0"
 
     claimed = client.post(f"/api/admin/gateway-updates/{request['request_id']}/claim", headers=admin_headers())
     assert claimed.status_code == 200
     assert claimed.json()["status"] == "running"
     assert claimed.json()["update_scope"] == "full_non_provisioning"
-    assert claimed.json()["target_agent_version"] == "0.1.9"
-    assert claimed.json()["target_ui_version"] == "0.1.9"
+    assert claimed.json()["target_agent_version"] == "0.2.0"
+    assert claimed.json()["target_ui_version"] == "0.2.0"
+    assert claimed.json()["target_agent_commit"] == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+    assert claimed.json()["target_ui_commit"] == "2adae3adeb339806330db0e481cba3179fff2ff1"
     assert claimed.json()["provisioning"] is False
     assert claimed.json()["token_writing"] is False
     assert claimed.json()["bacnet_configuration_preserved"] is True
@@ -915,8 +929,8 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     with SessionLocal() as db:
         edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
         assert edge_node is not None
-        assert edge_node.ui_version == "0.1.9"
-        assert edge_node.agent_version == "0.1.9"
+        assert edge_node.ui_version == "0.2.0"
+        assert edge_node.agent_version == "0.2.0"
         assert edge_node.site_id == "demo-site"
 
 
@@ -926,14 +940,15 @@ def test_gateway_update_explicit_ui_only_recovery_remains_available() -> None:
     queued = client.post(
         "/api/ui/gateway-updates",
         headers=admin_headers(),
-        json={"gateway_ids": ["GW001"], "update_scope": "ui_only", "target_ui_version": "0.1.9"},
+        json={"gateway_ids": ["GW001"], "update_scope": "ui_only", "target_ui_version": "arbitrary"},
     )
 
     assert queued.status_code == 200
     request = queued.json()[0]
     assert request["update_scope"] == "ui_only"
     assert request["target_agent_version"] is None
-    assert request["target_ui_version"] == "0.1.9"
+    assert request["target_ui_version"] == "0.2.0"
+    assert request["target_ui_commit"] == "2adae3adeb339806330db0e481cba3179fff2ff1"
     assert request["provisioning"] is False
     assert request["token_writing"] is False
     assert request["bacnet_configuration_preserved"] is False
@@ -948,7 +963,7 @@ def test_gateway_update_explicit_ui_only_recovery_remains_available() -> None:
     with SessionLocal() as db:
         edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
         assert edge_node is not None
-        assert edge_node.ui_version == "0.1.9"
+        assert edge_node.ui_version == "0.2.0"
         assert edge_node.agent_version == "0.1.0"
 
 
@@ -1056,15 +1071,19 @@ def test_gateway_update_uses_existing_release_target_schema_for_full_non_provisi
         assert stored.target_ui_version == "0.1.9"
 
 
-def test_cloud_release_change_adds_no_migration_after_existing_0023_head() -> None:
+def test_release_authority_migration_adds_only_the_two_nullable_commit_fields() -> None:
     migration_dir = Path(__file__).resolve().parents[1] / "alembic" / "versions"
     revision_files = {path.name for path in migration_dir.glob("*.py")}
 
     assert "0022_edge_local_trend_samples.py" in revision_files
     assert "0023_edge_release_targets.py" in revision_files
-    assert "0022_gateway_full_non_provisioning_updates.py" not in revision_files
-    assert not any(name.startswith("0024_") for name in revision_files)
+    assert "0024_gateway_update_target_commits.py" in revision_files
+    migration = (migration_dir / "0024_gateway_update_target_commits.py").read_text()
+    assert "target_ui_commit" in migration and "target_agent_commit" in migration
+    assert migration.count("op.add_column") == 2
     assert hasattr(GatewayUpdateRequest, "target_agent_version")
+    assert hasattr(GatewayUpdateRequest, "target_ui_commit")
+    assert hasattr(GatewayUpdateRequest, "target_agent_commit")
     assert GatewayUpdateRequest.__table__.c.update_scope.type.length == 20
 
 
