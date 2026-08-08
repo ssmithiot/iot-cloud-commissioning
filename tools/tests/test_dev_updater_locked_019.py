@@ -8,6 +8,7 @@ import socket
 import subprocess
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -39,6 +40,22 @@ def code(path: Path, name: str) -> str:
     for node in ast.walk(ast.parse(path.read_text())):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return ast.unparse(node)
+    raise AssertionError(name)
+
+
+def baseline_code(name: str) -> str:
+    source = subprocess.check_output(
+        ["git", "show", "32f2bf9:tools/dev_updater/updater_webapp.py"],
+        cwd=ROOT,
+        text=True,
+    )
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.unparse(node)
+        if isinstance(node, ast.ClassDef) and node.name == "LegacyUpgradeRunner":
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == name:
+                    return ast.unparse(item)
     raise AssertionError(name)
 
 def test_protected_legacy_files_are_unchanged():
@@ -119,6 +136,120 @@ def test_final_execution_requires_reviewed_resolved_commits(monkeypatch):
 def test_cloud_claiming_is_off_unless_the_explicit_switch_is_set(monkeypatch):
     monkeypatch.delenv("IOT_EDGE_DEV_UPDATER_CLAIM_CLOUD_JOBS", raising=False)
     assert "CLAIM_CLOUD_JOBS" in DEV.read_text()
+
+
+def test_manual_preparation_and_shared_phase_implementation_match_installed_baseline():
+    """The queue adapter must not alter the proven manual or phase-engine path."""
+    for name in (
+        "resolve_requested_commits",
+        "parse_upgrade_request",
+        "ui_phases_selected",
+        "backup_commands",
+        "run_phase",
+        "build_upload_zip",
+    ):
+        assert code(DEV, name) == baseline_code(name)
+
+
+def test_cloud_claimed_commits_are_exact_and_fail_closed_without_local_fallback():
+    ui_commit = "a" * 40
+    agent_commit = "b" * 40
+    claimed = {"target_ui_commit": ui_commit, "target_agent_commit": agent_commit}
+    assert dev.claimed_release_commit(claimed, "target_ui_commit") == ui_commit
+    assert dev.claimed_release_commit(claimed, "target_agent_commit") == agent_commit
+    with pytest.raises(ValueError, match="refusing local-default fallback"):
+        dev.claimed_release_commit({}, "target_ui_commit")
+    with pytest.raises(ValueError, match="refusing local-default fallback"):
+        dev.claimed_release_commit({"target_agent_commit": "short"}, "target_agent_commit")
+
+
+def test_cloud_queue_uses_claimed_targets_and_materializes_ui_before_shared_engine(monkeypatch):
+    ui_commit = "2adae3adeb339806330db0e481cba3179fff2ff1"
+    agent_commit = "40133f2a81390db92a01b33a9c02c48a07363a7e"
+    claimed = {
+        "request_id": "request-1",
+        "gateway_id": "GW010",
+        "site_id": "GW010",
+        "cradlepoint_host": "10.2.4.21",
+        "gateway_host": "192.168.1.200",
+        "update_scope": "full_non_provisioning",
+        "target_ui_version": "0.2.0",
+        "target_agent_version": "0.2.0",
+        "target_ui_commit": ui_commit,
+        "target_agent_commit": agent_commit,
+    }
+    calls, captured = [], {}
+
+    def fake_cloud(_url, _token, path, **kwargs):
+        calls.append((path, kwargs))
+        return claimed if path.endswith("/claim") else {"ok": True}
+
+    def fake_artifact(commit, *, token):
+        assert commit == ui_commit and token == "github-token"
+        return SimpleNamespace(path=Path("/isolated/edge-ui.tar.gz"), sha256="f" * 64)
+
+    def fake_start(request):
+        captured["request"] = request
+        with dev.JOBS_LOCK:
+            dev.JOBS["isolated-cloud-test"] = SimpleNamespace(status="complete", error="")
+        return "isolated-cloud-test"
+
+    monkeypatch.setenv("IOT_EDGE_UPDATE_REF", "stale-agent-ref")
+    monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
+    monkeypatch.setattr(dev, "materialize_ui_artifact", fake_artifact)
+    monkeypatch.setattr(dev, "start_job", fake_start)
+    monkeypatch.setattr(dev, "health_gate_enabled", lambda: False)
+    try:
+        assert dev.run_queued_gateway_update({"request_id": "request-1"}, {
+            "IOT_ADMIN_API_TOKEN": "admin-token",
+            "CRADLEPOINT_PASSWORD": "cradlepoint-password",
+            "GATEWAY_PASSWORD": "gateway-password",
+            "EDGE_UI_PASSWORD": "ui-password",
+            "GITHUB_TOKEN": "github-token",
+        }) == "completed"
+    finally:
+        with dev.JOBS_LOCK:
+            dev.JOBS.pop("isolated-cloud-test", None)
+
+    request = captured["request"]
+    assert request.edge_ui_commit == ui_commit
+    assert request.edge_agent_commit == agent_commit
+    assert request.git_ref == agent_commit
+    assert request.ui_artifact_path == "/isolated/edge-ui.tar.gz"
+    assert request.ui_artifact_sha256 == "f" * 64
+    assert request.selected_phases == dev.UPDATE_AGENT_PHASES
+    assert 6 not in request.selected_phases and 8 not in request.selected_phases
+    assert any(path.endswith("/claim") for path, _kwargs in calls)
+
+
+@pytest.mark.parametrize("field", ("target_ui_commit", "target_agent_commit"))
+def test_cloud_queue_missing_target_fails_before_starting_shared_engine(monkeypatch, field):
+    claimed = {
+        "gateway_id": "GW010", "site_id": "GW010", "cradlepoint_host": "10.2.4.21",
+        "target_ui_commit": "a" * 40, "target_agent_commit": "b" * 40,
+    }
+    claimed.pop(field)
+    completions = []
+
+    def fake_cloud(_url, _token, path, **kwargs):
+        if path.endswith("/claim"):
+            return claimed
+        completions.append(kwargs["body"])
+        return {"ok": True}
+
+    monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
+    monkeypatch.setattr(dev, "start_job", lambda _request: pytest.fail("shared engine must not start"))
+    assert dev.run_queued_gateway_update({"request_id": "request-1"}, {
+        "IOT_ADMIN_API_TOKEN": "admin-token", "CRADLEPOINT_PASSWORD": "x",
+        "GATEWAY_PASSWORD": "x", "EDGE_UI_PASSWORD": "x", "GITHUB_TOKEN": "github-token",
+    }) == "failed"
+    assert completions and completions[-1]["status"] == "failed"
+
+
+def test_full_non_provisioning_phase_membership_is_unchanged():
+    assert dev.UPDATE_AGENT_PHASES == (0, 1, 2, 3, 4, 5, 7, 9, 10, 11)
+    assert 6 not in dev.UPDATE_AGENT_PHASES
+    assert 8 not in dev.UPDATE_AGENT_PHASES
 
 def test_development_audit_log_is_separate_and_redacted(tmp_path, monkeypatch):
     monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
