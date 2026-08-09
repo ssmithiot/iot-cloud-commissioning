@@ -7582,10 +7582,20 @@ def gateway_workspace_html(gateway_id: str) -> str:
 def tunnel_connecting_html(gateway_id: str) -> str:
     escaped_gateway_id = escape(gateway_id)
     body = f"""
-  <main style="min-height:70vh;display:grid;place-items:center"><section style="max-width:420px;text-align:center">
-    <h1>{escaped_gateway_id} Remote Tunnel</h1><h2>Connecting Tunnel</h2>
-    <p class="notice">Opening tunnel...</p><p class="muted">Connecting to gateway... Please wait.</p>
-  </section></main>"""
+  <style>
+    .tunnel-connecting-card {{ width:min(420px,100%); padding:32px; text-align:center; border:1px solid #1d8f89; border-radius:12px; background:#081415; color:#dff6f4; box-shadow:0 18px 48px rgba(0,0,0,.35); }}
+    .tunnel-spinner {{ width:38px; height:38px; margin:20px auto; border:4px solid rgba(34,211,197,.24); border-top-color:#22d3c5; border-radius:50%; animation:tunnel-spin .85s linear infinite; }}
+    .tunnel-progress {{ height:6px; overflow:hidden; border-radius:99px; background:rgba(34,211,197,.16); }}
+    .tunnel-progress::after {{ content:""; display:block; width:42%; height:100%; border-radius:inherit; background:#22d3c5; animation:tunnel-progress 1.3s ease-in-out infinite; }}
+    @keyframes tunnel-spin {{ to {{ transform:rotate(360deg); }} }}
+    @keyframes tunnel-progress {{ 0% {{ transform:translateX(-110%); }} 100% {{ transform:translateX(250%); }} }}
+    body[data-theme="dark"] {{ background:#050b0c; color:#dff6f4; }}
+  </style>
+  <main style="min-height:70vh;display:grid;place-items:center"><section class="tunnel-connecting-card">
+    <h1>{escaped_gateway_id} Remote Tunnel</h1><h2>Connecting Tunnel</h2><div class="tunnel-spinner" aria-label="Connecting"></div>
+    <p>Opening tunnel...</p><p>Connecting to gateway... Please wait.</p><div class="tunnel-progress" role="progressbar" aria-label="Tunnel connection in progress"></div>
+  </section></main>
+  <script>if (localStorage.getItem("iot-cloud-command-theme") !== "light") document.body.dataset.theme = "dark";</script>"""
     return _layout("Connecting Tunnel - IOT Cloud Commissioning", body, "tunnel-connecting", f'data-gateway-id="{escaped_gateway_id}"')
 
 
