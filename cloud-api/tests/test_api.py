@@ -655,6 +655,14 @@ def test_gateway_workspace_includes_demo_bms_graphic_before_diagnostics() -> Non
     assert response.text.index("RTU-1 · Rooftop Unit") < response.text.index("Cloud BACnet Diagnostics")
     assert response.text.index("Cloud BACnet Diagnostics") < response.text.index("<h2>Technical</h2>")
     assert "Point Workspace" not in response.text
+    for section in (
+        "Equipment Info", "Weather / Outdoor Air", "Reversing Valve &amp; Alarms",
+        "Space Temp", "Supply Air Temp", "Return Air Temp", "Supply Fan",
+        "Cool Stage 1", "Cool Stage 2", "Heat Stage 1", "Heat Stage 2",
+        "Filter / Damper", "Active Effective Setpoints", "Occupied Setpoints",
+        "Unoccupied Setpoints", "Trend Log — Space Temp vs. Setpoint", "All Points",
+    ):
+        assert section in response.text
 
 
 def test_gateway_all_points_page_uses_edge_live_device_three_columns() -> None:
