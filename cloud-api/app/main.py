@@ -2204,9 +2204,17 @@ async def edge_tunnel(
     websocket: WebSocket,
     authorization: str | None = Header(default=None),
 ) -> None:
+    async def reject(code: int) -> None:
+        # A peer may abandon a rejected handshake before the ASGI close send.
+        # That race is normal for the fleet's expected admission denials.
+        try:
+            await websocket.close(code=code)
+        except (RuntimeError, WebSocketDisconnect):
+            pass
+
     if settings.gateway_tunnel_websockets_disabled:
         tunnel_metrics.record_rejected()
-        await websocket.close(code=1013)
+        await reject(1013)
         return
 
     # This is intentionally before authentication, SQLAlchemy, and the
@@ -2214,13 +2222,13 @@ async def edge_tunnel(
     # Unrequested gateways must be as cheap as the global kill switch.
     if not tunnel_allowlist.allows(gateway_id):
         tunnel_metrics.record_rejected()
-        await websocket.close(code=1008)
+        await reject(1008)
         return
 
     tunnel_metrics.record_auth_attempt()
     if not tunnel_auth_gate.try_acquire(settings.gateway_tunnel_auth_concurrency):
         tunnel_metrics.record_rejected()
-        await websocket.close(code=1013)
+        await reject(1013)
         return
 
     # QueuePool-exhaustion hotfix (2026-07-14): this endpoint previously took
@@ -2239,17 +2247,17 @@ async def edge_tunnel(
         auth = require_gateway_auth(authorization=authorization, db=db)
         if auth.gateway_id != gateway_id:
             tunnel_metrics.record_rejected()
-            await websocket.close(code=1008)
+            await reject(1008)
             return
         request = _current_tunnel_request(db, gateway_id)
         if request is None:
             tunnel_metrics.record_rejected()
-            await websocket.close(code=1008)
+            await reject(1008)
             return
         expires_at = request.expires_at
     except HTTPException:
         tunnel_metrics.record_rejected()
-        await websocket.close(code=1008)
+        await reject(1008)
         return
     finally:
         if db is not None:
