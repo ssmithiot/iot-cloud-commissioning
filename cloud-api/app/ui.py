@@ -2068,11 +2068,15 @@ APP_SCRIPT = r"""
       <div class="inspector-actions">
         <a class="button" href="/gateways/${encoded}" target="_blank" rel="noopener noreferrer">Workspace</a>
         <a class="button secondary" href="/gateways/${encoded}">Edit Site</a>
-        <a class="button secondary" href="/gateways/${encoded}/tunnel/">Remote Tunnel</a>
+        <label for="selected-tunnel-ttl">Tunnel duration</label><select id="selected-tunnel-ttl" aria-label="Tunnel duration"><option value="5" selected>5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select><a id="selected-remote-tunnel" class="button secondary" href="#">Remote Tunnel</a>
         ${gateway.direct_connect_available && currentUser?.role !== "viewer" ? `<a class="button secondary" href="/api/ui/gateways/${encoded}/direct-connect" data-direct-connect="${escapeHtml(gateway.gateway_id)}">Direct Connect</a>` : `<span class="muted">Direct Connect not configured</span>`}
       </div>
     `;
     attachDirectConnectHandlers(panel);
+    panel.querySelector("#selected-remote-tunnel")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      openRemoteTunnel(gateway.gateway_id, Number(panel.querySelector("#selected-tunnel-ttl")?.value || 5));
+    });
     loadGatewayWeather(gateway);
     loadGatewayHeartbeatTrend(gateway);
   }
@@ -3982,6 +3986,26 @@ APP_SCRIPT = r"""
     return value === "" ? null : Number(value);
   }
 
+  async function openRemoteTunnel(gatewayId, ttl) {
+    const popup = window.open(`/gateways/${encodeURIComponent(gatewayId)}/tunnel/connecting`, "_blank");
+    try {
+      await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel/open`, { method: "POST", body: JSON.stringify({ duration_minutes: ttl }) });
+      setText("status", "Connecting tunnel...");
+      const deadline = Date.now() + 30000;
+      while (Date.now() < deadline) {
+        const status = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`);
+        if (status.connected) {
+          const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST", body: JSON.stringify({ ttl_minutes: ttl }) });
+          if (popup) popup.location.assign(session.url);
+          else window.open(session.url, "_blank", "noopener,noreferrer");
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      throw new Error("Tunnel is still connecting.");
+    } catch (error) { if (popup) popup.close(); throw error; }
+  }
+
   function renderSiteInfo(site, directConnect, tunnelStatus) {
     setFieldValue("site-name", site.name);
     setFieldValue("site-address-street", site.address_street || site.address);
@@ -4040,27 +4064,11 @@ APP_SCRIPT = r"""
         remoteTunnelLink.setAttribute("aria-disabled", "true");
         const gatewayId = document.body.dataset.gatewayId;
         const ttl = Number(byId("workspace-tunnel-ttl")?.value || 5);
-        const popup = window.open(`/gateways/${encodeURIComponent(gatewayId)}/tunnel/connecting`, "_blank");
         if (tunnelActionStatus) tunnelActionStatus.textContent = "Opening tunnel...";
         try {
-          await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel/open`, { method: "POST", body: JSON.stringify({ duration_minutes: ttl }) });
-          if (tunnelActionStatus) tunnelActionStatus.textContent = "Connecting tunnel...";
-          const deadline = Date.now() + 30000;
-          while (Date.now() < deadline) {
-            const status = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`);
-            byId("tunnel-status").textContent = status.connected ? `connected — ${Math.ceil((status.remaining_seconds || 0) / 60)}m remaining` : "connecting tunnel...";
-            if (status.connected) {
-              const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST", body: JSON.stringify({ ttl_minutes: ttl }) });
-              if (popup) popup.location.assign(session.url);
-              else window.open(session.url, "_blank", "noopener,noreferrer");
-              if (tunnelActionStatus) tunnelActionStatus.textContent = "Connected";
-              return;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          }
-          throw new Error("Tunnel is still connecting. Please try again shortly.");
+          await openRemoteTunnel(gatewayId, ttl);
+          if (tunnelActionStatus) tunnelActionStatus.textContent = "Connected";
         } catch (error) {
-          if (popup) popup.close();
           if (tunnelActionStatus) tunnelActionStatus.textContent = errorMessage(error);
         } finally {
           remoteTunnelLink.dataset.busy = "false";
