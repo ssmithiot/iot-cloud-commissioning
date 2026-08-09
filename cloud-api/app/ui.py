@@ -7440,7 +7440,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
     </section>
     <section class="bms-shell" aria-labelledby="bms-graphic-title">
       <style>
-        .bms-shell { margin:20px 0; padding:20px; border:1px solid var(--border); border-radius:12px; background:linear-gradient(135deg,rgba(59,130,246,.10),rgba(11,20,23,.86)); box-shadow:0 12px 30px rgba(0,0,0,.16); }
+        .bms-shell { height:auto; max-height:none; overflow:visible; margin:20px 0; padding:20px; border:1px solid var(--border); border-radius:12px; background:linear-gradient(135deg,rgba(59,130,246,.10),rgba(11,20,23,.86)); box-shadow:0 12px 30px rgba(0,0,0,.16); }
         body[data-theme="light"] .bms-shell { background:linear-gradient(135deg,rgba(37,99,235,.08),rgba(255,255,255,.92)); }
         .bms-head,.bms-grid,.bms-setpoints { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
         .bms-head h2 { margin:2px 0; } .bms-kicker,.bms-label { color:var(--muted); font:700 11px/1.2 "JetBrains Mono",Consolas,monospace; text-transform:uppercase; letter-spacing:.45px; }
@@ -7453,8 +7453,8 @@ def gateway_workspace_html(gateway_id: str) -> str:
         .bms-status { color:#76f7a6; font-weight:700; } .bms-alert { color:#f5c542; font-weight:700; }
         .bms-setpoints { margin-top:10px; padding-top:10px; border-top:1px solid var(--border); } .bms-setpoint { min-width:150px; padding:10px; border-radius:9px; background:rgba(59,130,246,.10); }
         .bms-setpoint strong { display:block; margin-top:4px; font-size:20px; } .bms-setpoint button { min-height:26px; padding:2px 8px; margin-left:4px; opacity:.55; cursor:not-allowed; }
-        .bms-trend { margin-top:16px; height:84px; border-radius:9px; border:1px solid var(--border); background:linear-gradient(180deg,transparent,rgba(59,130,246,.14)); overflow:hidden; }
-        .bms-trend svg { width:100%; height:100%; } .bms-range{float:right;display:flex;gap:5px}.bms-range button{min-height:25px;padding:3px 8px}.bms-range button[disabled]{cursor:default;opacity:.7} @media (max-width:760px){ .bms-tile,.bms-tile.wide,.bms-tile.third,.bms-tile.status,.bms-tile.setpoint{grid-column:span 12;} }
+        .bms-trend { margin-top:16px; min-height:250px; height:auto; max-height:none; border-radius:9px; border:1px solid var(--border); background:linear-gradient(180deg,transparent,rgba(59,130,246,.14)); overflow:visible; }
+        .bms-trend svg { width:100%; height:180px; display:block; } .bms-range{float:right;display:flex;gap:5px}.bms-range button{min-height:25px;padding:3px 8px}.bms-range button[disabled]{cursor:default;opacity:.7} @media (max-width:760px){ .bms-tile,.bms-tile.wide,.bms-tile.third,.bms-tile.status,.bms-tile.setpoint{grid-column:span 12;} }
       </style>
       <div class="bms-head"><div><span class="bms-kicker">Equipment graphic · demo values</span><h2 id="bms-graphic-title">RTU-1 · Rooftop Unit</h2><span class="bms-sub">Zone 2 · North Wing Retail — Level 1 · Presentation shell only — live point bindings arrive in Phase 2.</span></div><div class="bms-label">RTU &nbsp; AHU &nbsp; Minisplit</div><div class="bms-live">● OCCUPIED · NORMAL</div><a class="button bms-action" href="/gateways/{escaped_gateway_id}/points">All Points</a></div>
       <div class="bms-grid">

@@ -654,6 +654,9 @@ def test_gateway_workspace_includes_demo_bms_graphic_before_diagnostics() -> Non
     assert 'href="/gateways/GW777/points"' in response.text
     assert response.text.index("RTU-1 · Rooftop Unit") < response.text.index("Cloud BACnet Diagnostics")
     assert response.text.index("Cloud BACnet Diagnostics") < response.text.index("<h2>Technical</h2>")
+    assert ".bms-shell { height:auto; max-height:none; overflow:visible;" in response.text
+    assert ".bms-trend { margin-top:16px; min-height:250px; height:auto; max-height:none;" in response.text
+    assert "overflow:visible; }" in response.text
     assert "Point Workspace" not in response.text
     for section in (
         "Equipment Info", "Weather / Outdoor Air", "Reversing Valve &amp; Alarms",
