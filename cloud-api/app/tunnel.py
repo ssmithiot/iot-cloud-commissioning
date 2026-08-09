@@ -28,13 +28,24 @@ class TunnelRequestFailed(Exception):
 
 
 class TunnelAllowlist:
-    """Small in-memory gate for operator-authorized tunnel attempts."""
+    """Small in-memory admission lease store for operator-authorized tunnels."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._expires: dict[str, datetime] = {}
 
+    def reserve(self, gateway_id: str, expires_at: datetime, *, maximum: int) -> bool:
+        """Create or extend one gateway lease without consulting the database."""
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            self._expire_locked(now)
+            if gateway_id not in self._expires and (maximum <= 0 or len(self._expires) >= maximum):
+                return False
+            self._expires[gateway_id] = expires_at
+            return True
+
     def allow(self, gateway_id: str, expires_at: datetime) -> None:
+        """Test helper/backwards-compatible unconditional lease insertion."""
         with self._lock:
             self._expires[gateway_id] = expires_at
 
@@ -51,13 +62,33 @@ class TunnelAllowlist:
         with self._lock:
             self._expires.pop(gateway_id, None)
 
-    def replace(self, requests: Mapping[str, datetime]) -> None:
+    def remove_if_current(self, gateway_id: str, expires_at: datetime) -> bool:
+        with self._lock:
+            if self._expires.get(gateway_id) != expires_at:
+                return False
+            self._expires.pop(gateway_id, None)
+            return True
+
+    def expires_at(self, gateway_id: str) -> datetime | None:
         now = datetime.now(timezone.utc)
         with self._lock:
-            self._expires = {gateway_id: expires_at for gateway_id, expires_at in requests.items() if expires_at > now}
+            self._expire_locked(now)
+            return self._expires.get(gateway_id)
+
+    def active_count(self) -> int:
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            self._expire_locked(now)
+            return len(self._expires)
+
+    def _expire_locked(self, now: datetime) -> None:
+        for gateway_id, expires_at in list(self._expires.items()):
+            if expires_at <= now:
+                self._expires.pop(gateway_id, None)
 
     def clear(self) -> None:
-        self.replace({})
+        with self._lock:
+            self._expires.clear()
 
 
 @dataclass(frozen=True)

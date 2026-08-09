@@ -51,11 +51,17 @@ def reset_database() -> None:
     tunnel_allowlist.clear()
     tunnel_auth_gate.reset()
     tunnel_metrics.reset()
+    for task in main_module._tunnel_expiry_tasks.values():
+        task.cancel()
+    main_module._tunnel_expiry_tasks.clear()
     yield
     tunnel_manager._tunnels.clear()
     tunnel_allowlist.clear()
     tunnel_auth_gate.reset()
     tunnel_metrics.reset()
+    for task in main_module._tunnel_expiry_tasks.values():
+        task.cancel()
+    main_module._tunnel_expiry_tasks.clear()
     engine.dispose()
 
 
@@ -558,6 +564,20 @@ def test_gateway_workspace_restores_remote_tunnel_action_next_to_direct_connect(
     assert 'id="tunnel-status"' in response.text
 
 
+def test_remote_tunnel_polling_only_waits_for_connection_then_uses_historical_session() -> None:
+    response = client.get("/gateways/GW777")
+
+    assert response.status_code == 200
+    assert "async function openRemoteTunnel(gatewayId, ttl)" in response.text
+    assert "while (Date.now() < deadline)" in response.text
+    assert "if (status.connected)" in response.text
+    assert "await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`" in response.text
+    assert "popup.location.assign(session.url);" in response.text
+    # The function returns as soon as the session is created; the wait loop
+    # exists only before a gateway connection is available.
+    assert "return;\n        }\n        await new Promise((resolve) => setTimeout(resolve, 1000));" in response.text
+
+
 def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     response = client.get("/gateways/GW777")
 
@@ -579,7 +599,7 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'id="site-address-postal-code"' in response.text
     assert 'id="direct-connect-link"' in response.text
     assert 'id="remote-tunnel-link"' in response.text
-    assert '<div class="span-12"><label>Action</label><div class="gateway-access-actions"><a id="remote-tunnel-link"' in response.text
+    assert '<div class="span-12"><label>Action</label><div class="gateway-access-actions"><label for="workspace-tunnel-ttl">Tunnel duration</label><select id="workspace-tunnel-ttl"' in response.text
     assert 'Remote Tunnel</a><a id="direct-connect-link"' in response.text
     assert 'id="tunnel-action-status" class="gateway-action-status">Ready</span>' in response.text
     assert 'id="tunnel-status"' in response.text
@@ -602,7 +622,7 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert "select-all-point-candidates" in response.text
     assert "Loaded Point Candidates" in response.text
     assert 'data-role="save-device"' in response.text
-    assert "Remove device" in response.text
+    assert 'label: "Delete controller"' in response.text
     assert "function showDeviceNameEditor(device, pointCount)" in response.text
     assert 'title="${escapeHtml(titleAction.label)}"' in response.text
     assert 'method: "PATCH", body: JSON.stringify({ device_name: deviceName })' in response.text
@@ -1370,22 +1390,9 @@ def test_tunnel_status_remains_friendly_when_disconnected() -> None:
 
 
 def create_open_tunnel_request(gateway_id: str) -> None:
-    from app.models import GatewayTunnelRequest
     from app.tunnel import tunnel_allowlist
 
     now = utc_now()
-    with SessionLocal() as db:
-        db.add(
-            GatewayTunnelRequest(
-                gateway_id=gateway_id,
-                requested_duration_minutes=30,
-                requested_at=now,
-                expires_at=now + timedelta(minutes=30),
-                requested_by="test",
-                state="open",
-            )
-        )
-        db.commit()
     tunnel_allowlist.allow(gateway_id, now + timedelta(minutes=30))
 
 
@@ -1421,6 +1428,7 @@ def test_gateway_tunnel_requires_operator_open_request(monkeypatch: pytest.Monke
 
 
 def test_open_close_tunnel_request_is_gateway_scoped_and_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.models import GatewayTunnelRequest
     from app.tunnel import tunnel_allowlist
     monkeypatch.setattr(main_module.settings, "gateway_tunnel_websockets_disabled", False)
     monkeypatch.setattr(main_module.settings, "gateway_tunnel_max_active", 1)
@@ -1432,10 +1440,12 @@ def test_open_close_tunnel_request_is_gateway_scoped_and_idempotent(monkeypatch:
     blocked = client.post("/api/ui/gateways/GW011/tunnel/open", headers=admin_headers(), json={"duration_minutes": 15})
 
     assert opened.status_code == 200
+    with SessionLocal() as db:
+        assert db.scalars(select(GatewayTunnelRequest)).all() == []
     assert tunnel_allowlist.allows("GW010") is True
     assert tunnel_allowlist.allows("GW011") is False
     assert repeated.status_code == 200
-    assert repeated.json()["expires_at"] == opened.json()["expires_at"]
+    assert repeated.json()["expires_at"] > opened.json()["expires_at"]
     assert blocked.status_code == 409
     assert blocked.json() == {"detail": "Tunnel capacity reached"}
 
@@ -1446,38 +1456,49 @@ def test_open_close_tunnel_request_is_gateway_scoped_and_idempotent(monkeypatch:
     assert reopened.status_code == 200
 
 
-def test_expired_open_request_rejects_gateway_websocket() -> None:
-    raw_token = create_gateway_token("GW001")
-    from app.models import GatewayTunnelRequest
+def test_tunnel_capacity_is_enforced_by_in_memory_leases_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.tunnel import tunnel_allowlist
 
-    with SessionLocal() as db:
-        db.add(
-            GatewayTunnelRequest(
-                gateway_id="GW001", requested_duration_minutes=5, requested_at=utc_now() - timedelta(minutes=10),
-                expires_at=utc_now() - timedelta(seconds=1), requested_by="test", state="open"
-            )
-        )
-        db.commit()
+    monkeypatch.setattr(main_module.settings, "gateway_tunnel_max_active", 10)
+    expires_at = utc_now() + timedelta(minutes=5)
+    for index in range(10):
+        assert tunnel_allowlist.reserve(f"GW{index:03d}", expires_at, maximum=10) is True
+    assert tunnel_allowlist.reserve("GW010", expires_at, maximum=10) is False
+    assert tunnel_allowlist.active_count() == 10
+
+
+def test_tunnel_expiry_never_queries_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.tunnel import tunnel_allowlist
+
+    expires_at = utc_now() - timedelta(seconds=1)
+    tunnel_allowlist.allow("GW001", expires_at)
+
+    def unexpected_db():
+        raise AssertionError("lease expiry must not open a DB session")
+
+    monkeypatch.setattr(main_module, "SessionLocal", unexpected_db)
+    asyncio.run(main_module._expire_active_tunnel("GW001", expires_at))
+    assert tunnel_allowlist.allows("GW001") is False
+
+
+def test_expired_in_memory_lease_rejects_gateway_websocket() -> None:
+    raw_token = create_gateway_token("GW001")
+    from app.tunnel import tunnel_allowlist
+
+    tunnel_allowlist.allow("GW001", utc_now() - timedelta(seconds=1))
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
             pass
-    assert exc.value.code == 1008
+    assert exc.value.code == 1013
 
 
 def test_tunnel_expiry_closes_active_registry_entry() -> None:
-    from app.models import GatewayTunnelRequest
-    from app.tunnel import tunnel_manager
+    from app.tunnel import tunnel_allowlist, tunnel_manager
 
     create_gateway_token("GW001")
     now = utc_now()
-    with SessionLocal() as db:
-        db.add(
-            GatewayTunnelRequest(
-                gateway_id="GW001", requested_duration_minutes=5, requested_at=now - timedelta(minutes=5),
-                expires_at=now - timedelta(seconds=1), requested_by="test", state="open"
-            )
-        )
-        db.commit()
+    expires_at = now - timedelta(seconds=1)
+    tunnel_allowlist.allow("GW001", expires_at)
 
     class FakeWebSocket:
         def __init__(self) -> None:
@@ -1488,7 +1509,7 @@ def test_tunnel_expiry_closes_active_registry_entry() -> None:
 
     socket = FakeWebSocket()
     tunnel_manager.register("GW001", socket)  # type: ignore[arg-type]
-    asyncio.run(main_module._expire_active_tunnel("GW001", now - timedelta(seconds=1)))
+    asyncio.run(main_module._expire_active_tunnel("GW001", expires_at))
     assert socket.closed is True
     assert tunnel_manager.is_connected("GW001") is False
 
@@ -1514,6 +1535,7 @@ def test_gateway_tunnel_auth_gate_rejects_overload_before_db(monkeypatch: pytest
     monkeypatch.setattr(main_module.settings, "gateway_tunnel_auth_concurrency", 1)
     assert tunnel_auth_gate.try_acquire(1) is True
     raw_token = create_gateway_token("GW001")
+    create_open_tunnel_request("GW001")
     try:
         with pytest.raises(WebSocketDisconnect) as exc:
             with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
@@ -1521,12 +1543,42 @@ def test_gateway_tunnel_auth_gate_rejects_overload_before_db(monkeypatch: pytest
     finally:
         tunnel_auth_gate.release()
 
-    assert exc.value.code == 1008
+    assert exc.value.code == 1013
     assert app_engine.pool.checkedout() == 0
     snapshot = tunnel_metrics.snapshot(active_tunnels=0, auth_gate_in_use=tunnel_auth_gate.in_use, auth_gate_limit=1)
-    assert snapshot["auth_attempts_total"] == 0
+    assert snapshot["auth_attempts_total"] == 1
     assert snapshot["rejected_total"] == 1
     assert snapshot["accepted_total"] == 0
+
+
+def test_gateway_tunnel_capacity_rejects_before_db_or_gateway_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.tunnel import tunnel_allowlist, tunnel_manager
+
+    raw_token = create_gateway_token("GW002")
+    tunnel_allowlist.allow("GW002", utc_now() + timedelta(minutes=5))
+    tunnel_manager._tunnels["GW001"] = object()  # type: ignore[assignment]
+    monkeypatch.setattr(main_module.settings, "gateway_tunnel_max_active", 1)
+
+    def unexpected_db():
+        raise AssertionError("capacity rejection must not open a DB session")
+
+    def unexpected_auth(**kwargs):
+        raise AssertionError("capacity rejection must not authenticate")
+
+    monkeypatch.setattr(main_module, "SessionLocal", unexpected_db)
+    monkeypatch.setattr(main_module, "require_gateway_auth", unexpected_auth)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect("/api/edge/tunnels/GW002", headers=auth_headers(raw_token)):
+            pass
+    assert exc.value.code == 1013
+
+
+def test_gateway_tunnel_no_longer_checks_durable_request_after_authentication() -> None:
+    import inspect
+
+    source = inspect.getsource(main_module.edge_tunnel)
+    assert "GatewayTunnelRequest" not in source
+    assert "_current_tunnel_request" not in source
 
 
 def test_gateway_tunnel_registration_updates_status() -> None:
