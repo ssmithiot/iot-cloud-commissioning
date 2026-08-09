@@ -5134,6 +5134,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       color: #dff6f4;
       background: #091012;
     }}
+    body[data-theme="dark"] #workspace-tunnel-ttl,
+    body[data-theme="dark"] #selected-tunnel-ttl,
+    body[data-theme="dark"] #tunnel-ttl-minutes {{
+      color: #dff6f4 !important;
+      background-color: #091012 !important;
+      color-scheme: dark;
+    }}
     body[data-page="gateway-workspace"][data-theme="light"] input,
     body[data-page="gateway-workspace"][data-theme="light"] select,
     body[data-page="gateway-workspace"][data-theme="light"] textarea {{
