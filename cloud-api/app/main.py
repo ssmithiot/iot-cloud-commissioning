@@ -2144,7 +2144,7 @@ def ui_open_gateway_tunnel(
             request.requested_by = auth.email or auth.auth_type
             request.state = "open"
             db.commit()
-            tunnel_allowlist.allow(gateway_id, request.expires_at)
+        tunnel_allowlist.allow(gateway_id, request.expires_at)
     return TunnelStatusOut(
         connected=tunnel_manager.is_connected(gateway_id),
         status="connected" if tunnel_manager.is_connected(gateway_id) else "opening",
@@ -2255,10 +2255,6 @@ async def edge_tunnel(
     tunnel, replaced_tunnel = tunnel_manager.register(gateway_id, websocket)
     if replaced_tunnel is not None:
         tunnel_metrics.record_duplicate_replacement()
-        try:
-            await replaced_tunnel.websocket.close(code=1012)
-        except RuntimeError:
-            pass
     _schedule_tunnel_expiry(gateway_id, expires_at)
     try:
         while True:

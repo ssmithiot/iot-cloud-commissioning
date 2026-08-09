@@ -4040,27 +4040,13 @@ APP_SCRIPT = r"""
         remoteTunnelLink.setAttribute("aria-disabled", "true");
         const gatewayId = document.body.dataset.gatewayId;
         const ttl = Number(byId("workspace-tunnel-ttl")?.value || 5);
-        const popup = window.open("about:blank", "_blank");
         if (tunnelActionStatus) tunnelActionStatus.textContent = "Opening tunnel...";
         try {
           await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel/open`, { method: "POST", body: JSON.stringify({ duration_minutes: ttl }) });
           if (tunnelActionStatus) tunnelActionStatus.textContent = "Connecting tunnel...";
-          const deadline = Date.now() + 30000;
-          while (Date.now() < deadline) {
-            const status = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`);
-            byId("tunnel-status").textContent = status.connected ? `connected — ${Math.ceil((status.remaining_seconds || 0) / 60)}m remaining` : "connecting tunnel...";
-            if (status.connected) {
-              const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST", body: JSON.stringify({ ttl_minutes: ttl }) });
-              if (popup) popup.location.assign(session.url);
-              else window.open(session.url, "_blank", "noopener,noreferrer");
-              if (tunnelActionStatus) tunnelActionStatus.textContent = "Connected";
-              return;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-          }
-          throw new Error("Tunnel is still connecting. Please try again shortly.");
+          byId("tunnel-status").textContent = "connecting tunnel...";
+          remoteTunnelLink.href = `/gateways/${encodeURIComponent(gatewayId)}/tunnel/`;
         } catch (error) {
-          if (popup) popup.close();
           if (tunnelActionStatus) tunnelActionStatus.textContent = errorMessage(error);
         } finally {
           remoteTunnelLink.dataset.busy = "false";
