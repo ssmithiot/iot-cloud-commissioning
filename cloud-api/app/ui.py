@@ -4040,14 +4040,27 @@ APP_SCRIPT = r"""
         remoteTunnelLink.setAttribute("aria-disabled", "true");
         const gatewayId = document.body.dataset.gatewayId;
         const ttl = Number(byId("workspace-tunnel-ttl")?.value || 5);
+        const popup = window.open(`/gateways/${encodeURIComponent(gatewayId)}/tunnel/connecting`, "_blank");
         if (tunnelActionStatus) tunnelActionStatus.textContent = "Opening tunnel...";
         try {
           await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel/open`, { method: "POST", body: JSON.stringify({ duration_minutes: ttl }) });
           if (tunnelActionStatus) tunnelActionStatus.textContent = "Connecting tunnel...";
-          byId("tunnel-status").textContent = "connecting tunnel...";
-          remoteTunnelLink.href = `/gateways/${encodeURIComponent(gatewayId)}/tunnel/`;
-          remoteTunnelLink.onclick = null;
+          const deadline = Date.now() + 30000;
+          while (Date.now() < deadline) {
+            const status = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`);
+            byId("tunnel-status").textContent = status.connected ? `connected — ${Math.ceil((status.remaining_seconds || 0) / 60)}m remaining` : "connecting tunnel...";
+            if (status.connected) {
+              const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST", body: JSON.stringify({ ttl_minutes: ttl }) });
+              if (popup) popup.location.assign(session.url);
+              else window.open(session.url, "_blank", "noopener,noreferrer");
+              if (tunnelActionStatus) tunnelActionStatus.textContent = "Connected";
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+          }
+          throw new Error("Tunnel is still connecting. Please try again shortly.");
         } catch (error) {
+          if (popup) popup.close();
           if (tunnelActionStatus) tunnelActionStatus.textContent = errorMessage(error);
         } finally {
           remoteTunnelLink.dataset.busy = "false";
@@ -7539,6 +7552,16 @@ def gateway_workspace_html(gateway_id: str) -> str:
         "gateway-workspace",
         f'data-gateway-id="{escaped_gateway_id}"',
     )
+
+
+def tunnel_connecting_html(gateway_id: str) -> str:
+    escaped_gateway_id = escape(gateway_id)
+    body = f"""
+  <main style="min-height:70vh;display:grid;place-items:center"><section style="max-width:420px;text-align:center">
+    <h1>{escaped_gateway_id} Remote Tunnel</h1><h2>Connecting Tunnel</h2>
+    <p class="notice">Opening tunnel...</p><p class="muted">Connecting to gateway... Please wait.</p>
+  </section></main>"""
+    return _layout("Connecting Tunnel - IOT Cloud Commissioning", body, "tunnel-connecting", f'data-gateway-id="{escaped_gateway_id}"')
 
 
 def tunnel_console_html(gateway_id: str) -> str:

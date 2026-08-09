@@ -143,6 +143,7 @@ from app.ui import (
     reset_password_html,
     signup_html,
     tunnel_console_html,
+    tunnel_connecting_html,
     unauthorized_html,
     waiting_approval_html,
 )
@@ -1510,6 +1511,12 @@ def tunnel_console_page(
     return HTMLResponse(tunnel_console_html(gateway_id))
 
 
+@app.get("/gateways/{gateway_id}/tunnel/connecting", response_class=HTMLResponse, include_in_schema=False)
+def tunnel_connecting_page(gateway_id: str, db: Session = Depends(get_db)) -> HTMLResponse:
+    _get_gateway_or_404(db, gateway_id)
+    return HTMLResponse(tunnel_connecting_html(gateway_id))
+
+
 @app.get("/admin/users", response_class=HTMLResponse, include_in_schema=False)
 def admin_users_page() -> HTMLResponse:
     return HTMLResponse(admin_users_html())
@@ -2144,7 +2151,7 @@ def ui_open_gateway_tunnel(
             request.requested_by = auth.email or auth.auth_type
             request.state = "open"
             db.commit()
-        tunnel_allowlist.allow(gateway_id, request.expires_at)
+            tunnel_allowlist.allow(gateway_id, request.expires_at)
     return TunnelStatusOut(
         connected=tunnel_manager.is_connected(gateway_id),
         status="connected" if tunnel_manager.is_connected(gateway_id) else "opening",
@@ -2255,6 +2262,10 @@ async def edge_tunnel(
     tunnel, replaced_tunnel = tunnel_manager.register(gateway_id, websocket)
     if replaced_tunnel is not None:
         tunnel_metrics.record_duplicate_replacement()
+        try:
+            await replaced_tunnel.websocket.close(code=1012)
+        except RuntimeError:
+            pass
     _schedule_tunnel_expiry(gateway_id, expires_at)
     try:
         while True:
