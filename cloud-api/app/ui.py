@@ -3987,8 +3987,15 @@ APP_SCRIPT = r"""
   }
 
   async function openRemoteTunnel(gatewayId, ttl) {
-    const popup = window.open(`/gateways/${encodeURIComponent(gatewayId)}/tunnel/connecting`, "_blank");
+    let popup = null;
     try {
+      const existing = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`);
+      if (existing.connected) {
+        const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST", body: JSON.stringify({ ttl_minutes: ttl }) });
+        window.open(session.url, "_blank", "noopener,noreferrer");
+        return;
+      }
+      popup = window.open(`/gateways/${encodeURIComponent(gatewayId)}/tunnel/connecting`, "_blank");
       await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel/open`, { method: "POST", body: JSON.stringify({ duration_minutes: ttl }) });
       setText("status", "Connecting tunnel...");
       const deadline = Date.now() + 30000;
