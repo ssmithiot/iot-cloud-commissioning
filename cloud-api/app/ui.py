@@ -4046,6 +4046,7 @@ APP_SCRIPT = r"""
           if (tunnelActionStatus) tunnelActionStatus.textContent = "Connecting tunnel...";
           byId("tunnel-status").textContent = "connecting tunnel...";
           remoteTunnelLink.href = `/gateways/${encodeURIComponent(gatewayId)}/tunnel/`;
+          remoteTunnelLink.onclick = null;
         } catch (error) {
           if (tunnelActionStatus) tunnelActionStatus.textContent = errorMessage(error);
         } finally {
