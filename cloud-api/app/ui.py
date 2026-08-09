@@ -3840,9 +3840,8 @@ APP_SCRIPT = r"""
 
   async function loadGatewayWorkspace() {
     const gatewayId = document.body.dataset.gatewayId;
-    const [gateway, tree, site, directConnect, tunnelStatus] = await Promise.all([
+    const [gateway, site, directConnect, tunnelStatus] = await Promise.all([
       api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}`),
-      api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`),
       api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/site`),
       api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/direct-connect`),
       api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`)
@@ -3862,7 +3861,6 @@ APP_SCRIPT = r"""
       ui_version: gateway.ui_version
       }, null, 2);
     }
-    renderTree(tree);
   }
 
   function resourcePercent(value) {
@@ -4128,6 +4126,7 @@ APP_SCRIPT = r"""
     const importPointTableTemplateButton = byId("import-point-table-template");
     const pointTableTemplateFileInput = byId("point-table-template-file");
     const customPointTableDropZone = byId("custom-point-table-dropzone");
+    const pointWorkspace = byId("point-workbench");
     const gatewayId = document.body.dataset.gatewayId;
     const technicalSection = byId("technical-section");
     if (technicalSection && me.role === "admin") {
@@ -4156,10 +4155,12 @@ APP_SCRIPT = r"""
         setSiteInfoModalOpen(false);
       }
     });
-    loadCustomPointTableState();
-    configureCollapsiblePanel(byId("selected-points-panel"), true);
-    renderPropertyPicker();
-    initPointWorkbenchSplitters();
+    if (pointWorkspace) {
+      loadCustomPointTableState();
+      configureCollapsiblePanel(byId("selected-points-panel"), true);
+      renderPropertyPicker();
+      initPointWorkbenchSplitters();
+    }
     siteInfoForm.querySelectorAll("input, textarea").forEach((field) => {
       field.disabled = !canEditSite;
     });
@@ -4197,7 +4198,7 @@ APP_SCRIPT = r"""
         setText("status", errorMessage(error), true);
       }
     });
-    groupForm.addEventListener("submit", async (event) => {
+    groupForm?.addEventListener("submit", async (event) => {
       event.preventDefault();
       try {
         await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/groups`, {
@@ -4211,8 +4212,8 @@ APP_SCRIPT = r"""
         setText("status", errorMessage(error), true);
       }
     });
-    byId("template-file").addEventListener("change", () => loadTemplateImportPreview(gatewayId));
-    importTemplateForm.addEventListener("submit", async (event) => {
+    byId("template-file")?.addEventListener("change", () => loadTemplateImportPreview(gatewayId));
+    importTemplateForm?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const file = byId("template-file").files?.[0];
       if (!file) {
@@ -4292,35 +4293,35 @@ APP_SCRIPT = r"""
         checkbox.checked = false;
       });
     });
-    removeSelectedPointsButton.addEventListener("click", removeSelectedSavedPoints);
+    removeSelectedPointsButton?.addEventListener("click", removeSelectedSavedPoints);
     addSelectedToCustomTableButton?.addEventListener("click", addSelectedPointsToCustomTable);
-    clearCustomPointTableButton.addEventListener("click", clearCustomPointTable);
-    byId("refresh-point-values").addEventListener("click", refreshCustomPointValues);
-    byId("save-point-table").addEventListener("click", saveActivePointTableName);
-    byId("new-point-table").addEventListener("click", newPointTable);
-    exportPointTableTemplateButton.addEventListener("click", downloadPointTableTemplate);
-    importPointTableTemplateButton.addEventListener("click", () => {
+    clearCustomPointTableButton?.addEventListener("click", clearCustomPointTable);
+    byId("refresh-point-values")?.addEventListener("click", refreshCustomPointValues);
+    byId("save-point-table")?.addEventListener("click", saveActivePointTableName);
+    byId("new-point-table")?.addEventListener("click", newPointTable);
+    exportPointTableTemplateButton?.addEventListener("click", downloadPointTableTemplate);
+    importPointTableTemplateButton?.addEventListener("click", () => {
       importPointTableTemplate(pointTableTemplateFileInput.files?.[0], byId("point-table-template-target").value);
     });
-    byId("saved-point-table-select").addEventListener("change", (event) => {
+    byId("saved-point-table-select")?.addEventListener("change", (event) => {
       switchActivePointTable(event.target.value);
     });
-    editPointColumnsButton.addEventListener("click", () => {
+    editPointColumnsButton?.addEventListener("click", () => {
       renderPropertyPicker();
       byId("property-picker").hidden = false;
     });
-    applyPointColumnsButton.addEventListener("click", applyPropertyPicker);
-    cancelPointColumnsButton.addEventListener("click", () => {
+    applyPointColumnsButton?.addEventListener("click", applyPropertyPicker);
+    cancelPointColumnsButton?.addEventListener("click", () => {
       byId("property-picker").hidden = true;
     });
-    customPointTableDropZone.addEventListener("dragover", (event) => {
+    customPointTableDropZone?.addEventListener("dragover", (event) => {
       event.preventDefault();
       customPointTableDropZone.classList.add("drag-over");
     });
-    customPointTableDropZone.addEventListener("dragleave", () => {
+    customPointTableDropZone?.addEventListener("dragleave", () => {
       customPointTableDropZone.classList.remove("drag-over");
     });
-    customPointTableDropZone.addEventListener("drop", (event) => {
+    customPointTableDropZone?.addEventListener("drop", (event) => {
       event.preventDefault();
       customPointTableDropZone.classList.remove("drag-over");
       const pointId = event.dataTransfer.getData("text/plain");
@@ -4679,7 +4680,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       --ink: #17202c;
       --muted: #5d6b7c;
       --panel: #f5f7fa;
-      --accent: #0f766e;
+      --accent: #2563eb;
       --danger: #b42318;
     }}
     * {{ box-sizing: border-box; }}
@@ -5030,14 +5031,14 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       --ink: #eef7f8;
       --muted: #91a7ad;
       --panel: rgba(14, 22, 26, 0.78);
-      --accent: #22d3c5;
-      --accent-strong: #76f7a6;
+      --accent: #3b82f6;
+      --accent-strong: #93c5fd;
       --warning: #f5c542;
       --danger: #ff6b6b;
       min-height: 100vh;
       background:
         linear-gradient(180deg, rgba(5, 10, 12, 0.94), rgba(10, 14, 15, 1)),
-        repeating-linear-gradient(90deg, rgba(34, 211, 197, 0.05) 0 1px, transparent 1px 104px);
+        repeating-linear-gradient(90deg, rgba(59, 130, 246, 0.05) 0 1px, transparent 1px 104px);
       font-family: "Inter", "Segoe UI", Arial, Helvetica, sans-serif;
     }}
     body[data-page="gateway-workspace"][data-theme="light"] {{
@@ -5046,13 +5047,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       --ink: #16242a;
       --muted: #536873;
       --panel: rgba(255, 255, 255, 0.9);
-      --accent: #087f86;
-      --accent-strong: #0c8b5f;
+      --accent: #2563eb;
+      --accent-strong: #1d4ed8;
       --warning: #a96f00;
       --danger: #c23b3b;
       background:
         linear-gradient(180deg, rgba(246, 250, 250, 0.98), rgba(228, 237, 239, 1)),
-        repeating-linear-gradient(90deg, rgba(8, 127, 134, 0.06) 0 1px, transparent 1px 104px);
+        repeating-linear-gradient(90deg, rgba(37, 99, 235, 0.06) 0 1px, transparent 1px 104px);
     }}
     body[data-page="gateway-workspace"] header {{
       position: sticky;
@@ -5113,16 +5114,16 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     body[data-page="gateway-workspace"] button,
     body[data-page="gateway-workspace"] .button {{
-      border-color: rgba(34, 211, 197, 0.55);
+      border-color: rgba(59, 130, 246, 0.55);
       border-radius: 6px;
       color: #031314;
       background: var(--accent);
-      box-shadow: 0 0 0 1px rgba(34, 211, 197, 0.12), 0 12px 26px rgba(34, 211, 197, 0.12);
+      box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.12), 0 12px 26px rgba(59, 130, 246, 0.12);
     }}
     body[data-page="gateway-workspace"] button.secondary,
     body[data-page="gateway-workspace"] .button.secondary {{
       color: var(--accent);
-      background: rgba(34, 211, 197, 0.08);
+      background: rgba(59, 130, 246, 0.08);
     }}
     body[data-page="gateway-workspace"] input,
     body[data-page="gateway-workspace"] select,
@@ -5161,7 +5162,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       border: 1px solid var(--border);
       border-radius: 8px;
       background:
-        linear-gradient(135deg, rgba(34, 211, 197, 0.08), rgba(118, 247, 166, 0.03)),
+        linear-gradient(135deg, rgba(59, 130, 246, 0.08), rgba(147, 197, 253, 0.03)),
         rgba(11, 20, 23, 0.86);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
     }}
@@ -5171,7 +5172,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     body[data-page="gateway-workspace"][data-theme="light"] .custom-table-panel,
     body[data-page="gateway-workspace"][data-theme="light"] .point-side-panel > .detail-panel {{
       background:
-        linear-gradient(135deg, rgba(8, 127, 134, 0.08), rgba(12, 139, 95, 0.03)),
+        linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(29, 78, 216, 0.03)),
         rgba(255, 255, 255, 0.9);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 14px 34px rgba(23, 42, 49, 0.08);
     }}
@@ -5543,10 +5544,10 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       max-height: min(900px, calc(100vh - 48px));
       overflow: auto;
       padding: 22px;
-      border: 1px solid rgba(34, 211, 197, 0.4);
+      border: 1px solid rgba(59, 130, 246, 0.4);
       border-radius: 12px;
       background: #0b1517;
-      box-shadow: 0 28px 90px rgba(0, 0, 0, 0.52), 0 0 0 1px rgba(118, 247, 166, 0.08);
+      box-shadow: 0 28px 90px rgba(0, 0, 0, 0.52), 0 0 0 1px rgba(147, 197, 253, 0.08);
     }}
     body[data-page="gateway-workspace"][data-theme="light"] .site-info-dialog {{
       background: #f8fcfc;
@@ -5908,14 +5909,14 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       --ink: #eef7f8;
       --muted: #91a7ad;
       --panel: rgba(14, 22, 26, 0.78);
-      --accent: #22d3c5;
-      --accent-strong: #76f7a6;
+      --accent: #3b82f6;
+      --accent-strong: #93c5fd;
       --warning: #f5c542;
       --danger: #ff6b6b;
       min-height: 100vh;
       background:
         linear-gradient(180deg, rgba(5, 10, 12, 0.94), rgba(10, 14, 15, 1)),
-        repeating-linear-gradient(90deg, rgba(34, 211, 197, 0.05) 0 1px, transparent 1px 104px);
+        repeating-linear-gradient(90deg, rgba(59, 130, 246, 0.05) 0 1px, transparent 1px 104px);
       font-family: "Inter", "Segoe UI", Arial, Helvetica, sans-serif;
     }}
     body[data-page="app"][data-theme="light"] {{
@@ -5924,13 +5925,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       --ink: #16242a;
       --muted: #536873;
       --panel: rgba(255, 255, 255, 0.9);
-      --accent: #087f86;
-      --accent-strong: #0c8b5f;
+      --accent: #2563eb;
+      --accent-strong: #1d4ed8;
       --warning: #a96f00;
       --danger: #c23b3b;
       background:
         linear-gradient(180deg, rgba(246, 250, 250, 0.98), rgba(228, 237, 239, 1)),
-        repeating-linear-gradient(90deg, rgba(8, 127, 134, 0.06) 0 1px, transparent 1px 104px);
+        repeating-linear-gradient(90deg, rgba(37, 99, 235, 0.06) 0 1px, transparent 1px 104px);
     }}
     body[data-page="app"] header {{
       border-bottom: 1px solid var(--border);
@@ -6024,16 +6025,16 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     }}
     body[data-page="app"] button,
     body[data-page="app"] .button {{
-      border-color: rgba(34, 211, 197, 0.55);
+      border-color: rgba(59, 130, 246, 0.55);
       border-radius: 6px;
       color: #031314;
       background: var(--accent);
-      box-shadow: 0 0 0 1px rgba(34, 211, 197, 0.12), 0 12px 26px rgba(34, 211, 197, 0.12);
+      box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.12), 0 12px 26px rgba(59, 130, 246, 0.12);
     }}
     body[data-page="app"] button.secondary,
     body[data-page="app"] .button.secondary {{
       color: var(--accent);
-      background: rgba(34, 211, 197, 0.08);
+      background: rgba(59, 130, 246, 0.08);
     }}
     body[data-page="app"] .cloud-main {{
       width: 100%;
@@ -6061,13 +6062,13 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       gap: 8px;
       align-content: start;
       background:
-        linear-gradient(135deg, rgba(34, 211, 197, 0.12), rgba(118, 247, 166, 0.05)),
+        linear-gradient(135deg, rgba(59, 130, 246, 0.12), rgba(147, 197, 253, 0.05)),
         rgba(11, 20, 23, 0.86);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
     }}
     body[data-page="app"][data-theme="light"] .metric-card {{
       background:
-        linear-gradient(135deg, rgba(8, 127, 134, 0.1), rgba(12, 139, 95, 0.05)),
+        linear-gradient(135deg, rgba(37, 99, 235, 0.1), rgba(29, 78, 216, 0.05)),
         rgba(255, 255, 255, 0.86);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 14px 34px rgba(23, 42, 49, 0.1);
     }}
@@ -6172,14 +6173,14 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       position: relative;
       z-index: 3;
       border: 0;
-      background: rgba(34, 211, 197, 0.08);
+      background: rgba(59, 130, 246, 0.08);
       touch-action: none;
     }}
     .dashboard-splitter::after {{
       content: "";
       position: absolute;
       border-radius: 999px;
-      background: rgba(34, 211, 197, 0.42);
+      background: rgba(59, 130, 246, 0.42);
       transition: background 120ms ease, box-shadow 120ms ease;
     }}
     .dashboard-column-splitter {{
@@ -6205,7 +6206,7 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
     .dashboard-splitter:hover::after,
     .dashboard-splitter:focus-visible::after {{
       background: var(--accent);
-      box-shadow: 0 0 14px rgba(34, 211, 197, 0.56);
+      box-shadow: 0 0 14px rgba(59, 130, 246, 0.56);
     }}
     .dashboard-splitter:focus-visible {{
       outline: 2px solid var(--accent);
@@ -7412,115 +7413,6 @@ def gateway_workspace_html(gateway_id: str) -> str:
         </div>
       </div>
     </section>
-    <section class="workspace-panel">
-      <div class="panel-title">
-        <div>
-          <span class="eyebrow">Point Workspace</span>
-          <h2>Imported Commissioning Model</h2>
-        </div>
-        <span id="custom-point-table-count" class="panel-counter">0 points</span>
-      </div>
-      <ol class="workflow-steps">
-        <li>Import a JSON template or CSV point list into the saved tree.</li>
-        <li>Open a device folder and use <strong>Add</strong> to place points in the active table. Checkboxes are only for bulk actions.</li>
-        <li>Name the table, choose visible columns, then save the table view. Trend setup is next.</li>
-      </ol>
-      <form id="import-template-form" class="grid">
-        <div class="span-10">
-          <label for="template-file">Point template or CSV</label>
-          <input id="template-file" type="file" accept="application/json,.json,text/csv,.csv" required>
-        </div>
-        <div class="span-2">
-          <button id="import-template-submit" type="submit" disabled>Import template</button>
-        </div>
-        <section id="template-device-preview" class="span-12 detail-panel compact-panel template-device-preview" aria-labelledby="template-device-preview-title" hidden>
-          <h3 id="template-device-preview-title">Choose Existing Target Devices</h3>
-          <p id="template-source-summary"></p>
-          <p id="template-device-selection-count" role="status" aria-live="polite"></p>
-          <p class="muted">Only devices already saved in this gateway tree can receive the source point definitions.</p>
-          <div id="template-device-tree" class="tree-view"></div>
-        </section>
-      </form>
-      <div id="import-result" class="detail-panel compact-panel" hidden></div>
-      <div id="point-workbench" class="tree-shell point-workbench">
-        <div class="tree-panel">
-          <div class="panel-title compact-title">
-            <div>
-              <span class="eyebrow">Saved Tree</span>
-              <h2>Groups / Devices / Points</h2>
-            </div>
-          </div>
-          <div id="tree" class="tree-scroll">Loading...</div>
-        </div>
-        <div id="point-left-splitter" class="pane-splitter" role="separator" aria-orientation="vertical" aria-label="Resize tree and table panes"></div>
-        <div id="custom-point-table-dropzone" class="custom-table-panel">
-          <div class="panel-title compact-title">
-            <div>
-              <span class="eyebrow">Table View</span>
-              <h2>Table View</h2>
-            </div>
-            <div class="toolbar">
-              <select id="saved-point-table-select" aria-label="Saved selections"><option value="">No saved selection selected</option></select>
-              <input id="point-table-name" class="point-table-name" type="text" maxlength="80" value="New Table View" aria-label="Saved selection name">
-              <button id="save-point-table" type="button">Save selection</button>
-              <button id="export-point-table-template" class="secondary" type="button">Export templates</button>
-              <label class="button secondary">Import templates<input id="point-table-template-file" type="file" accept="application/json,.json" hidden></label>
-              <select id="point-table-template-target" aria-label="Target controller for imported table templates"><option value="">Choose target controller</option></select>
-              <button id="import-point-table-template" class="secondary" type="button">Apply import</button>
-              <button id="refresh-point-values" type="button" disabled>Refresh values</button>
-              <span id="point-read-status" class="notice point-read-inline" role="status" aria-live="polite"></span>
-              <button id="new-point-table" class="secondary" type="button">New</button>
-              <button id="edit-point-columns" class="secondary" type="button">Columns</button>
-              <button id="clear-custom-point-table" class="secondary" type="button" disabled>Clear selection</button>
-            </div>
-          </div>
-          <div class="table-wrap point-table-wrap">
-            <table class="gateway-table point-table">
-              <thead id="custom-point-table-head"></thead>
-              <tbody id="custom-point-table-body"></tbody>
-            </table>
-          </div>
-          <div id="property-picker" class="property-picker" hidden>
-            <div class="panel-title compact-title">
-              <h2>Visible Property Columns</h2>
-            </div>
-            <div id="property-picker-options" class="property-options"></div>
-            <div class="toolbar">
-              <button id="apply-point-columns" type="button">Apply</button>
-              <button id="cancel-point-columns" class="secondary" type="button">Cancel</button>
-            </div>
-          </div>
-        </div>
-        <div id="point-right-splitter" class="pane-splitter" role="separator" aria-orientation="vertical" aria-label="Resize table and details panes"></div>
-        <aside class="point-side-panel">
-          <div id="tree-details" class="detail-panel" hidden></div>
-          <div id="selected-points-panel" class="detail-panel" data-collapsed="true" hidden>
-            <button class="panel-collapse-toggle" type="button" aria-expanded="false"><span class="panel-collapse-arrow" aria-hidden="true">▸</span><span>Selected Imported Points</span></button>
-            <div class="collapsible-panel-content" hidden>
-            <div id="selected-points-count" class="notice">No saved points selected.</div>
-            <ul id="selected-points-list" class="selected-point-list"></ul>
-            <div class="toolbar">
-              <button id="add-selected-to-custom-table" type="button" disabled>Add to table</button>
-              <button id="remove-selected-points" class="secondary" type="button" disabled>Remove selected</button>
-            </div>
-            </div>
-          </div>
-          <div id="point-trend-panel" class="detail-panel point-trend-panel">
-            <h2>Trends</h2>
-            <span class="muted">Select one or more saved points to configure their trends.</span>
-          </div>
-        </aside>
-      </div>
-      <form id="group-form" class="grid">
-        <div class="span-4">
-          <label for="group-name">Group name</label>
-          <input id="group-name" type="text" maxlength="120" required>
-        </div>
-        <div class="span-2">
-          <button type="submit">Add group</button>
-        </div>
-      </form>
-    </section>
     <section>
       <h2>Cloud BACnet Diagnostics</h2>
       <div class="notice">Temporary diagnostics only. Normal commissioning should happen in the edge UI and be imported as a template.</div>
@@ -7590,10 +7482,10 @@ def tunnel_connecting_html(gateway_id: str) -> str:
     escaped_gateway_id = escape(gateway_id)
     body = f"""
   <style>
-    .tunnel-connecting-card {{ width:min(420px,100%); padding:32px; text-align:center; border:1px solid #1d8f89; border-radius:12px; background:#081415; color:#dff6f4; box-shadow:0 18px 48px rgba(0,0,0,.35); }}
-    .tunnel-spinner {{ width:38px; height:38px; margin:20px auto; border:4px solid rgba(34,211,197,.24); border-top-color:#22d3c5; border-radius:50%; animation:tunnel-spin .85s linear infinite; }}
-    .tunnel-progress {{ height:6px; overflow:hidden; border-radius:99px; background:rgba(34,211,197,.16); }}
-    .tunnel-progress::after {{ content:""; display:block; width:42%; height:100%; border-radius:inherit; background:#22d3c5; animation:tunnel-progress 1.3s ease-in-out infinite; }}
+    .tunnel-connecting-card {{ width:min(420px,100%); padding:32px; text-align:center; border:1px solid #2563eb; border-radius:12px; background:#081415; color:#dff6f4; box-shadow:0 18px 48px rgba(0,0,0,.35); }}
+    .tunnel-spinner {{ width:38px; height:38px; margin:20px auto; border:4px solid rgba(59,130,246,.24); border-top-color:#3b82f6; border-radius:50%; animation:tunnel-spin .85s linear infinite; }}
+    .tunnel-progress {{ height:6px; overflow:hidden; border-radius:99px; background:rgba(59,130,246,.16); }}
+    .tunnel-progress::after {{ content:""; display:block; width:42%; height:100%; border-radius:inherit; background:#3b82f6; animation:tunnel-progress 1.3s ease-in-out infinite; }}
     @keyframes tunnel-spin {{ to {{ transform:rotate(360deg); }} }}
     @keyframes tunnel-progress {{ 0% {{ transform:translateX(-110%); }} 100% {{ transform:translateX(250%); }} }}
     body[data-theme="dark"] {{ background:#050b0c; color:#dff6f4; }}

@@ -582,16 +582,20 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     response = client.get("/gateways/GW777")
 
     assert response.status_code == 200
+    assert "Connection" in response.text
+    assert "Site Information" in response.text
+    assert "Edge Health" in response.text
+    assert 'id="gateway-status"' in response.text
+    assert 'id="site-summary-name"' in response.text
+    assert 'id="edge-health-cpu"' in response.text
+    assert "Point Workspace" not in response.text
+    assert "Imported Commissioning Model" not in response.text
+    assert 'id="point-workbench"' not in response.text
+    assert 'id="import-template-form"' not in response.text
+    assert 'id="selected-points-panel"' not in response.text
     assert 'id="discovery-progress"' in response.text
     assert 'id="discovered-devices"' in response.text
-    assert 'class="tree-shell point-workbench"' in response.text
-    assert 'id="tree-details"' in response.text
     assert "renderDiscoveredDevices" in response.text
-    assert "Load points" not in response.text
-    assert "Saved Tree" in response.text
-    assert "Imported Commissioning Model" in response.text
-    assert "Last Import" in response.text
-    assert "Site Information" in response.text
     assert 'id="site-info-form"' in response.text
     assert 'id="site-address-street"' in response.text
     assert 'id="site-address-city"' in response.text
@@ -606,16 +610,6 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert "Direct Connect" in response.text
     assert "GATEWAY_API_TOKEN" not in response.text
     assert "IOT_ADMIN_API_TOKEN" not in response.text
-    assert 'id="import-template-form"' in response.text
-    assert 'id="import-result"' in response.text
-    assert 'id="template-file"' in response.text
-    assert "Import template" in response.text
-    assert "/commissioning-template/import" in response.text
-    assert 'id="selected-points-panel"' in response.text
-    assert 'id="selected-points-list"' in response.text
-    assert "Remove selected" in response.text
-    assert "saved-point-select" in response.text
-    assert "/api/ui/points/bulk-remove" in response.text
     assert 'id="point-candidates-panel"' in response.text
     assert 'id="point-candidates"' in response.text
     assert "Save selected points" in response.text
@@ -633,6 +627,21 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'id="edge-health-cpu"' in response.text
     assert 'id="edge-health-memory"' in response.text
     assert "renderGatewayResourceHealth(gateway);" in response.text
+
+
+def test_cloud_brand_uses_blue_accents_without_recoloring_semantic_statuses() -> None:
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert "--accent: #3b82f6;" in response.text
+    assert "--accent-strong: #93c5fd;" in response.text
+    assert "rgba(59, 130, 246, 0.05)" in response.text
+    assert "--accent: #2563eb;" in response.text
+    assert "rgba(37, 99, 235, 0.06)" in response.text
+    assert ".status-online" in response.text
+    assert "background: #76f7a6;" in response.text
+    assert "--warning: #f5c542;" in response.text
+    assert "--danger: #ff6b6b;" in response.text
 
 
 def test_gateway_workspace_trend_chart_tracks_resized_detail_pane() -> None:
@@ -676,7 +685,7 @@ def test_gateway_workspace_stacks_trends_for_selected_points() -> None:
     assert "disable-point-trend" in response.text
     assert "updatePointTrend(point, false" in response.text
     assert "function configureCollapsiblePanel(panel, defaultCollapsed)" in response.text
-    assert 'data-collapsed="true"' in response.text
+    assert 'id="selected-points-panel"' not in response.text
     assert "Global initial trend setup" in response.text
     assert "configureCollapsiblePanel(panel.querySelector(\".global-trend-setup\"), true);" in response.text
     assert "Global initial trend setup" in response.text
@@ -689,10 +698,10 @@ def test_gateway_workspace_exports_and_imports_saved_table_view_templates() -> N
     response = client.get("/gateways/GW777")
 
     assert response.status_code == 200
-    assert 'id="export-point-table-template"' in response.text
-    assert 'id="point-table-template-file"' in response.text
-    assert 'id="point-table-template-target"' in response.text
-    assert 'id="import-point-table-template"' in response.text
+    assert 'id="export-point-table-template"' not in response.text
+    assert 'id="point-table-template-file"' not in response.text
+    assert 'id="point-table-template-target"' not in response.text
+    assert 'id="import-point-table-template"' not in response.text
     assert 'const POINT_TABLE_TEMPLATE_KIND = "iot-cloud-point-table-template-pack";' in response.text
     assert "function downloadPointTableTemplate()" in response.text
     assert "async function importPointTableTemplate(file, targetDeviceId)" in response.text
@@ -704,9 +713,9 @@ def test_gateway_workspace_table_view_defaults_to_tree_selection_or_no_saved_tab
     response = client.get("/gateways/GW777")
 
     assert response.status_code == 200
-    assert '<span class="eyebrow">Table View</span>' in response.text
-    assert '<h2>Table View</h2>' in response.text
-    assert '<option value="">No saved selection selected</option>' in response.text
+    assert '<span class="eyebrow">Table View</span>' not in response.text
+    assert '<h2>Table View</h2>' not in response.text
+    assert '<select id="saved-point-table-select"' not in response.text
     assert "function tablePoints()" in response.text
     assert "return selectedSavedPoints();" in response.text
     assert "Select one or more saved points in the tree before saving a table." in response.text
@@ -778,9 +787,9 @@ def test_gateway_workspace_applies_single_source_template_to_existing_target_dev
     response = client.get("/gateways/GW777")
 
     assert response.status_code == 200
-    assert 'id="template-device-preview"' in response.text
-    assert 'id="template-device-tree"' in response.text
-    assert 'id="template-source-summary"' in response.text
+    assert 'id="template-device-preview"' not in response.text
+    assert 'id="template-device-tree"' not in response.text
+    assert 'id="template-source-summary"' not in response.text
     assert 'data-role="template-target-group-select"' in response.text
     assert 'data-role="template-target-device-select"' in response.text
     assert '.template-group-row,\n    .template-device-row {\n      grid-template-columns: 18px 18px 18px minmax(0, 1fr) auto;' in response.text
@@ -788,7 +797,7 @@ def test_gateway_workspace_applies_single_source_template_to_existing_target_dev
     assert "selectedImportTargetDeviceIds = new Set();" in response.text
     assert 'template.devices.length !== 1' in response.text
     assert 'Template must contain exactly one source device.' in response.text
-    assert 'byId("template-file").addEventListener("change", () => loadTemplateImportPreview(gatewayId));' in response.text
+    assert 'byId("template-file")?.addEventListener("change", () => loadTemplateImportPreview(gatewayId));' in response.text
     assert "const selectedTargets = (currentGatewayTree?.devices || []).filter" in response.text
     assert "gateway_id: gatewayId" in response.text
     assert "groups: []" in response.text
