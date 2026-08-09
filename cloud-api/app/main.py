@@ -138,6 +138,7 @@ from app.ui import (
     auth_confirm_html,
     check_email_html,
     gateway_workspace_html,
+    gateway_points_html,
     login_html,
     reset_password_html,
     signup_html,
@@ -1475,6 +1476,11 @@ def app_page() -> HTMLResponse:
 @app.get("/gateways/{gateway_id}", response_class=HTMLResponse, include_in_schema=False)
 def gateway_workspace_page(gateway_id: str) -> HTMLResponse:
     return HTMLResponse(gateway_workspace_html(gateway_id))
+
+
+@app.get("/gateways/{gateway_id}/points", response_class=HTMLResponse, include_in_schema=False)
+def gateway_points_page(gateway_id: str) -> HTMLResponse:
+    return HTMLResponse(gateway_points_html(gateway_id))
 
 
 @app.get("/gateways/{gateway_id}/configure", include_in_schema=False)

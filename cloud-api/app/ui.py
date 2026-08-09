@@ -4460,6 +4460,29 @@ APP_SCRIPT = r"""
     }
   }
 
+  async function initGatewayPoints() {
+    const me = await initProtectedPage("operator");
+    if (!me) return;
+    const gatewayId = document.body.dataset.gatewayId;
+    byId("workspace-link").href = `/gateways/${encodeURIComponent(gatewayId)}`;
+    try {
+      const tree = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`);
+      byId("points-title").textContent = `${tree.gateway.gateway_id} All Points`;
+      const rows = [...tree.points].sort((left, right) => `${left.object_type}:${left.object_instance}`.localeCompare(`${right.object_type}:${right.object_instance}`, undefined, {numeric:true}));
+      const body = byId("all-points-body");
+      body.textContent = "";
+      for (const point of rows) {
+        const row = document.createElement("tr");
+        const identifier = `${point.object_type}:${point.object_instance}`;
+        for (const value of [identifier, point.object_name || "—", point.present_value ?? "—"]) {
+          const cell = document.createElement("td"); cell.textContent = value; row.appendChild(cell);
+        }
+        body.appendChild(row);
+      }
+      byId("all-points-count").textContent = `${rows.length} mirrored point${rows.length === 1 ? "" : "s"}`;
+    } catch (error) { setText("points-status", errorMessage(error), true); }
+  }
+
   function renderUsers(users) {
     const usersEl = byId("users");
     usersEl.textContent = "";
@@ -4654,6 +4677,8 @@ APP_SCRIPT = r"""
     initGatewayWorkspace();
   } else if (page === "tunnel-console") {
     initTunnelConsole();
+  } else if (page === "gateway-points") {
+    initGatewayPoints();
   } else if (page === "admin-users") {
     initAdminUsers();
   } else if (page === "waiting" || page === "unauthorized") {
@@ -7413,6 +7438,35 @@ def gateway_workspace_html(gateway_id: str) -> str:
         </div>
       </div>
     </section>
+    <section class="bms-shell" aria-labelledby="bms-graphic-title">
+      <style>
+        .bms-shell { margin:20px 0; padding:20px; border:1px solid var(--border); border-radius:12px; background:linear-gradient(135deg,rgba(59,130,246,.10),rgba(11,20,23,.86)); box-shadow:0 12px 30px rgba(0,0,0,.16); }
+        body[data-theme="light"] .bms-shell { background:linear-gradient(135deg,rgba(37,99,235,.08),rgba(255,255,255,.92)); }
+        .bms-head,.bms-grid,.bms-setpoints { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+        .bms-head h2 { margin:2px 0; } .bms-kicker,.bms-label { color:var(--muted); font:700 11px/1.2 "JetBrains Mono",Consolas,monospace; text-transform:uppercase; letter-spacing:.45px; }
+        .bms-live { color:#76f7a6; font-weight:800; font-size:12px; } .bms-action { margin-left:auto; }
+        .bms-grid { display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); align-items:stretch; margin-top:16px; }
+        .bms-tile { grid-column:span 3; min-width:0; padding:14px; border:1px solid var(--border); border-radius:10px; background:rgba(4,12,14,.42); }
+        body[data-theme="light"] .bms-tile { background:rgba(255,255,255,.7); } .bms-tile.wide { grid-column:span 6; }
+        .bms-value { margin-top:7px; font-size:28px; font-weight:700; } .bms-sub { margin-top:5px; color:var(--muted); font-size:12px; }
+        .bms-status { color:#76f7a6; font-weight:700; } .bms-alert { color:#f5c542; font-weight:700; }
+        .bms-setpoints { margin-top:16px; padding-top:16px; border-top:1px solid var(--border); } .bms-setpoint { min-width:150px; padding:10px; border-radius:9px; background:rgba(59,130,246,.10); }
+        .bms-setpoint strong { display:block; margin-top:4px; font-size:20px; } .bms-setpoint button { min-height:26px; padding:2px 8px; margin-left:4px; opacity:.55; cursor:not-allowed; }
+        .bms-trend { margin-top:16px; height:84px; border-radius:9px; border:1px solid var(--border); background:linear-gradient(180deg,transparent,rgba(59,130,246,.14)); overflow:hidden; }
+        .bms-trend svg { width:100%; height:100%; } @media (max-width:760px){ .bms-tile,.bms-tile.wide{grid-column:span 12;} }
+      </style>
+      <div class="bms-head"><div><span class="bms-kicker">Equipment graphic · demo values</span><h2 id="bms-graphic-title">RTU-1 · Rooftop Unit</h2><span class="bms-sub">Presentation shell only — live point bindings arrive in Phase 2.</span></div><div class="bms-live">● NORMAL</div><a class="button bms-action" href="/gateways/{escaped_gateway_id}/points">All Points</a></div>
+      <div class="bms-grid">
+        <article class="bms-tile"><span class="bms-label">Equipment</span><div class="bms-value">RTU-1</div><div class="bms-sub">Rooftop Unit · Cooling</div></article>
+        <article class="bms-tile"><span class="bms-label">Outdoor air</span><div class="bms-value">72.4°F</div><div class="bms-sub">Demo weather value</div></article>
+        <article class="bms-tile"><span class="bms-label">Alarms</span><div class="bms-value bms-alert">None</div><div class="bms-sub">Reversing valve · Normal</div></article>
+        <article class="bms-tile"><span class="bms-label">Space temperature</span><div class="bms-value">73.1°F</div><div class="bms-sub">Demo sensor value</div></article>
+        <article class="bms-tile wide"><span class="bms-label">Equipment status</span><div class="bms-status">● Supply Fan On &nbsp; ● Compressor On &nbsp; ○ Heat Off</div><div class="bms-sub">Demo status tiles</div></article>
+        <article class="bms-tile wide"><span class="bms-label">Effective setpoints</span><div class="bms-value">70°F / 74°F</div><div class="bms-sub">Heat / cool · demo values</div></article>
+      </div>
+      <div class="bms-setpoints"><div class="bms-setpoint"><span class="bms-label">Occupied setpoint</span><strong>72°F <button disabled aria-label="Demo setpoint control">−</button><button disabled aria-label="Demo setpoint control">+</button></strong></div><div class="bms-setpoint"><span class="bms-label">Unoccupied setpoint</span><strong>78°F <button disabled aria-label="Demo setpoint control">−</button><button disabled aria-label="Demo setpoint control">+</button></strong></div><span class="bms-sub">Controls are read-only in Phase 1.</span></div>
+      <div class="bms-trend" aria-label="Demo temperature trend"><svg viewBox="0 0 600 84" preserveAspectRatio="none" role="img"><path d="M0 58 C80 42,120 62,190 44 S310 26,370 42 S500 64,600 24" fill="none" stroke="#3b82f6" stroke-width="3"/><path d="M0 50 L600 50" stroke="rgba(147,197,253,.45)" stroke-dasharray="5 5"/></svg></div>
+    </section>
     <section>
       <h2>Cloud BACnet Diagnostics</h2>
       <div class="notice">Temporary diagnostics only. Normal commissioning should happen in the edge UI and be imported as a template.</div>
@@ -7476,6 +7530,15 @@ def gateway_workspace_html(gateway_id: str) -> str:
         "gateway-workspace",
         f'data-gateway-id="{escaped_gateway_id}"',
     )
+
+
+def gateway_points_html(gateway_id: str) -> str:
+    escaped_gateway_id = escape(gateway_id, quote=True)
+    body = f"""
+  <header><h1 id="points-title">All Points</h1><div class="toolbar"><span id="identity"></span><a id="workspace-link" class="button secondary" href="/gateways/{escaped_gateway_id}">Workspace</a><a class="button secondary" href="/app">Dashboard</a><button id="logout" class="secondary" type="button">Logout</button></div></header>
+  <main><section class="workspace-panel"><div class="panel-title"><div><span class="eyebrow">Mirrored gateway points</span><h2>Live Devices table</h2></div><span id="all-points-count" class="panel-counter">Loading...</span></div><div id="points-status" class="notice">Object Identifier, Description, and Present Value / 85 are read-only Cloud mirrors.</div><div class="table-wrap"><table class="gateway-table all-points-table"><thead><tr><th>Object Identifier</th><th>Description</th><th>Present Value / 85</th></tr></thead><tbody id="all-points-body"></tbody></table></div></section></main>
+  <style>body[data-page="gateway-points"] .all-points-table th{{color:var(--muted);font:700 11px/1.2 "JetBrains Mono",Consolas,monospace;text-transform:uppercase;letter-spacing:.4px}}body[data-page="gateway-points"] .all-points-table td{{padding:10px 14px;border-bottom:1px solid var(--border)}}body[data-page="gateway-points"] .all-points-table tbody tr:hover{{background:rgba(59,130,246,.08)}}body[data-page="gateway-points"] .all-points-table td:last-child{{font-weight:700}}</style>"""
+    return _layout("All Points - IOT Cloud Commissioning", body, "gateway-points", f'data-gateway-id="{escaped_gateway_id}"')
 
 
 def tunnel_connecting_html(gateway_id: str) -> str:

@@ -644,6 +644,30 @@ def test_cloud_brand_uses_blue_accents_without_recoloring_semantic_statuses() ->
     assert "--danger: #ff6b6b;" in response.text
 
 
+def test_gateway_workspace_includes_demo_bms_graphic_before_diagnostics() -> None:
+    response = client.get("/gateways/GW777")
+
+    assert response.status_code == 200
+    assert "RTU-1 · Rooftop Unit" in response.text
+    assert "Presentation shell only — live point bindings arrive in Phase 2." in response.text
+    assert "Controls are read-only in Phase 1." in response.text
+    assert 'href="/gateways/GW777/points"' in response.text
+    assert response.text.index("RTU-1 · Rooftop Unit") < response.text.index("Cloud BACnet Diagnostics")
+    assert response.text.index("Cloud BACnet Diagnostics") < response.text.index("<h2>Technical</h2>")
+    assert "Point Workspace" not in response.text
+
+
+def test_gateway_all_points_page_uses_edge_live_device_three_columns() -> None:
+    response = client.get("/gateways/GW777/points")
+
+    assert response.status_code == 200
+    assert 'data-page="gateway-points"' in response.text
+    assert "Object Identifier</th><th>Description</th><th>Present Value / 85" in response.text
+    assert "quality" not in response.text.lower()
+    assert '<th>Trend' not in response.text
+    assert "api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`)" in response.text
+
+
 def test_gateway_workspace_trend_chart_tracks_resized_detail_pane() -> None:
     response = client.get("/gateways/GW777")
 
