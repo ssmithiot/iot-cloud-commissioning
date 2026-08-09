@@ -5124,6 +5124,16 @@ def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
       border-color: var(--border);
       background: rgba(4, 12, 14, 0.66);
     }}
+    # Native select popups do not reliably inherit the dark workspace palette.
+    # Keep the tunnel-duration choices readable in both Workspace locations.
+    #workspace-tunnel-ttl, #selected-tunnel-ttl, #tunnel-ttl-minutes {{
+      color: #dff6f4;
+      background: rgba(4, 12, 14, 0.92);
+    }}
+    #workspace-tunnel-ttl option, #selected-tunnel-ttl option, #tunnel-ttl-minutes option {{
+      color: #dff6f4;
+      background: #091012;
+    }}
     body[data-page="gateway-workspace"][data-theme="light"] input,
     body[data-page="gateway-workspace"][data-theme="light"] select,
     body[data-page="gateway-workspace"][data-theme="light"] textarea {{
