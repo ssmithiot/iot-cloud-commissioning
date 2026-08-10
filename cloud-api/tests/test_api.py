@@ -678,7 +678,7 @@ def test_gateway_all_points_page_uses_edge_live_device_three_columns() -> None:
     for column in range(1, 4):
         assert f"Column {column}</h3>" in response.text
         assert f'id="all-points-body-{column}"' in response.text
-    assert "quality" not in response.text.lower()
+    assert "<th>Quality" not in response.text
     assert '<th>Trend' not in response.text
     assert "api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`)" in response.text
     assert "grid-template-columns:repeat(3,minmax(0,1fr))" in response.text
@@ -691,6 +691,33 @@ def test_gateway_all_points_page_uses_edge_live_device_three_columns() -> None:
     assert 'body[data-page="gateway-points"][data-theme="light"]' in response.text
     assert 'body[data-page="gateway-points"] main{width:100%;max-width:none;margin:0;' in response.text
     assert 'body[data-page="gateway-points"] .all-points-table th,body[data-page="gateway-points"] .all-points-table td' in response.text
+
+
+def test_gateway_bms_pages_share_persistent_navigation_shell() -> None:
+    workspace = client.get("/gateways/GW777")
+    points = client.get("/gateways/GW777/points")
+    device = client.get("/gateways/GW777/devices/demo-device")
+    trends = client.get("/gateways/GW777/trends")
+    weather = client.get("/gateways/GW777/weather")
+
+    for response in (workspace, points, device, trends, weather):
+        assert response.status_code == 200
+        assert 'data-gateway-navigation' in response.text
+        assert 'class="gateway-nav-shell"' in response.text
+        assert 'class="gateway-nav-content"' in response.text
+    assert 'data-current-page="workspace"' in workspace.text
+    assert 'data-current-page="points"' in points.text
+    assert 'data-current-page="device:demo-device"' in device.text
+    assert 'data-current-page="trends"' in trends.text
+    assert 'data-current-page="weather"' in weather.text
+    assert "const gatewayNavCategories = [\"HVAC\", \"Lighting\", \"Shades\", \"Power Monitoring\", \"Indoor Air Quality\"];" in workspace.text
+    assert 'System</summary>' in workspace.text
+    assert 'globalLink("points", "All Points", `${base}/points`)' in workspace.text
+    assert 'globalLink("trends", "Trends", `${base}/trends`)' in workspace.text
+    assert 'globalLink("edge", "Edge", `${base}#edge-health`)' in workspace.text
+    assert 'id="edge-health"' in workspace.text
+    assert "api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`)" in workspace.text
+    assert "No categorized equipment" in workspace.text
 
 
 def test_gateway_workspace_trend_chart_tracks_resized_detail_pane() -> None:

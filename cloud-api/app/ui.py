@@ -4104,6 +4104,7 @@ APP_SCRIPT = r"""
     if (!me) {
       return;
     }
+    initGatewayNavigation();
     currentUser = me;
     const groupForm = byId("group-form");
     const importTemplateForm = byId("import-template-form");
@@ -4464,6 +4465,7 @@ APP_SCRIPT = r"""
     initThemeToggle();
     const me = await initProtectedPage("operator");
     if (!me) return;
+    initGatewayNavigation();
     const gatewayId = document.body.dataset.gatewayId;
     byId("workspace-link").href = `/gateways/${encodeURIComponent(gatewayId)}`;
     try {
@@ -4490,6 +4492,40 @@ APP_SCRIPT = r"""
       }
       byId("all-points-count").textContent = `${rows.length} mirrored point${rows.length === 1 ? "" : "s"}`;
     } catch (error) { setText("points-status", errorMessage(error), true); }
+  }
+
+  const gatewayNavCategories = ["HVAC", "Lighting", "Shades", "Power Monitoring", "Indoor Air Quality"];
+
+  function gatewayNavCategory(device, groupsById) {
+    const groupName = String(groupsById.get(device.group_id) || "").trim().toLowerCase();
+    return gatewayNavCategories.find((category) => category.toLowerCase() === groupName) || "Uncategorized";
+  }
+
+  async function initGatewayNavigation() {
+    const nav = document.querySelector("[data-gateway-navigation]");
+    if (!nav || nav.dataset.loaded === "true") return;
+    const gatewayId = document.body.dataset.gatewayId;
+    const currentPage = nav.dataset.currentPage;
+    try {
+      const tree = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`);
+      const groupsById = new Map((tree.groups || []).map((group) => [group.id, group.name]));
+      const categorized = new Map([...gatewayNavCategories, "Uncategorized"].map((category) => [category, []]));
+      for (const device of tree.devices || []) categorized.get(gatewayNavCategory(device, groupsById)).push(device);
+      const base = `/gateways/${encodeURIComponent(gatewayId)}`;
+      const globalLink = (key, label, href) => `<a class="gateway-nav-link ${currentPage === key ? "is-active" : ""}" ${currentPage === key ? 'aria-current="page"' : ""} href="${href}">${label}</a>`;
+      const category = (label, devices) => `<details class="gateway-nav-category" ${devices.some((device) => currentPage === `device:${device.id}`) ? "open" : ""}><summary>${label}</summary><div class="gateway-nav-children">${devices.length ? devices.map((device) => `<a class="gateway-nav-link ${currentPage === `device:${device.id}` ? "is-active" : ""}" href="${base}/devices/${encodeURIComponent(device.id)}">${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</a>`).join("") : '<span class="gateway-nav-empty">No categorized equipment</span>'}</div></details>`;
+      nav.innerHTML = `<div class="gateway-nav-brand">${escapeHtml(tree.gateway.gateway_id)}</div><div class="gateway-nav-global">${globalLink("workspace", "Workspace", base)}${globalLink("points", "All Points", `${base}/points`)}${globalLink("trends", "Trends", `${base}/trends`)}</div>${gatewayNavCategories.map((label) => category(label, categorized.get(label))).join("")}${categorized.get("Uncategorized").length ? category("Uncategorized", categorized.get("Uncategorized")) : ""}<details class="gateway-nav-category" ${currentPage === "edge" || currentPage === "weather" ? "open" : ""}><summary>System</summary><div class="gateway-nav-children">${globalLink("edge", "Edge", `${base}#edge-health`)}${globalLink("weather", "Weather", `${base}/weather`)}</div></details>`;
+      nav.dataset.loaded = "true";
+    } catch (error) {
+      nav.innerHTML = '<div class="gateway-nav-brand">Gateway</div><span class="gateway-nav-empty">Navigation unavailable</span>';
+    }
+  }
+
+  async function initGatewayBmsPage() {
+    initThemeToggle();
+    const me = await initProtectedPage("operator");
+    if (!me) return;
+    initGatewayNavigation();
   }
 
   function renderUsers(users) {
@@ -4688,6 +4724,8 @@ APP_SCRIPT = r"""
     initTunnelConsole();
   } else if (page === "gateway-points") {
     initGatewayPoints();
+  } else if (page === "gateway-bms") {
+    initGatewayBmsPage();
   } else if (page === "admin-users") {
     initAdminUsers();
   } else if (page === "waiting" || page === "unauthorized") {
@@ -7306,6 +7344,36 @@ def app_html() -> str:
     return _layout("Dashboard - IOT Cloud Commissioning", body, "app")
 
 
+def gateway_navigation_html(gateway_id: str, current_page: str) -> str:
+    escaped_gateway_id = escape(gateway_id, quote=True)
+    escaped_page = escape(current_page, quote=True)
+    return f"""
+  <aside class="gateway-nav-shell" aria-label="Gateway navigation"><nav class="gateway-nav" data-gateway-navigation data-current-page="{escaped_page}"><div class="gateway-nav-brand">{escaped_gateway_id}</div><span class="gateway-nav-empty">Loading navigation...</span></nav></aside>
+  <style>
+    .gateway-nav-shell {{ position:fixed; inset:10px auto 10px 10px; z-index:40; width:244px; }}
+    .gateway-nav {{ height:100%; overflow:auto; padding:12px; border:1px solid rgba(255,255,255,.09); border-radius:14px; background:#121317; color:#fff; box-shadow:0 8px 20px rgba(0,0,0,.35); }}
+    .gateway-nav-brand {{ padding:8px 10px 14px; border-bottom:1px solid rgba(255,255,255,.09); font-weight:800; letter-spacing:.04em; }}
+    .gateway-nav-global {{ display:grid; gap:3px; padding:10px 0; }}
+    .gateway-nav-link {{ display:block; padding:7px 10px; border-radius:7px; color:#fff; font-size:13px; font-weight:600; text-decoration:none; }}
+    .gateway-nav-link:hover {{ background:rgba(57,135,229,.14); }}
+    .gateway-nav-link.is-active {{ background:rgba(57,135,229,.28); color:#fff; box-shadow:inset 3px 0 #3987e5; }}
+    .gateway-nav-category {{ border-top:1px solid rgba(255,255,255,.09); }}
+    .gateway-nav-category summary {{ display:flex; align-items:center; justify-content:space-between; padding:10px; cursor:pointer; color:#aab2c0; font-size:12px; font-weight:800; list-style:none; }}
+    .gateway-nav-category summary::-webkit-details-marker {{ display:none; }}
+    .gateway-nav-category summary::after {{ content:"+"; color:#3987e5; font-size:16px; }}
+    .gateway-nav-category[open] summary::after {{ content:"−"; }}
+    .gateway-nav-children {{ display:grid; gap:2px; padding:0 0 8px 8px; }}
+    .gateway-nav-empty {{ display:block; padding:8px 10px; color:#aab2c0; font-size:12px; }}
+    body[data-theme="light"] .gateway-nav {{ border-color:rgba(11,17,26,.10); background:#fff; color:#0b0f14; box-shadow:0 6px 16px rgba(20,30,45,.08); }}
+    body[data-theme="light"] .gateway-nav-brand,body[data-theme="light"] .gateway-nav-category {{ border-color:rgba(11,17,26,.10); }}
+    body[data-theme="light"] .gateway-nav-link {{ color:#0b0f14; }}
+    body[data-theme="light"] .gateway-nav-link.is-active {{ background:rgba(42,120,214,.20); }}
+    body[data-theme="light"] .gateway-nav-category summary,body[data-theme="light"] .gateway-nav-empty {{ color:#4c5766; }}
+    .gateway-nav-content {{ margin-left:264px !important; }}
+    @media (max-width:1100px) {{ .gateway-nav-shell {{ position:static; width:auto; margin:10px; }} .gateway-nav {{ height:auto; max-height:42vh; }} .gateway-nav-content {{ margin-left:0 !important; }} }}
+  </style>"""
+
+
 def gateway_workspace_html(gateway_id: str) -> str:
     escaped_gateway_id = escape(gateway_id, quote=True)
     body = """
@@ -7318,7 +7386,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
       <button id="logout" class="secondary" type="button">Logout</button>
     </div>
   </header>
-  <main>
+  <main class="gateway-nav-content">
     <section class="workspace-overview">
       <div class="workspace-overview-grid">
         <article class="workspace-tile">
@@ -7352,7 +7420,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
             <div><dt>Hours</dt><dd id="site-summary-hours">&mdash;</dd></div>
           </dl>
         </article>
-        <article class="workspace-tile edge-health">
+        <article id="edge-health" class="workspace-tile edge-health">
           <div class="workspace-tile-header">
             <div>
               <span class="eyebrow">Edge Health</span>
@@ -7535,7 +7603,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
       <pre id="gateway-details">Loading...</pre>
     </section>
   </main>"""
-    body = body.replace("{escaped_gateway_id}", escaped_gateway_id)
+    body = gateway_navigation_html(gateway_id, "workspace") + body.replace("{escaped_gateway_id}", escaped_gateway_id)
     return _layout(
         "Gateway Workspace - IOT Cloud Commissioning",
         body,
@@ -7548,9 +7616,23 @@ def gateway_points_html(gateway_id: str) -> str:
     escaped_gateway_id = escape(gateway_id, quote=True)
     body = f"""
   <header><h1 id="points-title">All Points</h1><div class="toolbar"><span id="identity"></span><button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Light Mode</button><a id="workspace-link" class="button secondary" href="/gateways/{escaped_gateway_id}">Workspace</a><a class="button secondary" href="/app">Dashboard</a><button id="logout" class="secondary" type="button">Logout</button></div></header>
-  <main><section class="workspace-panel all-points-panel"><div class="panel-title"><div><span class="eyebrow">Mirrored gateway points</span><h2>Live Devices table</h2></div><span id="all-points-count" class="panel-counter">Loading...</span></div><div id="points-status" class="notice">Object Identifier, Description, and Present Value / 85 are read-only Cloud mirrors.</div><div class="all-points-grid">{''.join(f'<section class="all-points-column"><h3>Column {column}</h3><div class="all-points-table-wrap"><table class="all-points-table"><thead><tr><th>Object Identifier</th><th>Description</th><th>Present Value / 85</th></tr></thead><tbody id="all-points-body-{column}"></tbody></table></div></section>' for column in range(1, 4))}</div></section></main>
+  <main class="gateway-nav-content"><section class="workspace-panel all-points-panel"><div class="panel-title"><div><span class="eyebrow">Mirrored gateway points</span><h2>Live Devices table</h2></div><span id="all-points-count" class="panel-counter">Loading...</span></div><div id="points-status" class="notice">Object Identifier, Description, and Present Value / 85 are read-only Cloud mirrors.</div><div class="all-points-grid">{''.join(f'<section class="all-points-column"><h3>Column {column}</h3><div class="all-points-table-wrap"><table class="all-points-table"><thead><tr><th>Object Identifier</th><th>Description</th><th>Present Value / 85</th></tr></thead><tbody id="all-points-body-{column}"></tbody></table></div></section>' for column in range(1, 4))}</div></section></main>
   <style>body[data-page="gateway-points"]{{color-scheme:dark;--bg-page:#08090b;--bg-surface:#121317;--bg-tile:#16181d;--bg-tile-alt:#1b1e24;--border:rgba(255,255,255,.09);--ink:#fff;--muted:#aab2c0;--panel:#121317;--accent:#3987e5;--accent-strong:#8fc1fb;min-height:100vh;background:var(--bg-page);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}}body[data-page="gateway-points"][data-theme="light"]{{color-scheme:light;--bg-page:#eef1f5;--bg-surface:#fff;--bg-tile:#fff;--bg-tile-alt:#f4f6f9;--border:rgba(11,17,26,.10);--ink:#0b0f14;--muted:#4c5766;--panel:#fff;--accent:#2a78d6;--accent-strong:#184f95;background:var(--bg-page)}}body[data-page="gateway-points"] header{{border-bottom:1px solid var(--border);background:var(--bg-surface);padding:18px clamp(18px,3vw,38px)}}body[data-page="gateway-points"] main{{width:100%;max-width:none;margin:0;padding:clamp(16px,2.5vw,32px)}}body[data-page="gateway-points"] button.secondary,body[data-page="gateway-points"] .button.secondary{{color:var(--ink);background:var(--bg-tile-alt);border-color:var(--border)}}body[data-page="gateway-points"] .all-points-panel{{width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface);box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 8px 20px rgba(0,0,0,.35)}}body[data-page="gateway-points"] .all-points-panel,body[data-page="gateway-points"] .all-points-column{{border-bottom:0}}body[data-page="gateway-points"] .all-points-panel h2,body[data-page="gateway-points"] .all-points-column h3{{color:var(--ink)}}body[data-page="gateway-points"] .notice{{color:var(--muted);background:var(--bg-tile-alt);border:1px solid var(--border);border-radius:8px;padding:10px 12px}}body[data-page="gateway-points"] .all-points-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:start}}body[data-page="gateway-points"] .all-points-column{{padding:0}}body[data-page="gateway-points"] .all-points-column h3{{margin:8px 0;font-size:16px}}body[data-page="gateway-points"] .all-points-table-wrap{{overflow-x:auto}}body[data-page="gateway-points"] .all-points-table{{width:100%;border-collapse:collapse;background:var(--bg-tile)}}body[data-page="gateway-points"] .all-points-table th,body[data-page="gateway-points"] .all-points-table td{{padding:3px 5px;border:1px solid var(--border);font-size:12px;line-height:1.2;color:var(--ink)}}body[data-page="gateway-points"] .all-points-table th{{background:var(--bg-tile-alt);font-weight:700;white-space:nowrap}}body[data-page="gateway-points"] .all-points-table th:first-child,body[data-page="gateway-points"] .all-points-table td:first-child{{width:96px;white-space:nowrap}}body[data-page="gateway-points"] .all-points-table th:last-child,body[data-page="gateway-points"] .all-points-table td:last-child{{width:112px;color:var(--accent-strong);font-weight:700;white-space:nowrap}}body[data-page="gateway-points"] .all-points-table tbody tr:hover{{background:var(--bg-tile-alt)}}@media (max-width:1100px){{body[data-page="gateway-points"] .all-points-grid{{grid-template-columns:1fr}}}}</style>"""
-    return _layout("All Points - IOT Cloud Commissioning", body, "gateway-points", f'data-gateway-id="{escaped_gateway_id}"')
+    return _layout("All Points - IOT Cloud Commissioning", gateway_navigation_html(gateway_id, "points") + body, "gateway-points", f'data-gateway-id="{escaped_gateway_id}"')
+
+
+def gateway_bms_shell_html(gateway_id: str, page: str, device_id: str | None = None) -> str:
+    escaped_gateway_id = escape(gateway_id, quote=True)
+    escaped_device_id = escape(device_id or "", quote=True)
+    title = "Device Graphic" if device_id else "Weather" if page == "weather" else "Trends"
+    detail = "Phase 1 read-only device graphic shell. Point-template bindings arrive in a later phase." if device_id else "Weather presentation shell. No external weather service or API is introduced in this phase." if page == "weather" else "Gateway trend navigation shell. Existing mirrored trend APIs remain unchanged; a dedicated Cloud trend viewer has not yet been implemented."
+    body = f"""
+  <header><h1 id="gateway-bms-page-title">{title}</h1><div class="toolbar"><span id="identity"></span><button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Light Mode</button><a class="button secondary" href="/app">Dashboard</a><button id="logout" class="secondary" type="button">Logout</button></div></header>
+  <main class="gateway-nav-content"><section class="gateway-bms-shell"><span class="eyebrow">Gateway BMS</span><h2>{title}</h2><p>{detail}</p></section></main>
+  <style>body[data-page="gateway-bms"]{{color-scheme:dark;--border:rgba(255,255,255,.09);--ink:#fff;--muted:#aab2c0;--accent:#3987e5;min-height:100vh;background:#08090b;color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}}body[data-page="gateway-bms"][data-theme="light"]{{color-scheme:light;--border:rgba(11,17,26,.10);--ink:#0b0f14;--muted:#4c5766;--accent:#2a78d6;background:#eef1f5}}body[data-page="gateway-bms"] header{{border-bottom:1px solid var(--border);background:#121317;padding:18px clamp(18px,3vw,38px)}}body[data-page="gateway-bms"][data-theme="light"] header{{background:#fff}}body[data-page="gateway-bms"] main{{width:100%;max-width:none;margin:0;padding:clamp(16px,2.5vw,32px)}}body[data-page="gateway-bms"] button.secondary,body[data-page="gateway-bms"] .button.secondary{{color:var(--ink);background:transparent;border-color:var(--border)}}.gateway-bms-shell{{padding:20px;border:1px solid var(--border);border-radius:12px;background:#121317;box-shadow:0 8px 20px rgba(0,0,0,.35)}}body[data-theme="light"] .gateway-bms-shell{{background:#fff;box-shadow:0 6px 16px rgba(20,30,45,.08)}}.gateway-bms-shell h2{{color:var(--ink)}}.gateway-bms-shell p{{color:var(--muted)}}</style>"""
+    current_page = f"device:{device_id}" if device_id else page
+    attrs = f'data-gateway-id="{escaped_gateway_id}" data-device-id="{escaped_device_id}"'
+    return _layout(f"{title} - IOT Cloud Commissioning", gateway_navigation_html(gateway_id, current_page) + body, "gateway-bms", attrs)
 
 
 def tunnel_connecting_html(gateway_id: str) -> str:

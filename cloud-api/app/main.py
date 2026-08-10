@@ -139,6 +139,7 @@ from app.ui import (
     check_email_html,
     gateway_workspace_html,
     gateway_points_html,
+    gateway_bms_shell_html,
     login_html,
     reset_password_html,
     signup_html,
@@ -1481,6 +1482,21 @@ def gateway_workspace_page(gateway_id: str) -> HTMLResponse:
 @app.get("/gateways/{gateway_id}/points", response_class=HTMLResponse, include_in_schema=False)
 def gateway_points_page(gateway_id: str) -> HTMLResponse:
     return HTMLResponse(gateway_points_html(gateway_id))
+
+
+@app.get("/gateways/{gateway_id}/devices/{device_id}", response_class=HTMLResponse, include_in_schema=False)
+def gateway_device_page(gateway_id: str, device_id: str) -> HTMLResponse:
+    return HTMLResponse(gateway_bms_shell_html(gateway_id, "device", device_id))
+
+
+@app.get("/gateways/{gateway_id}/trends", response_class=HTMLResponse, include_in_schema=False)
+def gateway_trends_page(gateway_id: str) -> HTMLResponse:
+    return HTMLResponse(gateway_bms_shell_html(gateway_id, "trends"))
+
+
+@app.get("/gateways/{gateway_id}/weather", response_class=HTMLResponse, include_in_schema=False)
+def gateway_weather_page(gateway_id: str) -> HTMLResponse:
+    return HTMLResponse(gateway_bms_shell_html(gateway_id, "weather"))
 
 
 @app.get("/gateways/{gateway_id}/configure", include_in_schema=False)
