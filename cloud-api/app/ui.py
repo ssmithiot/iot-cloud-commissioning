@@ -7376,21 +7376,21 @@ def gateway_navigation_html(gateway_id: str, current_page: str) -> str:
   <aside class="gateway-nav-shell" aria-label="Gateway navigation"><nav class="gateway-nav" data-gateway-navigation data-current-page="{escaped_page}"><div class="gateway-nav-brand">{escaped_gateway_id}</div><span class="gateway-nav-empty">Loading navigation...</span></nav></aside>
   <style>
     .gateway-nav-shell {{ position:fixed; inset:10px auto 10px 10px; z-index:40; width:244px; }}
-    .gateway-nav {{ height:100%; overflow:auto; padding:12px; border:1px solid rgba(255,255,255,.09); border-radius:14px; background:#121317; color:#fff; box-shadow:0 8px 20px rgba(0,0,0,.35); }}
-    .gateway-nav-brand {{ padding:8px 10px 14px; border-bottom:1px solid rgba(255,255,255,.09); font-weight:800; letter-spacing:.04em; }}
-    .gateway-nav-collapse {{ float:right; width:28px; min-height:28px; padding:0; border:1px solid rgba(255,255,255,.16); border-radius:8px; color:inherit; background:transparent; }}
-    .gateway-nav-global {{ display:grid; gap:3px; padding:10px 0; }}
-    .gateway-nav-link {{ display:block; padding:7px 10px; border-radius:7px; color:#fff; font-size:13px; font-weight:600; text-decoration:none; }}
+    .gateway-nav {{ height:100%; overflow:auto; padding:0; border:1px solid rgba(255,255,255,.12); border-radius:18px; background:#111b26; color:#eef5fb; box-shadow:0 16px 34px rgba(0,0,0,.26); }}
+    .gateway-nav-brand {{ display:flex; align-items:center; gap:10px; padding:12px; border-bottom:1px solid rgba(255,255,255,.12); font-weight:800; letter-spacing:.04em; }}
+    .gateway-nav-collapse {{ margin-left:auto; width:34px; min-height:34px; padding:0; border:1px solid rgba(255,255,255,.12); border-radius:10px; color:inherit; background:rgba(255,255,255,.06); font-size:0; }} .gateway-nav-collapse::before{{content:"";display:block;width:14px;height:14px;margin:auto;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);}}
+    .gateway-nav-global {{ display:grid; gap:4px; padding:10px; }}
+    .gateway-nav-link {{ display:block; min-height:42px; padding:9px 10px; border:1px solid transparent; border-radius:12px; color:#eef5fb; font-size:14px; font-weight:600; text-decoration:none; }}
     .gateway-nav-link,.gateway-nav-category summary {{ display:flex; align-items:center; gap:10px; }}
-    .gateway-nav-icon {{ width:15px; height:15px; flex:0 0 15px; border:1.5px solid currentColor; border-radius:4px; opacity:.9; }}
-    .gateway-nav-link:hover {{ background:rgba(57,135,229,.14); }}
-    .gateway-nav-link.is-active {{ background:rgba(57,135,229,.28); color:#fff; box-shadow:inset 3px 0 #3987e5; }}
-    .gateway-nav-category {{ border-top:1px solid rgba(255,255,255,.09); }}
-    .gateway-nav-category summary {{ display:flex; align-items:center; justify-content:space-between; padding:10px; cursor:pointer; color:#aab2c0; font-size:12px; font-weight:800; list-style:none; }}
+    .gateway-nav-icon {{ width:22px; height:22px; flex:0 0 22px; border:0; opacity:.9; }} .gateway-nav-icon::before{{content:"";display:block;width:12px;height:12px;margin:5px;border:2px solid currentColor;border-radius:3px;}}
+    .gateway-nav-link:hover,.gateway-nav-category summary:hover {{ background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.12); }}
+    .gateway-nav-link.is-active {{ background:rgba(57,135,229,.28); border-color:#3987e5; color:#fff; box-shadow:inset 3px 0 #3987e5; }}
+    .gateway-nav-category {{ margin:4px 10px 0; }}
+    .gateway-nav-category summary {{ min-height:42px; padding:9px 10px; border:1px solid transparent; border-radius:12px; cursor:pointer; color:#eef5fb; font-size:14px; font-weight:600; list-style:none; }}
     .gateway-nav-category summary::-webkit-details-marker {{ display:none; }}
-    .gateway-nav-category summary::after {{ content:"+"; color:#3987e5; font-size:16px; }}
-    .gateway-nav-category[open] summary::after {{ content:"−"; }}
-    .gateway-nav-children {{ display:grid; gap:2px; padding:0 0 8px 8px; }}
+    .gateway-nav-category summary::after {{ content:""; width:8px;height:8px;margin-left:auto;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);opacity:.7;transition:transform 160ms ease; }}
+    .gateway-nav-category[open] summary::after {{ transform:rotate(225deg); }}
+    .gateway-nav-children {{ display:grid; gap:2px; padding:4px 0 4px 30px; }} .gateway-nav-children .gateway-nav-link{{min-height:34px;padding:7px 10px;color:#9fb0c0;font-size:13px;}}
     .gateway-nav-empty {{ display:block; padding:8px 10px; color:#aab2c0; font-size:12px; }}
     body[data-theme="light"] .gateway-nav {{ border-color:rgba(11,17,26,.10); background:#fff; color:#0b0f14; box-shadow:0 6px 16px rgba(20,30,45,.08); }}
     body[data-theme="light"] .gateway-nav-brand,body[data-theme="light"] .gateway-nav-category {{ border-color:rgba(11,17,26,.10); }}
