@@ -1563,6 +1563,8 @@ def register_operator_profile(
         db.add(operator)
     else:
         operator.supabase_user_id = operator.supabase_user_id or auth.supabase_user_id
+        if operator.status == "active":
+            operator.last_user_activity_at = now
         operator.updated_at = now
     db.commit()
     db.refresh(operator)
@@ -1572,6 +1574,16 @@ def register_operator_profile(
 @app.get("/api/auth/me", response_model=CurrentOperatorOut)
 def current_operator(auth: AdminAuthContext = Depends(require_known_user_auth)) -> CurrentOperatorOut:
     return CurrentOperatorOut(email=auth.email, role=auth.role, status=auth.status, auth_type=auth.auth_type)
+
+
+@app.post("/api/ui/session/activity", status_code=204)
+def record_user_activity(auth=Depends(require_supabase_user_auth), db: Session = Depends(get_db)) -> None:
+    operator = db.scalar(select(OperatorUser).where(OperatorUser.email == auth.email))
+    if operator is None or operator.status != "active":
+        raise HTTPException(status_code=401, detail="Invalid admin credentials")
+    operator.last_user_activity_at = utc_now()
+    operator.updated_at = utc_now()
+    db.commit()
 
 
 @app.get("/api/admin/users", response_model=list[OperatorUserOut])

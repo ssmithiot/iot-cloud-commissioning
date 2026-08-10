@@ -391,6 +391,7 @@ class OperatorUser(Base):
     role: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
     status: Mapped[str] = mapped_column(String(40), nullable=False, default="pending")
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_user_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
     organization_memberships: Mapped[list["OrganizationMembership"]] = relationship(back_populates="operator", cascade="all, delete-orphan")

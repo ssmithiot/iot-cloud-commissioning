@@ -283,6 +283,12 @@ def require_operator_auth(
         operator.updated_at = utc_now()
         db.commit()
 
+    if operator.last_user_activity_at is None:
+        operator.last_user_activity_at = utc_now()
+        db.commit()
+    if _is_expired(operator.last_user_activity_at + timedelta(minutes=settings.user_session_idle_timeout_minutes)):
+        raise _admin_unauthorized("Session expired due to inactivity")
+
     return AdminAuthContext(
         auth_type="supabase_user",
         email=operator.email,
@@ -316,6 +322,12 @@ def require_known_user_auth(
             operator.last_login_at = utc_now()
         operator.updated_at = utc_now()
         db.commit()
+
+    if operator.last_user_activity_at is None:
+        operator.last_user_activity_at = utc_now()
+        db.commit()
+    if _is_expired(operator.last_user_activity_at + timedelta(minutes=settings.user_session_idle_timeout_minutes)):
+        raise _admin_unauthorized("Session expired due to inactivity")
 
     return AdminAuthContext(
         auth_type="supabase_user",

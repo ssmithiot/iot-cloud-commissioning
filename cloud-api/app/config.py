@@ -99,6 +99,7 @@ class Settings(BaseSettings):
     # last_used_at, operator last_login_at). Avoids one UPDATE+COMMIT per
     # authenticated request at fleet scale. 0 restores write-every-request.
     auth_telemetry_min_interval_sec: int = Field(default=60, ge=0, le=86400, validation_alias="AUTH_TELEMETRY_MIN_INTERVAL_SEC")
+    user_session_idle_timeout_minutes: int = Field(default=30, ge=1, le=1440, validation_alias="USER_SESSION_IDLE_TIMEOUT_MINUTES")
     # Tunnel fallback is for slow remote gateway pages/actions. Keep the
     # request timeout long enough for field operations; session TTL remains a
     # separate control enforced by TunnelSessionManager.

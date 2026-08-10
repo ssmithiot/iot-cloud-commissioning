@@ -594,6 +594,12 @@ APP_SCRIPT = r"""
       }
     }
     if (!response.ok) {
+      if (response.status === 401) {
+        window.__cloudIdleStopped = true;
+        const client = await getSupabase();
+        await client.auth.signOut();
+        window.location.assign(statePaths.login);
+      }
       const message = body?.detail || `HTTP ${response.status}`;
       const error = new Error(message);
       error.status = response.status;
@@ -637,6 +643,25 @@ APP_SCRIPT = r"""
     const client = await getSupabase();
     await client.auth.signOut();
     window.location.assign(statePaths.login);
+  }
+
+  const USER_IDLE_MS = 30 * 60 * 1000;
+  let lastUserInteractionAt = Date.now();
+  let lastActivityWriteAt = 0;
+  let idleGuardStarted = false;
+  async function recordMeaningfulActivity() {
+    lastUserInteractionAt = Date.now();
+    if (lastUserInteractionAt - lastActivityWriteAt < 2 * 60 * 1000) return;
+    lastActivityWriteAt = lastUserInteractionAt;
+    try { await api("/api/ui/session/activity", {method:"POST"}); } catch (_) { /* api redirects on expiry */ }
+  }
+  function startIdleGuard() {
+    if (idleGuardStarted) return;
+    idleGuardStarted = true;
+    ["click", "keydown", "pointerdown", "touchstart"].forEach((event) => document.addEventListener(event, recordMeaningfulActivity, {passive:true}));
+    window.setInterval(() => { if (Date.now() - lastUserInteractionAt >= USER_IDLE_MS) logout(); }, 30000);
+    ["focus", "pageshow", "visibilitychange"].forEach((event) => window.addEventListener(event, () => { if (!document.hidden && Date.now() - lastUserInteractionAt >= USER_IDLE_MS) logout(); }));
+    recordMeaningfulActivity();
   }
 
   async function initLogin() {
@@ -815,6 +840,7 @@ APP_SCRIPT = r"""
         window.location.assign(statePaths.login);
         return null;
       }
+      startIdleGuard();
       const me = session.local_preview
         ? { email: "local-preview@localhost", role: "admin", status: "active" }
         : await ensureProfile();
