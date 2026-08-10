@@ -1499,6 +1499,11 @@ def gateway_weather_page(gateway_id: str) -> HTMLResponse:
     return HTMLResponse(gateway_bms_shell_html(gateway_id, "weather"))
 
 
+@app.get("/gateways/{gateway_id}/configure-tree", response_class=HTMLResponse, include_in_schema=False)
+def gateway_configure_tree_page(gateway_id: str) -> HTMLResponse:
+    return HTMLResponse(gateway_bms_shell_html(gateway_id, "configure-tree"))
+
+
 @app.get("/gateways/{gateway_id}/configure", include_in_schema=False)
 def configure_gateway_page(
     gateway_id: str,

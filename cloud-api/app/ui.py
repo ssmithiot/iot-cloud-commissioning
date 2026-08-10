@@ -4512,9 +4512,10 @@ APP_SCRIPT = r"""
       const categorized = new Map([...gatewayNavCategories, "Uncategorized"].map((category) => [category, []]));
       for (const device of tree.devices || []) categorized.get(gatewayNavCategory(device, groupsById)).push(device);
       const base = `/gateways/${encodeURIComponent(gatewayId)}`;
-      const globalLink = (key, label, href) => `<a class="gateway-nav-link ${currentPage === key ? "is-active" : ""}" ${currentPage === key ? 'aria-current="page"' : ""} href="${href}">${label}</a>`;
-      const category = (label, devices) => `<details class="gateway-nav-category" ${devices.some((device) => currentPage === `device:${device.id}`) ? "open" : ""}><summary>${label}</summary><div class="gateway-nav-children">${devices.length ? devices.map((device) => `<a class="gateway-nav-link ${currentPage === `device:${device.id}` ? "is-active" : ""}" href="${base}/devices/${encodeURIComponent(device.id)}">${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</a>`).join("") : '<span class="gateway-nav-empty">No categorized equipment</span>'}</div></details>`;
-      nav.innerHTML = `<div class="gateway-nav-brand">${escapeHtml(tree.gateway.gateway_id)}</div><div class="gateway-nav-global">${globalLink("workspace", "Workspace", base)}${globalLink("points", "All Points", `${base}/points`)}${globalLink("trends", "Trends", `${base}/trends`)}</div>${gatewayNavCategories.map((label) => category(label, categorized.get(label))).join("")}${categorized.get("Uncategorized").length ? category("Uncategorized", categorized.get("Uncategorized")) : ""}<details class="gateway-nav-category" ${currentPage === "edge" || currentPage === "weather" ? "open" : ""}><summary>System</summary><div class="gateway-nav-children">${globalLink("edge", "Edge", `${base}#edge-health`)}${globalLink("weather", "Weather", `${base}/weather`)}</div></details>`;
+      const globalLink = (key, label, href) => `<a class="gateway-nav-link ${currentPage === key ? "is-active" : ""}" ${currentPage === key ? 'aria-current="page"' : ""} href="${href}"><span class="gateway-nav-icon" aria-hidden="true"></span><span class="gateway-nav-label">${label}</span></a>`;
+      const category = (label, devices) => `<details class="gateway-nav-category" ${devices.some((device) => currentPage === `device:${device.id}`) ? "open" : ""}><summary><span class="gateway-nav-icon" aria-hidden="true"></span><span class="gateway-nav-label">${label}</span></summary><div class="gateway-nav-children">${devices.length ? devices.map((device) => `<a class="gateway-nav-link ${currentPage === `device:${device.id}` ? "is-active" : ""}" href="${base}/devices/${encodeURIComponent(device.id)}"><span class="gateway-nav-icon" aria-hidden="true"></span><span class="gateway-nav-label">${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</span></a>`).join("") : '<span class="gateway-nav-empty">No categorized equipment</span>'}</div></details>`;
+      nav.innerHTML = `<div class="gateway-nav-brand"><button class="gateway-nav-collapse" type="button" aria-label="Collapse navigation">☰</button><span>${escapeHtml(tree.gateway.gateway_id)}</span></div><div class="gateway-nav-global">${globalLink("workspace", "Workspace", base)}${globalLink("points", "All Points", `${base}/points`)}${globalLink("trends", "Trends", `${base}/trends`)}</div>${gatewayNavCategories.map((label) => category(label, categorized.get(label))).join("")}${categorized.get("Uncategorized").length ? category("Uncategorized", categorized.get("Uncategorized")) : ""}<details class="gateway-nav-category" ${currentPage === "edge" || currentPage === "weather" || currentPage === "configure-tree" ? "open" : ""}><summary>System</summary><div class="gateway-nav-children">${globalLink("edge", "Edge", `${base}#edge-health`)}${globalLink("weather", "Weather", `${base}/weather`)}${globalLink("configure-tree", "Configure Tree", `${base}/configure-tree`)}</div></details>`;
+      nav.querySelector(".gateway-nav-collapse").addEventListener("click", () => document.documentElement.classList.toggle("gateway-nav-collapsed"));
       nav.dataset.loaded = "true";
     } catch (error) {
       nav.innerHTML = '<div class="gateway-nav-brand">Gateway</div><span class="gateway-nav-empty">Navigation unavailable</span>';
@@ -4526,6 +4527,30 @@ APP_SCRIPT = r"""
     const me = await initProtectedPage("operator");
     if (!me) return;
     initGatewayNavigation();
+    if (document.body.dataset.bmsPage === "configure-tree") initConfigureTree();
+  }
+
+  async function initConfigureTree() {
+    const body = byId("configure-tree-body");
+    if (!body) return;
+    const gatewayId = document.body.dataset.gatewayId;
+    const tree = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`);
+    const names = [...gatewayNavCategories, "System", "Uncategorized"];
+    const groups = new Map((tree.groups || []).map((group) => [group.name, group]));
+    body.innerHTML = (tree.devices || []).map((device) => `<tr><td>${escapeHtml(String(device.device_instance))}</td><td>${escapeHtml(device.device_name || "—")}</td><td><select data-device-id="${escapeHtml(device.id)}">${names.map((name) => `<option value="${name}" ${groups.get(name)?.id === device.group_id || (!device.group_id && name === "Uncategorized") ? "selected" : ""}>${name}</option>`).join("")}</select></td></tr>`).join("");
+    byId("save-configure-tree").onclick = async () => {
+      for (const select of body.querySelectorAll("select[data-device-id]")) {
+        const groupName = select.value;
+        let groupId = null;
+        if (groupName !== "Uncategorized") {
+          if (!groups.has(groupName)) groups.set(groupName, await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/groups`, {method:"POST", body:JSON.stringify({name:groupName})}));
+          groupId = groups.get(groupName).id;
+        }
+        await api(`/api/ui/devices/${encodeURIComponent(select.dataset.deviceId)}`, {method:"PATCH", body:JSON.stringify({group_id:groupId})});
+      }
+      setText("configure-tree-status", "Saved navigation groups.");
+      initGatewayNavigation();
+    };
   }
 
   function renderUsers(users) {
@@ -7353,8 +7378,11 @@ def gateway_navigation_html(gateway_id: str, current_page: str) -> str:
     .gateway-nav-shell {{ position:fixed; inset:10px auto 10px 10px; z-index:40; width:244px; }}
     .gateway-nav {{ height:100%; overflow:auto; padding:12px; border:1px solid rgba(255,255,255,.09); border-radius:14px; background:#121317; color:#fff; box-shadow:0 8px 20px rgba(0,0,0,.35); }}
     .gateway-nav-brand {{ padding:8px 10px 14px; border-bottom:1px solid rgba(255,255,255,.09); font-weight:800; letter-spacing:.04em; }}
+    .gateway-nav-collapse {{ float:right; width:28px; min-height:28px; padding:0; border:1px solid rgba(255,255,255,.16); border-radius:8px; color:inherit; background:transparent; }}
     .gateway-nav-global {{ display:grid; gap:3px; padding:10px 0; }}
     .gateway-nav-link {{ display:block; padding:7px 10px; border-radius:7px; color:#fff; font-size:13px; font-weight:600; text-decoration:none; }}
+    .gateway-nav-link,.gateway-nav-category summary {{ display:flex; align-items:center; gap:10px; }}
+    .gateway-nav-icon {{ width:15px; height:15px; flex:0 0 15px; border:1.5px solid currentColor; border-radius:4px; opacity:.9; }}
     .gateway-nav-link:hover {{ background:rgba(57,135,229,.14); }}
     .gateway-nav-link.is-active {{ background:rgba(57,135,229,.28); color:#fff; box-shadow:inset 3px 0 #3987e5; }}
     .gateway-nav-category {{ border-top:1px solid rgba(255,255,255,.09); }}
@@ -7370,6 +7398,7 @@ def gateway_navigation_html(gateway_id: str, current_page: str) -> str:
     body[data-theme="light"] .gateway-nav-link.is-active {{ background:rgba(42,120,214,.20); }}
     body[data-theme="light"] .gateway-nav-category summary,body[data-theme="light"] .gateway-nav-empty {{ color:#4c5766; }}
     .gateway-nav-content {{ margin-left:264px !important; }}
+    html.gateway-nav-collapsed .gateway-nav-shell {{ width:52px; }} html.gateway-nav-collapsed .gateway-nav-content {{ margin-left:72px !important; }} html.gateway-nav-collapsed .gateway-nav {{ padding:8px; overflow:hidden; }} html.gateway-nav-collapsed .gateway-nav-label,html.gateway-nav-collapsed .gateway-nav-empty,html.gateway-nav-collapsed .gateway-nav-category summary::after,html.gateway-nav-collapsed .gateway-nav-brand span {{ display:none; }} html.gateway-nav-collapsed .gateway-nav-category {{ display:none; }} html.gateway-nav-collapsed .gateway-nav-link {{ padding:9px; }}
     @media (max-width:1100px) {{ .gateway-nav-shell {{ position:static; width:auto; margin:10px; }} .gateway-nav {{ height:auto; max-height:42vh; }} .gateway-nav-content {{ margin-left:0 !important; }} }}
   </style>"""
 
@@ -7624,11 +7653,11 @@ def gateway_points_html(gateway_id: str) -> str:
 def gateway_bms_shell_html(gateway_id: str, page: str, device_id: str | None = None) -> str:
     escaped_gateway_id = escape(gateway_id, quote=True)
     escaped_device_id = escape(device_id or "", quote=True)
-    title = "Device Graphic" if device_id else "Weather" if page == "weather" else "Trends"
-    detail = "Phase 1 read-only device graphic shell. Point-template bindings arrive in a later phase." if device_id else "Weather presentation shell. No external weather service or API is introduced in this phase." if page == "weather" else "Gateway trend navigation shell. Existing mirrored trend APIs remain unchanged; a dedicated Cloud trend viewer has not yet been implemented."
+    title = "Device Graphic" if device_id else "Configure Tree" if page == "configure-tree" else "Weather" if page == "weather" else "Trends"
+    detail = "Phase 1 read-only device graphic shell. Point-template bindings arrive in a later phase." if device_id else "Assign mirrored devices to the navigation groups. This uses saved Cloud metadata only." if page == "configure-tree" else "Weather presentation shell. No external weather service or API is introduced in this phase." if page == "weather" else "Gateway trend navigation shell. Existing mirrored trend APIs remain unchanged; a dedicated Cloud trend viewer has not yet been implemented."
     body = f"""
   <header><h1 id="gateway-bms-page-title">{title}</h1><div class="toolbar"><span id="identity"></span><button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Light Mode</button><a class="button secondary" href="/app">Dashboard</a><button id="logout" class="secondary" type="button">Logout</button></div></header>
-  <main class="gateway-nav-content"><section class="gateway-bms-shell"><span class="eyebrow">Gateway BMS</span><h2>{title}</h2><p>{detail}</p></section></main>
+  <main class="gateway-nav-content"><section class="gateway-bms-shell"><span class="eyebrow">Gateway BMS</span><h2>{title}</h2><p>{detail}</p>{'<table><thead><tr><th>Device ID / Instance</th><th>Device Name</th><th>Current Group</th></tr></thead><tbody id="configure-tree-body"></tbody></table><button id="save-configure-tree" type="button">Save Groups</button><div id="configure-tree-status" class="notice"></div>' if page == 'configure-tree' else ''}</section></main>
   <style>body[data-page="gateway-bms"]{{color-scheme:dark;--border:rgba(255,255,255,.09);--ink:#fff;--muted:#aab2c0;--accent:#3987e5;min-height:100vh;background:#08090b;color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}}body[data-page="gateway-bms"][data-theme="light"]{{color-scheme:light;--border:rgba(11,17,26,.10);--ink:#0b0f14;--muted:#4c5766;--accent:#2a78d6;background:#eef1f5}}body[data-page="gateway-bms"] header{{border-bottom:1px solid var(--border);background:#121317;padding:18px clamp(18px,3vw,38px)}}body[data-page="gateway-bms"][data-theme="light"] header{{background:#fff}}body[data-page="gateway-bms"] main{{width:100%;max-width:none;margin:0;padding:clamp(16px,2.5vw,32px)}}body[data-page="gateway-bms"] button.secondary,body[data-page="gateway-bms"] .button.secondary{{color:var(--ink);background:transparent;border-color:var(--border)}}.gateway-bms-shell{{padding:20px;border:1px solid var(--border);border-radius:12px;background:#121317;box-shadow:0 8px 20px rgba(0,0,0,.35)}}body[data-theme="light"] .gateway-bms-shell{{background:#fff;box-shadow:0 6px 16px rgba(20,30,45,.08)}}.gateway-bms-shell h2{{color:var(--ink)}}.gateway-bms-shell p{{color:var(--muted)}}</style>"""
     current_page = f"device:{device_id}" if device_id else page
     attrs = f'data-gateway-id="{escaped_gateway_id}" data-device-id="{escaped_device_id}"'
