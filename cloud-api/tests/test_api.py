@@ -673,6 +673,7 @@ def test_gateway_all_points_page_uses_edge_live_device_three_columns() -> None:
 
     assert response.status_code == 200
     assert 'data-page="gateway-points"' in response.text
+    assert 'id="theme-toggle"' in response.text
     assert response.text.count("Object Identifier</th><th>Description</th><th>Present Value / 85") == 3
     for column in range(1, 4):
         assert f"Column {column}</h3>" in response.text
@@ -684,6 +685,12 @@ def test_gateway_all_points_page_uses_edge_live_device_three_columns() -> None:
     assert "const baseColumnSize = Math.floor(rows.length / bodies.length);" in response.text
     assert "const remainder = rows.length % bodies.length;" in response.text
     assert "rows.slice(rowIndex, rowIndex + columnSize)" in response.text
+    assert "initThemeToggle();" in response.text
+    assert "--bg-page:#08090b" in response.text
+    assert "--bg-surface:#121317" in response.text
+    assert 'body[data-page="gateway-points"][data-theme="light"]' in response.text
+    assert 'body[data-page="gateway-points"] main{width:100%;max-width:none;margin:0;' in response.text
+    assert 'body[data-page="gateway-points"] .all-points-table th,body[data-page="gateway-points"] .all-points-table td' in response.text
 
 
 def test_gateway_workspace_trend_chart_tracks_resized_detail_pane() -> None:
