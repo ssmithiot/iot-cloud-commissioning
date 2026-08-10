@@ -673,10 +673,17 @@ def test_gateway_all_points_page_uses_edge_live_device_three_columns() -> None:
 
     assert response.status_code == 200
     assert 'data-page="gateway-points"' in response.text
-    assert "Object Identifier</th><th>Description</th><th>Present Value / 85" in response.text
+    assert response.text.count("Object Identifier</th><th>Description</th><th>Present Value / 85") == 3
+    for column in range(1, 4):
+        assert f"Column {column}</h3>" in response.text
+        assert f'id="all-points-body-{column}"' in response.text
     assert "quality" not in response.text.lower()
     assert '<th>Trend' not in response.text
     assert "api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`)" in response.text
+    assert "grid-template-columns:repeat(3,minmax(0,1fr))" in response.text
+    assert "const baseColumnSize = Math.floor(rows.length / bodies.length);" in response.text
+    assert "const remainder = rows.length % bodies.length;" in response.text
+    assert "rows.slice(rowIndex, rowIndex + columnSize)" in response.text
 
 
 def test_gateway_workspace_trend_chart_tracks_resized_detail_pane() -> None:

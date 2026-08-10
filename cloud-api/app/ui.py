@@ -4469,15 +4469,23 @@ APP_SCRIPT = r"""
       const tree = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`);
       byId("points-title").textContent = `${tree.gateway.gateway_id} All Points`;
       const rows = [...tree.points].sort((left, right) => `${left.object_type}:${left.object_instance}`.localeCompare(`${right.object_type}:${right.object_instance}`, undefined, {numeric:true}));
-      const body = byId("all-points-body");
-      body.textContent = "";
-      for (const point of rows) {
-        const row = document.createElement("tr");
-        const identifier = `${point.object_type}:${point.object_instance}`;
-        for (const value of [identifier, point.object_name || "—", point.present_value ?? "—"]) {
-          const cell = document.createElement("td"); cell.textContent = value; row.appendChild(cell);
+      const bodies = [0, 1, 2].map((column) => byId(`all-points-body-${column + 1}`));
+      const baseColumnSize = Math.floor(rows.length / bodies.length);
+      const remainder = rows.length % bodies.length;
+      let rowIndex = 0;
+      for (let column = 0; column < bodies.length; column += 1) {
+        const body = bodies[column];
+        body.textContent = "";
+        const columnSize = baseColumnSize + (column < remainder ? 1 : 0);
+        for (const point of rows.slice(rowIndex, rowIndex + columnSize)) {
+          const row = document.createElement("tr");
+          const identifier = `${point.object_type}:${point.object_instance}`;
+          for (const value of [identifier, point.object_name || "—", point.present_value ?? "—"]) {
+            const cell = document.createElement("td"); cell.textContent = value; row.appendChild(cell);
+          }
+          body.appendChild(row);
         }
-        body.appendChild(row);
+        rowIndex += columnSize;
       }
       byId("all-points-count").textContent = `${rows.length} mirrored point${rows.length === 1 ? "" : "s"}`;
     } catch (error) { setText("points-status", errorMessage(error), true); }
@@ -7539,8 +7547,8 @@ def gateway_points_html(gateway_id: str) -> str:
     escaped_gateway_id = escape(gateway_id, quote=True)
     body = f"""
   <header><h1 id="points-title">All Points</h1><div class="toolbar"><span id="identity"></span><a id="workspace-link" class="button secondary" href="/gateways/{escaped_gateway_id}">Workspace</a><a class="button secondary" href="/app">Dashboard</a><button id="logout" class="secondary" type="button">Logout</button></div></header>
-  <main><section class="workspace-panel"><div class="panel-title"><div><span class="eyebrow">Mirrored gateway points</span><h2>Live Devices table</h2></div><span id="all-points-count" class="panel-counter">Loading...</span></div><div id="points-status" class="notice">Object Identifier, Description, and Present Value / 85 are read-only Cloud mirrors.</div><div class="table-wrap"><table class="gateway-table all-points-table"><thead><tr><th>Object Identifier</th><th>Description</th><th>Present Value / 85</th></tr></thead><tbody id="all-points-body"></tbody></table></div></section></main>
-  <style>body[data-page="gateway-points"] .all-points-table th{{color:var(--muted);font:700 11px/1.2 "JetBrains Mono",Consolas,monospace;text-transform:uppercase;letter-spacing:.4px}}body[data-page="gateway-points"] .all-points-table td{{padding:10px 14px;border-bottom:1px solid var(--border)}}body[data-page="gateway-points"] .all-points-table tbody tr:hover{{background:rgba(59,130,246,.08)}}body[data-page="gateway-points"] .all-points-table td:last-child{{font-weight:700}}</style>"""
+  <main><section class="workspace-panel all-points-panel"><div class="panel-title"><div><span class="eyebrow">Mirrored gateway points</span><h2>Live Devices table</h2></div><span id="all-points-count" class="panel-counter">Loading...</span></div><div id="points-status" class="notice">Object Identifier, Description, and Present Value / 85 are read-only Cloud mirrors.</div><div class="all-points-grid">{''.join(f'<section class="all-points-column"><h3>Column {column}</h3><div class="all-points-table-wrap"><table class="all-points-table"><thead><tr><th>Object Identifier</th><th>Description</th><th>Present Value / 85</th></tr></thead><tbody id="all-points-body-{column}"></tbody></table></div></section>' for column in range(1, 4))}</div></section></main>
+  <style>body[data-page="gateway-points"] main{{width:100%;max-width:none;padding:clamp(16px,2.5vw,32px)}}body[data-page="gateway-points"] .all-points-panel{{width:100%;box-sizing:border-box}}body[data-page="gateway-points"] .all-points-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:start}}body[data-page="gateway-points"] .all-points-column h3{{margin:8px 0;font-size:16px}}body[data-page="gateway-points"] .all-points-table-wrap{{overflow-x:auto}}body[data-page="gateway-points"] .all-points-table{{width:100%;border-collapse:collapse;background:rgba(11,20,23,.72)}}body[data-page="gateway-points"] .all-points-table th,body[data-page="gateway-points"] .all-points-table td{{padding:3px 5px;border:1px solid var(--border);font-size:12px;line-height:1.2}}body[data-page="gateway-points"] .all-points-table th{{color:var(--ink);background:rgba(59,130,246,.10);font-weight:700;white-space:nowrap}}body[data-page="gateway-points"] .all-points-table th:first-child,body[data-page="gateway-points"] .all-points-table td:first-child{{width:96px;white-space:nowrap}}body[data-page="gateway-points"] .all-points-table th:last-child,body[data-page="gateway-points"] .all-points-table td:last-child{{width:112px;color:var(--accent-strong);font-weight:700;white-space:nowrap}}body[data-page="gateway-points"] .all-points-table tbody tr:hover{{background:rgba(59,130,246,.08)}}@media (max-width:1100px){{body[data-page="gateway-points"] .all-points-grid{{grid-template-columns:1fr}}}}</style>"""
     return _layout("All Points - IOT Cloud Commissioning", body, "gateway-points", f'data-gateway-id="{escaped_gateway_id}"')
 
 
