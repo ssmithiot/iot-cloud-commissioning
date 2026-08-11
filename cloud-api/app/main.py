@@ -35,7 +35,7 @@ from app.auth import (
 )
 from app.access import is_platform_admin, require_site_access, visible_site_ids
 from app.config import Settings, production_resource_conflicts, settings
-from app.database import Base, SessionLocal, engine, get_db
+from app.database import Base, SessionLocal, engine, get_db, reset_pool_request_context, set_pool_request_context
 from app.models import (
     BacnetWriteBatch,
     BacnetWriteCommand,
@@ -205,7 +205,11 @@ async def request_timing_middleware(request: Request, call_next):  # type: ignor
     fleet scale. Additive only; never blocks or alters the response.
     """
     start = time.perf_counter()
-    response = await call_next(request)
+    token = set_pool_request_context(uuid4().hex, request.method, request.url.path)
+    try:
+        response = await call_next(request)
+    finally:
+        reset_pool_request_context(token)
     route = request.scope.get("route")
     path_template = getattr(route, "path", request.url.path)
     if path_template not in _REQUEST_LOG_EXCLUDED_PATHS:
