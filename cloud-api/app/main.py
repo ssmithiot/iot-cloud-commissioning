@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,7 @@ from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import String, cast, delete, select, text
+from sqlalchemy import String, and_, cast, delete, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -150,6 +151,33 @@ from app.ui import (
 )
 
 
+RETENTION_CLEANUP_INTERVAL_SECONDS = 3600
+RETENTION_CLEANUP_BATCH_SIZE = 1000
+
+
+def _run_bounded_retention_cleanup() -> None:
+    """Prune at most one bounded batch per history table outside ingestion."""
+    now = utc_now()
+    with SessionLocal() as db:
+        for model, timestamp, days in (
+            (PointTrendSample, PointTrendSample.sampled_at, settings.trend_retention_days),
+            (EdgeHeartbeat, EdgeHeartbeat.timestamp_utc, settings.heartbeat_retention_days),
+        ):
+            ids = db.scalars(select(model.id).where(timestamp < now - timedelta(days=days)).limit(RETENTION_CLEANUP_BATCH_SIZE)).all()
+            if ids:
+                db.execute(delete(model).where(model.id.in_(ids)).execution_options(synchronize_session=False))
+        db.commit()
+
+
+async def _retention_cleanup_loop() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(_run_bounded_retention_cleanup)
+        except Exception:
+            logging.getLogger("iot-cloud-api.retention").exception("bounded retention cleanup failed")
+        await asyncio.sleep(RETENTION_CLEANUP_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # Staging safety guard: refuse to start a staging instance that points at
@@ -165,7 +193,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         Base.metadata.create_all(bind=engine)
     else:
         require_current_schema(engine)
-    yield
+    cleanup_task = asyncio.create_task(_retention_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleanup_task
 
 
 app = FastAPI(title="IOT Cloud Commissioning API", version="0.1.0", lifespan=lifespan)
@@ -3274,12 +3308,18 @@ def edge_upload_trend_samples(
     if len(sample_keys) != len(set(sample_keys)):
         raise HTTPException(status_code=422, detail="Trend sample batch must not contain duplicate point_id and sampled_at pairs")
     points = {point.id: point for point in db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.id.in_(point_ids), SavedBacnetPoint.gateway_id == gateway_id)).all()}
+    existing_predicates = [and_(PointTrendSample.point_id == point_id, PointTrendSample.sampled_at == sampled_at) for point_id, sampled_at in sample_keys]
+    trend_key = lambda point_id, sampled_at: (str(point_id), sampled_at.astimezone(timezone.utc).replace(tzinfo=None) if sampled_at.tzinfo else sampled_at)
+    existing_by_key = {
+        trend_key(existing.point_id, existing.sampled_at): existing
+        for existing in db.scalars(select(PointTrendSample).where(or_(*existing_predicates))).all()
+    }
     stored: list[PointTrendSample] = []
     for sample in payload:
         point_id = _tree_id(sample.point_id)
         if point_id not in points:
             raise HTTPException(status_code=403, detail="Trend sample point does not belong to gateway")
-        existing = db.scalar(select(PointTrendSample).where(PointTrendSample.point_id == point_id, PointTrendSample.sampled_at == sample.sampled_at))
+        existing = existing_by_key.get(trend_key(point_id, sample.sampled_at))
         if existing is None:
             existing = PointTrendSample(
                 point_id=point_id,
@@ -3291,12 +3331,6 @@ def edge_upload_trend_samples(
             )
             db.add(existing)
         stored.append(existing)
-    retention_cutoff = utc_now() - timedelta(days=settings.trend_retention_days)
-    db.execute(
-        delete(PointTrendSample)
-        .where(PointTrendSample.sampled_at < retention_cutoff)
-        .execution_options(synchronize_session=False)
-    )
     db.commit()
     return stored
 
@@ -3377,15 +3411,6 @@ def receive_heartbeat(
             disk_free_mb=payload.disk_free_mb,
             timestamp_utc=payload.timestamp_utc,
         )
-    )
-    # Bounded retention: prune this gateway's heartbeat history older than the
-    # configured window. Scoping to the sending gateway keeps each delete
-    # small and indexed; the fleet self-prunes as gateways heartbeat.
-    heartbeat_cutoff = now - timedelta(days=settings.heartbeat_retention_days)
-    db.execute(
-        delete(EdgeHeartbeat)
-        .where(EdgeHeartbeat.gateway_id == payload.gateway_id, EdgeHeartbeat.timestamp_utc < heartbeat_cutoff)
-        .execution_options(synchronize_session=False)
     )
     db.commit()
 
