@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import String, and_, cast, delete, or_, select, text
+from sqlalchemy import String, and_, cast, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -355,13 +355,39 @@ def _duplicate_identity_status(db: Session, gateway_id: str, now: datetime | Non
     }
 
 
-def _gateway_out(edge_node: EdgeNode, now: datetime | None = None, db: Session | None = None) -> dict[str, object]:
+def _duplicate_identity_statuses(db: Session, gateway_ids: list[str], now: datetime) -> dict[str, dict[str, object]]:
+    if not gateway_ids:
+        return {}
+    cutoff = now - timedelta(seconds=max(settings.gateway_offline_after_seconds, 1800))
+    ranked = select(
+        EdgeHeartbeat.gateway_id,
+        EdgeHeartbeat.machine_id,
+        EdgeHeartbeat.primary_mac,
+        EdgeHeartbeat.hostname,
+        EdgeHeartbeat.lan_ip,
+        func.row_number().over(partition_by=EdgeHeartbeat.gateway_id, order_by=EdgeHeartbeat.timestamp_utc.desc()).label("rank"),
+    ).where(EdgeHeartbeat.gateway_id.in_(gateway_ids), EdgeHeartbeat.timestamp_utc >= cutoff).subquery()
+    grouped: dict[str, list[object]] = {}
+    for row in db.execute(select(ranked).where(ranked.c.rank <= 200)):
+        grouped.setdefault(row.gateway_id, []).append(row)
+    statuses: dict[str, dict[str, object]] = {}
+    for gateway_id, rows in grouped.items():
+        machine_ids = {row.machine_id for row in rows if row.machine_id}; primary_macs = {row.primary_mac for row in rows if row.primary_mac}; hostnames = {row.hostname for row in rows if row.hostname}; lan_ips = {row.lan_ip for row in rows if row.lan_ip}
+        reasons = []
+        if len(machine_ids) > 1: reasons.append(f"{len(machine_ids)} machine IDs")
+        if len(primary_macs) > 1: reasons.append(f"{len(primary_macs)} primary MACs")
+        if not reasons and len(hostnames) > 1 and len(lan_ips) > 1: reasons.append(f"{len(hostnames)} hostnames and {len(lan_ips)} LAN IPs")
+        statuses[gateway_id] = {"duplicate_identity_suspected": bool(reasons), "duplicate_identity_detail": f"Duplicate gateway identity suspected in recent heartbeats: {', '.join(reasons)}. hostnames={sorted(hostnames)} lan_ips={sorted(lan_ips)}" if reasons else None}
+    return statuses
+
+
+def _gateway_out(edge_node: EdgeNode, now: datetime | None = None, db: Session | None = None, duplicate_identity: dict[str, object] | None = None) -> dict[str, object]:
     site = edge_node.site
     store_hours_mf = (site.store_hours_monday_friday or site.store_hours_mf) if site else None
     store_hours_sat = (site.store_hours_saturday or site.store_hours_sat) if site else None
     store_hours_sun = (site.store_hours_sunday or site.store_hours_sun) if site else None
     direct_connect = _direct_connect_for_site(site) if site else DirectConnectOut(available=False)
-    duplicate_identity = (
+    duplicate_identity = duplicate_identity or (
         _duplicate_identity_status(db, edge_node.gateway_id, now)
         if db is not None
         else {"duplicate_identity_suspected": False, "duplicate_identity_detail": None}
@@ -1881,10 +1907,9 @@ def ui_list_gateways(
     status_filter: str = "all",
 ) -> list[dict[str, object]]:
     now = utc_now()
-    gateways = [
-        _gateway_out(edge_node, now, db)
-        for edge_node in db.scalars(_scoped_gateway_statement(db, auth)).all()
-    ]
+    edge_nodes = db.scalars(_scoped_gateway_statement(db, auth)).all()
+    duplicate_statuses = _duplicate_identity_statuses(db, [edge_node.gateway_id for edge_node in edge_nodes], now)
+    gateways = [_gateway_out(edge_node, now, duplicate_identity=duplicate_statuses.get(edge_node.gateway_id)) for edge_node in edge_nodes]
     if status_filter != "all":
         gateways = [gateway for gateway in gateways if gateway["effective_status"] == status_filter]
     return gateways
@@ -1954,9 +1979,17 @@ def ui_list_gateway_updates(
         .limit(limit)
     ).all()
     allowed_site_ids = visible_site_ids(db, auth)
+    gateways_by_id = {
+        gateway.gateway_id: gateway
+        for gateway in db.scalars(
+            select(EdgeNode).options(joinedload(EdgeNode.site)).where(EdgeNode.gateway_id.in_([update.gateway_id for update in updates]))
+        ).all()
+    }
     visible_updates: list[dict[str, object]] = []
     for update in updates:
-        gateway = _get_gateway_with_site_or_404(db, update.gateway_id)
+        gateway = gateways_by_id.get(update.gateway_id)
+        if gateway is None:
+            continue
         if allowed_site_ids is None or str(gateway.site.id) in allowed_site_ids:
             visible_updates.append(_gateway_update_out(update, gateway))
     return visible_updates

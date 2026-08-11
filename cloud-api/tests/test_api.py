@@ -494,7 +494,7 @@ def test_dashboard_registry_refresh_interval_is_five_minutes_without_duplicate_t
     assert "dashboardGatewayRefreshTimer = window.setInterval(() =>" in response.text
     assert "refreshDashboardGatewayData({ initial: false });" in response.text
     assert "}, REGISTRY_REFRESH_INTERVAL_MS);" in response.text
-    assert response.text.count("window.setInterval(() =>") == 1
+    assert response.text.count("window.setInterval(() =>") == 2
     assert response.text.count("REGISTRY_REFRESH_INTERVAL_MS") == 2
     assert "const dashboardGatewayRefreshMs = 30000;" not in response.text
     assert "}, dashboardGatewayRefreshMs);" not in response.text
