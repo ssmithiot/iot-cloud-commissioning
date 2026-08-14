@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import ARRAY, JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import ARRAY, JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import ENUM as PostgresEnum
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -426,6 +426,7 @@ class SavedBacnetDevice(Base):
         index=True,
     )
     group_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("gateway_groups.id", ondelete="SET NULL"), nullable=True)
+    template_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
     device_instance: Mapped[int] = mapped_column(Integer, nullable=False)
     device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     vendor_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -451,6 +452,14 @@ class SavedBacnetPoint(Base):
             "property_name",
             name="uq_saved_points_device_object_property",
         ),
+        Index(
+            "uq_saved_points_device_logical_role",
+            "saved_device_id",
+            "logical_role",
+            unique=True,
+            sqlite_where=text("logical_role IS NOT NULL"),
+            postgresql_where=text("logical_role IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
@@ -470,6 +479,7 @@ class SavedBacnetPoint(Base):
     object_type: Mapped[str] = mapped_column(String(80), nullable=False)
     object_instance: Mapped[int] = mapped_column(Integer, nullable=False)
     object_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    logical_role: Mapped[str | None] = mapped_column(String(80), nullable=True)
     property_name: Mapped[str] = mapped_column(String(80), nullable=False, default="present-value")
     present_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
     units: Mapped[str | None] = mapped_column(String(80), nullable=True)

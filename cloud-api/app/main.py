@@ -59,6 +59,7 @@ from app.models import (
     SiteWeather,
     utc_now,
 )
+from app.template_registry import TEMPLATES, template_for
 from app.schema import require_current_schema, schema_revision_status
 from app.schemas import (
     AccessMembershipRecordOut,
@@ -1213,6 +1214,7 @@ def _device_out(device: SavedBacnetDevice) -> dict[str, object]:
         "id": str(device.id),
         "gateway_id": device.gateway_id,
         "group_id": str(device.group_id) if device.group_id else None,
+        "template_key": device.template_key,
         "device_instance": device.device_instance,
         "device_name": device.device_name,
         "vendor_name": device.vendor_name,
@@ -1238,6 +1240,7 @@ def _point_out(point: SavedBacnetPoint, trend_config: PointTrendConfig | None = 
         "object_type": point.object_type,
         "object_instance": point.object_instance,
         "object_name": point.object_name,
+        "logical_role": point.logical_role,
         "property": point.property_name,
         "present_value": point.present_value,
         "units": point.units,
@@ -1257,6 +1260,41 @@ def _point_out(point: SavedBacnetPoint, trend_config: PointTrendConfig | None = 
         "created_at": point.created_at,
         "updated_at": point.updated_at,
     }
+
+
+def _device_category(db: Session, device: SavedBacnetDevice) -> str | None:
+    if not device.group_id:
+        return None
+    group = db.get(GatewayGroup, device.group_id)
+    return group.name.strip() if group else None
+
+
+def _validate_template_assignment(db: Session, device: SavedBacnetDevice, template_key: str | None) -> None:
+    if template_key is None:
+        return
+    template = template_for(template_key)
+    if template is None:
+        raise HTTPException(status_code=422, detail="Unknown equipment template")
+    category = _device_category(db, device)
+    if category not in template["categories"]:
+        raise HTTPException(status_code=422, detail=f"Template {template_key} is not compatible with device group {category or 'Uncategorized'}")
+    if not device.id:
+        return
+    roles = [point.logical_role for point in db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id, SavedBacnetPoint.logical_role.is_not(None))).all()]
+    invalid_roles = [role for role in roles if role not in template["roles"]]
+    if invalid_roles:
+        raise HTTPException(status_code=409, detail="Template change would leave incompatible bindings: " + ", ".join(sorted(set(invalid_roles))))
+
+
+def _validate_logical_role(db: Session, point: SavedBacnetPoint, role: str | None) -> None:
+    if role is None:
+        return
+    device = db.get(SavedBacnetDevice, point.saved_device_id)
+    template = template_for(device.template_key if device else None)
+    if template is None:
+        raise HTTPException(status_code=422, detail="Assign a compatible equipment template before binding roles")
+    if role not in template["roles"]:
+        raise HTTPException(status_code=422, detail=f"Role {role} is not supported by template {device.template_key}")
 
 
 def _write_audit_actor(auth: AdminAuthContext) -> str:
@@ -2544,6 +2582,12 @@ def ui_get_gateway_tree(
     )
 
 
+@app.get("/api/ui/equipment-templates")
+def ui_equipment_templates(auth: AdminAuthContext = Depends(require_operator_auth)) -> dict[str, object]:
+    """Registry metadata for configuring and rendering Cloud equipment."""
+    return {key: {"label": item["label"], "categories": sorted(item["categories"]), "roles": list(item["roles"]), "summary_roles": list(item["summary_roles"])} for key, item in TEMPLATES.items()}
+
+
 @app.post("/api/ui/gateways/{gateway_id}/groups", response_model=GatewayGroupOut)
 def ui_create_group(
     gateway_id: str,
@@ -2620,7 +2664,9 @@ def ui_save_device(
         last_seen_at=utc_now(),
         lifecycle_state="active",
         enabled=payload.enabled,
+        template_key=payload.template_key,
     )
+    _validate_template_assignment(db, device, payload.template_key)
     db.add(device)
     try:
         db.commit()
@@ -2648,12 +2694,16 @@ def ui_patch_device(
             if group is None or group.gateway_id != device.gateway_id:
                 raise HTTPException(status_code=404, detail="Group not found")
             device.group_id = group_id
+        _validate_template_assignment(db, device, device.template_key)
     if payload.device_name is not None:
         device.device_name = payload.device_name
     if payload.vendor_name is not None:
         device.vendor_name = payload.vendor_name
     if payload.enabled is not None:
         device.enabled = payload.enabled
+    if "template_key" in payload.model_fields_set:
+        _validate_template_assignment(db, device, payload.template_key)
+        device.template_key = payload.template_key
     device.updated_at = utc_now()
     db.commit()
     db.refresh(device)
@@ -3054,8 +3104,15 @@ def ui_patch_point(
         point.writable = payload.writable
     if payload.enabled is not None:
         point.enabled = payload.enabled
+    if "logical_role" in payload.model_fields_set:
+        _validate_logical_role(db, point, payload.logical_role)
+        point.logical_role = payload.logical_role
     point.updated_at = utc_now()
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That logical role is already bound to another point on this device") from None
     db.refresh(point)
     return _point_out(point)
 

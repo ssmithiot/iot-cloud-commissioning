@@ -594,6 +594,7 @@ class SavedDeviceIn(BaseModel):
     network_number: int | None = None
     mac_address: str | None = Field(default=None, max_length=255)
     enabled: bool = True
+    template_key: str | None = Field(default=None, max_length=80)
 
 
 class SavedDevicePatchIn(BaseModel):
@@ -601,6 +602,7 @@ class SavedDevicePatchIn(BaseModel):
     device_name: str | None = Field(default=None, max_length=255)
     vendor_name: str | None = Field(default=None, max_length=255)
     enabled: bool | None = None
+    template_key: str | None = Field(default=None, max_length=80)
 
 
 class SavedDeviceOut(BaseModel):
@@ -618,6 +620,7 @@ class SavedDeviceOut(BaseModel):
     lifecycle_state: str
     retired_at: datetime | None
     enabled: bool
+    template_key: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -639,6 +642,7 @@ class SavedPointPatchIn(BaseModel):
     units: str | None = Field(default=None, max_length=80)
     writable: bool | None = None
     enabled: bool | None = None
+    logical_role: str | None = Field(default=None, max_length=80)
 
 
 class SavedPointsBulkRemoveIn(BaseModel):
@@ -810,6 +814,7 @@ class SavedPointOut(BaseModel):
     object_type: str
     object_instance: int
     object_name: str | None
+    logical_role: str | None
     property: str
     present_value: str | None
     units: str | None

@@ -3866,11 +3866,14 @@ APP_SCRIPT = r"""
 
   async function loadGatewayWorkspace() {
     const gatewayId = document.body.dataset.gatewayId;
-    const [gateway, site, directConnect, tunnelStatus] = await Promise.all([
+    const [gateway, site, directConnect, tunnelStatus, tree, weather, templates] = await Promise.all([
       api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}`),
       api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/site`),
       api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/direct-connect`),
-      api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`)
+      api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`),
+      api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`),
+      api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/weather`),
+      api("/api/ui/equipment-templates")
     ]);
     byId("gateway-title").textContent = `${gateway.gateway_id} Workspace`;
     byId("gateway-status").textContent = `${statusLabel(gateway)} | BACnet ${gateway.bacnet_port} | ${gateway.direct_connect_host || "no site IP"}`;
@@ -3887,6 +3890,30 @@ APP_SCRIPT = r"""
       ui_version: gateway.ui_version
       }, null, 2);
     }
+    renderSiteEquipmentOverview(tree, weather, templates, gateway);
+  }
+
+  function roleLabel(role) { return role.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
+  function pointValue(point) { return point ? `${point.present_value ?? "—"}${point.units ? ` ${point.units}` : ""}` : "Not mapped"; }
+  function renderSiteEquipmentOverview(tree, weather, templates, gateway) {
+    const shell = document.querySelector(".bms-shell");
+    if (!shell) return;
+    const groups = new Map((tree.groups || []).map((group) => [group.id, group.name]));
+    const classified = (tree.devices || []).filter((device) => device.template_key && groups.has(device.group_id));
+    const byCategory = new Map();
+    for (const device of classified) {
+      const category = groups.get(device.group_id);
+      if (!byCategory.has(category)) byCategory.set(category, []);
+      byCategory.get(category).push(device);
+    }
+    const weatherText = weather?.available ? [weather.temperature_f != null ? `${Math.round(weather.temperature_f)}°F` : null, weather.condition, weather.wind_speed_mph != null ? `${Math.round(weather.wind_speed_mph)} mph wind` : null, weather.sunrise_at ? `Sunrise ${new Date(weather.sunrise_at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}` : null, weather.sunset_at ? `Sunset ${new Date(weather.sunset_at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}` : null, weather.solar_noon_at ? `Solar noon ${new Date(weather.solar_noon_at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}` : null].filter(Boolean).join(" · ") : (weather?.reason || "Weather unavailable");
+    const tile = (device) => {
+      const template = templates[device.template_key];
+      const points = new Map((tree.points || []).filter((point) => point.saved_device_id === device.id).map((point) => [point.logical_role, point]));
+      const roles = (template?.summary_roles || []).map((role) => `<li><strong>${escapeHtml(roleLabel(role))}</strong>: ${escapeHtml(pointValue(points.get(role)))}</li>`).join("");
+      return `<article class="bms-tile third"><span class="bms-label">${escapeHtml(template?.label || device.template_key)}</span><h3>${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</h3><div class="bms-sub">${escapeHtml(groups.get(device.group_id) || "Uncategorized")} · ${escapeHtml(gateway?.latest_status || "unknown")}</div><ul>${roles || "<li>Not mapped</li>"}</ul><a class="button secondary" href="/gateways/${encodeURIComponent(device.gateway_id)}/devices/${encodeURIComponent(device.id)}">View Device</a></article>`;
+    };
+    shell.innerHTML = `<div class="bms-head"><div><span class="bms-kicker">Site equipment overview</span><h2 id="bms-graphic-title">Equipment</h2><span class="bms-sub">Configured device summaries use saved template bindings.</span></div></div><div class="bms-grid"><article class="bms-tile third"><span class="bms-label">Weather</span><div class="bms-value">${escapeHtml(weatherText)}</div></article>${[...byCategory.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([category, devices]) => `<div class="bms-tile wide"><span class="bms-label">${escapeHtml(category)}</span><div class="bms-grid">${devices.sort((a,b) => a.device_instance - b.device_instance).map(tile).join("")}</div></div>`).join("") || "<p>No classified equipment is configured.</p>"}</div>`;
   }
 
   function resourcePercent(value) {
@@ -4555,16 +4582,36 @@ APP_SCRIPT = r"""
     if (!me) return;
     initGatewayNavigation();
     if (document.body.dataset.bmsPage === "configure-tree") initConfigureTree();
+    if (document.body.dataset.bmsPage === "device") loadDeviceGraphic();
+  }
+
+  async function loadDeviceGraphic() {
+    const gatewayId = document.body.dataset.gatewayId;
+    const deviceId = document.body.dataset.deviceId;
+    const [tree, templates] = await Promise.all([api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`), api("/api/ui/equipment-templates")]);
+    const device = (tree.devices || []).find((item) => item.id === deviceId);
+    const target = byId("device-graphic");
+    if (!device || !target) return;
+    const template = templates[device.template_key];
+    const groups = new Map((tree.groups || []).map((group) => [group.id, group.name]));
+    const bound = new Map((tree.points || []).filter((point) => point.saved_device_id === device.id).map((point) => [point.logical_role, point]));
+    const roles = template?.roles || [];
+    target.innerHTML = `<div class="bms-head"><div><span class="bms-kicker">Equipment graphic · read only</span><h2>${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</h2><span class="bms-sub">${escapeHtml(groups.get(device.group_id) || "Uncategorized")} · ${escapeHtml(template?.label || "Template not assigned")} · ${escapeHtml(device.lifecycle_state || "unknown")}</span></div><a class="button secondary" href="/gateways/${encodeURIComponent(gatewayId)}/points">All Points</a></div><div class="bms-grid">${roles.length ? roles.map((role) => `<article class="bms-tile third"><span class="bms-label">${escapeHtml(roleLabel(role))}</span><div class="bms-value">${escapeHtml(pointValue(bound.get(role)))}</div></article>`).join("") : "<p>No template is assigned. Configure this device before binding points.</p>"}</div><p class="bms-sub">Trend history and controls are intentionally unavailable in Phase 2.</p>`;
   }
 
   async function initConfigureTree() {
     const body = byId("configure-tree-body");
     if (!body) return;
     const gatewayId = document.body.dataset.gatewayId;
-    const tree = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`);
+    const [tree, templates] = await Promise.all([api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`), api("/api/ui/equipment-templates")]);
     const names = [...gatewayNavCategories, "System", "Uncategorized"];
     const groups = new Map((tree.groups || []).map((group) => [group.name, group]));
-    body.innerHTML = (tree.devices || []).map((device) => `<tr><td>${escapeHtml(String(device.device_instance))}</td><td>${escapeHtml(device.device_name || "—")}</td><td><select data-device-id="${escapeHtml(device.id)}">${names.map((name) => `<option value="${name}" ${groups.get(name)?.id === device.group_id || (!device.group_id && name === "Uncategorized") ? "selected" : ""}>${name}</option>`).join("")}</select></td></tr>`).join("");
+    body.innerHTML = (tree.devices || []).map((device) => {
+      const points = (tree.points || []).filter((point) => point.saved_device_id === device.id);
+      const template = templates[device.template_key];
+      const roleControls = template ? points.map((point) => `<label>${escapeHtml(point.object_name || `${point.object_type} ${point.object_instance}`)} <select data-point-id="${escapeHtml(point.id)}"><option value="">Not mapped</option>${template.roles.map((role) => `<option value="${escapeHtml(role)}" ${point.logical_role === role ? "selected" : ""}>${escapeHtml(roleLabel(role))}</option>`).join("")}</select></label>`).join("<br>") : "Assign a template to bind roles.";
+      return `<tr><td>${escapeHtml(String(device.device_instance))}</td><td>${escapeHtml(device.device_name || "—")}</td><td><select data-device-id="${escapeHtml(device.id)}">${names.map((name) => `<option value="${name}" ${groups.get(name)?.id === device.group_id || (!device.group_id && name === "Uncategorized") ? "selected" : ""}>${name}</option>`).join("")}</select></td><td><select data-template-device-id="${escapeHtml(device.id)}"><option value="">No template</option>${Object.entries(templates).map(([key, item]) => `<option value="${escapeHtml(key)}" ${device.template_key === key ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select><div class="bms-sub">${roleControls}</div></td></tr>`;
+    }).join("");
     byId("save-configure-tree").onclick = async () => {
       for (const select of body.querySelectorAll("select[data-device-id]")) {
         const groupName = select.value;
@@ -4574,6 +4621,12 @@ APP_SCRIPT = r"""
           groupId = groups.get(groupName).id;
         }
         await api(`/api/ui/devices/${encodeURIComponent(select.dataset.deviceId)}`, {method:"PATCH", body:JSON.stringify({group_id:groupId})});
+      }
+      for (const select of body.querySelectorAll("select[data-template-device-id]")) {
+        await api(`/api/ui/devices/${encodeURIComponent(select.dataset.templateDeviceId)}`, {method:"PATCH", body:JSON.stringify({template_key:select.value || null})});
+      }
+      for (const select of body.querySelectorAll("select[data-point-id]")) {
+        await api(`/api/ui/points/${encodeURIComponent(select.dataset.pointId)}`, {method:"PATCH", body:JSON.stringify({logical_role:select.value || null})});
       }
       setText("configure-tree-status", "Saved navigation groups.");
       initGatewayNavigation();
@@ -7684,7 +7737,7 @@ def gateway_bms_shell_html(gateway_id: str, page: str, device_id: str | None = N
     detail = "Phase 1 read-only device graphic shell. Point-template bindings arrive in a later phase." if device_id else "Assign mirrored devices to the navigation groups. This uses saved Cloud metadata only." if page == "configure-tree" else "Weather presentation shell. No external weather service or API is introduced in this phase." if page == "weather" else "Gateway trend navigation shell. Existing mirrored trend APIs remain unchanged; a dedicated Cloud trend viewer has not yet been implemented."
     body = f"""
   <header><h1 id="gateway-bms-page-title">{title}</h1><div class="toolbar"><span id="identity"></span><button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Light Mode</button><a class="button secondary" href="/app">Dashboard</a><button id="logout" class="secondary" type="button">Logout</button></div></header>
-  <main class="gateway-nav-content"><section class="gateway-bms-shell"><span class="eyebrow">Gateway BMS</span><h2>{title}</h2><p>{detail}</p>{'<table><thead><tr><th>Device ID / Instance</th><th>Device Name</th><th>Current Group</th></tr></thead><tbody id="configure-tree-body"></tbody></table><button id="save-configure-tree" type="button">Save Groups</button><div id="configure-tree-status" class="notice"></div>' if page == 'configure-tree' else ''}</section></main>
+  <main class="gateway-nav-content"><section class="gateway-bms-shell"><span class="eyebrow">Gateway BMS</span><h2>{title}</h2><p>{detail}</p>{'<div id="device-graphic" class="bms-shell"></div>' if page == 'device' else ''}{'<table><thead><tr><th>Device ID / Instance</th><th>Device Name</th><th>Current Group</th><th>Template and point bindings</th></tr></thead><tbody id="configure-tree-body"></tbody></table><button id="save-configure-tree" type="button">Save configuration</button><div id="configure-tree-status" class="notice"></div>' if page == 'configure-tree' else ''}</section></main>
   <style>body[data-page="gateway-bms"]{{color-scheme:dark;--border:rgba(255,255,255,.09);--ink:#fff;--muted:#aab2c0;--accent:#3987e5;min-height:100vh;background:#08090b;color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}}body[data-page="gateway-bms"][data-theme="light"]{{color-scheme:light;--border:rgba(11,17,26,.10);--ink:#0b0f14;--muted:#4c5766;--accent:#2a78d6;background:#eef1f5}}body[data-page="gateway-bms"] header{{border-bottom:1px solid var(--border);background:#121317;padding:18px clamp(18px,3vw,38px)}}body[data-page="gateway-bms"][data-theme="light"] header{{background:#fff}}body[data-page="gateway-bms"] main{{width:100%;max-width:none;margin:0;padding:clamp(16px,2.5vw,32px)}}body[data-page="gateway-bms"] button.secondary,body[data-page="gateway-bms"] .button.secondary{{color:var(--ink);background:transparent;border-color:var(--border)}}.gateway-bms-shell{{padding:20px;border:1px solid var(--border);border-radius:12px;background:#121317;box-shadow:0 8px 20px rgba(0,0,0,.35)}}body[data-theme="light"] .gateway-bms-shell{{background:#fff;box-shadow:0 6px 16px rgba(20,30,45,.08)}}.gateway-bms-shell h2{{color:var(--ink)}}.gateway-bms-shell p{{color:var(--muted)}}</style>"""
     current_page = f"device:{device_id}" if device_id else page
     attrs = f'data-gateway-id="{escaped_gateway_id}" data-device-id="{escaped_device_id}"'
