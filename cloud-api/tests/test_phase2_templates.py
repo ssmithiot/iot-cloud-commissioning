@@ -40,3 +40,11 @@ def test_template_category_and_binding_safety() -> None:
     unconfigured = client.post(f"/api/ui/gateways/{gateway_id}/devices", headers=headers, json={"group_id": hvac["id"], "device_instance": 3}).json()
     unconfigured_point = client.post(f"/api/ui/devices/{unconfigured['id']}/points", headers=headers, json={"object_type": "analog-input", "object_instance": 1}).json()
     assert client.patch(f"/api/ui/points/{unconfigured_point['id']}", headers=headers, json={"logical_role": "space_temp"}).status_code == 422
+
+
+def test_device_points_page_uses_device_scoped_mirrored_table() -> None:
+    response = client.get("/gateways/GW001/devices/device-1/points")
+    assert response.status_code == 200
+    assert 'data-device-id="device-1"' in response.text
+    assert "point.saved_device_id === deviceId" in response.text
+    assert "View All Points" in response.text

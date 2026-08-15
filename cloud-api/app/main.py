@@ -1586,6 +1586,11 @@ def gateway_points_page(gateway_id: str) -> HTMLResponse:
     return HTMLResponse(gateway_points_html(gateway_id))
 
 
+@app.get("/gateways/{gateway_id}/devices/{device_id}/points", response_class=HTMLResponse, include_in_schema=False)
+def gateway_device_points_page(gateway_id: str, device_id: str) -> HTMLResponse:
+    return HTMLResponse(gateway_points_html(gateway_id, device_id))
+
+
 @app.get("/gateways/{gateway_id}/devices/{device_id}", response_class=HTMLResponse, include_in_schema=False)
 def gateway_device_page(gateway_id: str, device_id: str) -> HTMLResponse:
     return HTMLResponse(gateway_bms_shell_html(gateway_id, "device", device_id))

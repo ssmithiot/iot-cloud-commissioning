@@ -3899,10 +3899,10 @@ APP_SCRIPT = r"""
     const shell = document.querySelector(".bms-shell");
     if (!shell) return;
     const groups = new Map((tree.groups || []).map((group) => [group.id, group.name]));
-    const classified = (tree.devices || []).filter((device) => device.template_key && groups.has(device.group_id));
+    const classified = tree.devices || [];
     const byCategory = new Map();
     for (const device of classified) {
-      const category = groups.get(device.group_id);
+      const category = groups.get(device.group_id) || "Uncategorized";
       if (!byCategory.has(category)) byCategory.set(category, []);
       byCategory.get(category).push(device);
     }
@@ -3911,9 +3911,9 @@ APP_SCRIPT = r"""
       const template = templates[device.template_key];
       const points = new Map((tree.points || []).filter((point) => point.saved_device_id === device.id).map((point) => [point.logical_role, point]));
       const roles = (template?.summary_roles || []).map((role) => `<li><strong>${escapeHtml(roleLabel(role))}</strong>: ${escapeHtml(pointValue(points.get(role)))}</li>`).join("");
-      return `<article class="bms-tile third"><span class="bms-label">${escapeHtml(template?.label || device.template_key)}</span><h3>${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</h3><div class="bms-sub">${escapeHtml(groups.get(device.group_id) || "Uncategorized")} · ${escapeHtml(gateway?.latest_status || "unknown")}</div><ul>${roles || "<li>Not mapped</li>"}</ul><a class="button secondary" href="/gateways/${encodeURIComponent(device.gateway_id)}/devices/${encodeURIComponent(device.id)}">View Device</a></article>`;
+      return `<article class="equipment-summary-card"><span class="bms-label">${escapeHtml(template?.label || "Template not configured")}</span><h3>${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</h3><div class="bms-sub">${escapeHtml(groups.get(device.group_id) || "Uncategorized")} · ${escapeHtml(gateway?.latest_status || "unknown")}</div><ul>${roles || "<li>Not mapped</li>"}</ul><a class="button secondary" href="/gateways/${encodeURIComponent(device.gateway_id)}/devices/${encodeURIComponent(device.id)}">View Device</a></article>`;
     };
-    shell.innerHTML = `<div class="bms-head"><div><span class="bms-kicker">Site equipment overview</span><h2 id="bms-graphic-title">Equipment</h2><span class="bms-sub">Configured device summaries use saved template bindings.</span></div></div><div class="bms-grid"><article class="bms-tile third"><span class="bms-label">Weather</span><div class="bms-value">${escapeHtml(weatherText)}</div></article>${[...byCategory.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([category, devices]) => `<div class="bms-tile wide"><span class="bms-label">${escapeHtml(category)}</span><div class="bms-grid">${devices.sort((a,b) => a.device_instance - b.device_instance).map(tile).join("")}</div></div>`).join("") || "<p>No classified equipment is configured.</p>"}</div>`;
+    shell.innerHTML = `<div class="bms-head"><div><span class="bms-kicker">Site equipment overview</span><h2 id="bms-graphic-title">Equipment</h2><span class="bms-sub">Mirrored devices and saved bindings.</span></div></div><div class="site-equipment-grid"><article class="equipment-summary-card weather-summary-card"><span class="bms-label">Weather</span><div class="weather-summary-value">${escapeHtml(weatherText)}</div></article>${[...byCategory.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([category, devices]) => `<section class="equipment-category-section"><h3>${escapeHtml(category)}</h3><div class="equipment-card-grid">${devices.sort((a,b) => a.device_instance - b.device_instance).map(tile).join("")}</div></section>`).join("") || "<p>No mirrored devices are available.</p>"}</div>`;
   }
 
   function resourcePercent(value) {
@@ -4523,8 +4523,10 @@ APP_SCRIPT = r"""
     byId("workspace-link").href = `/gateways/${encodeURIComponent(gatewayId)}`;
     try {
       const tree = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`);
-      byId("points-title").textContent = `${tree.gateway.gateway_id} All Points`;
-      const rows = [...tree.points].sort((left, right) => `${left.object_type}:${left.object_instance}`.localeCompare(`${right.object_type}:${right.object_instance}`, undefined, {numeric:true}));
+      const deviceId = document.body.dataset.deviceId;
+      const device = (tree.devices || []).find((item) => item.id === deviceId);
+      byId("points-title").textContent = device ? `${device.device_name || `Device ${device.device_instance}`} — All Points` : `${tree.gateway.gateway_id} All Points`;
+      const rows = tree.points.filter((point) => !deviceId || point.saved_device_id === deviceId).sort((left, right) => `${left.object_type}:${left.object_instance}`.localeCompare(`${right.object_type}:${right.object_instance}`, undefined, {numeric:true}));
       const bodies = [0, 1, 2].map((column) => byId(`all-points-body-${column + 1}`));
       const baseColumnSize = Math.floor(rows.length / bodies.length);
       const remainder = rows.length % bodies.length;
@@ -4588,15 +4590,21 @@ APP_SCRIPT = r"""
   async function loadDeviceGraphic() {
     const gatewayId = document.body.dataset.gatewayId;
     const deviceId = document.body.dataset.deviceId;
-    const [tree, templates] = await Promise.all([api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`), api("/api/ui/equipment-templates")]);
-    const device = (tree.devices || []).find((item) => item.id === deviceId);
     const target = byId("device-graphic");
-    if (!device || !target) return;
-    const template = templates[device.template_key];
-    const groups = new Map((tree.groups || []).map((group) => [group.id, group.name]));
-    const bound = new Map((tree.points || []).filter((point) => point.saved_device_id === device.id).map((point) => [point.logical_role, point]));
-    const roles = template?.roles || [];
-    target.innerHTML = `<div class="bms-head"><div><span class="bms-kicker">Equipment graphic · read only</span><h2>${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</h2><span class="bms-sub">${escapeHtml(groups.get(device.group_id) || "Uncategorized")} · ${escapeHtml(template?.label || "Template not assigned")} · ${escapeHtml(device.lifecycle_state || "unknown")}</span></div><a class="button secondary" href="/gateways/${encodeURIComponent(gatewayId)}/points">All Points</a></div><div class="bms-grid">${roles.length ? roles.map((role) => `<article class="bms-tile third"><span class="bms-label">${escapeHtml(roleLabel(role))}</span><div class="bms-value">${escapeHtml(pointValue(bound.get(role)))}</div></article>`).join("") : "<p>No template is assigned. Configure this device before binding points.</p>"}</div><p class="bms-sub">Trend history and controls are intentionally unavailable in Phase 2.</p>`;
+    if (!target) return;
+    const pointsLink = `/gateways/${encodeURIComponent(gatewayId)}/devices/${encodeURIComponent(deviceId)}/points`;
+    try {
+      const [tree, templates] = await Promise.all([api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`), api("/api/ui/equipment-templates")]);
+      const device = (tree.devices || []).find((item) => item.id === deviceId);
+      if (!device) throw new Error("This mirrored device is not available.");
+      const template = templates[device.template_key];
+      const groups = new Map((tree.groups || []).map((group) => [group.id, group.name]));
+      const bound = new Map((tree.points || []).filter((point) => point.saved_device_id === device.id).map((point) => [point.logical_role, point]));
+      const roles = template?.roles || [];
+      target.innerHTML = `<div class="bms-head"><div><span class="bms-kicker">Equipment graphic · read only</span><h2>${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</h2><span class="bms-sub">${escapeHtml(groups.get(device.group_id) || "Uncategorized")} · ${escapeHtml(template?.label || "Template not configured")} · ${escapeHtml(device.lifecycle_state || "unknown")}</span></div><div class="toolbar"><a class="button secondary" href="${pointsLink}">View All Points</a><a class="button secondary" href="/gateways/${encodeURIComponent(gatewayId)}/configure-tree">Configure Device</a></div></div><div class="bms-grid">${roles.length ? roles.map((role) => `<article class="bms-tile third"><span class="bms-label">${escapeHtml(roleLabel(role))}</span><div class="bms-value">${escapeHtml(pointValue(bound.get(role)))}</div></article>`).join("") : `<article class="bms-tile wide"><span class="bms-label">Template not configured</span><p>Assign this mirrored device to a group and choose a template before binding its points.</p></article>`}</div><p class="bms-sub">Trend history and controls are intentionally unavailable in Phase 2.</p>`;
+    } catch (error) {
+      target.innerHTML = `<div class="bms-head"><div><span class="bms-kicker">Mirrored device</span><h2>Device unavailable</h2><span class="bms-sub">${escapeHtml(errorMessage(error))}</span></div><a class="button secondary" href="${pointsLink}">View All Points</a></div><p class="bms-sub">The device route remains available while Cloud inventory refreshes.</p>`;
+    }
   }
 
   async function initConfigureTree() {
@@ -4610,7 +4618,7 @@ APP_SCRIPT = r"""
       const points = (tree.points || []).filter((point) => point.saved_device_id === device.id);
       const template = templates[device.template_key];
       const roleControls = template ? points.map((point) => `<label>${escapeHtml(point.object_name || `${point.object_type} ${point.object_instance}`)} <select data-point-id="${escapeHtml(point.id)}"><option value="">Not mapped</option>${template.roles.map((role) => `<option value="${escapeHtml(role)}" ${point.logical_role === role ? "selected" : ""}>${escapeHtml(roleLabel(role))}</option>`).join("")}</select></label>`).join("<br>") : "Assign a template to bind roles.";
-      return `<tr><td>${escapeHtml(String(device.device_instance))}</td><td>${escapeHtml(device.device_name || "—")}</td><td><select data-device-id="${escapeHtml(device.id)}">${names.map((name) => `<option value="${name}" ${groups.get(name)?.id === device.group_id || (!device.group_id && name === "Uncategorized") ? "selected" : ""}>${name}</option>`).join("")}</select></td><td><select data-template-device-id="${escapeHtml(device.id)}"><option value="">No template</option>${Object.entries(templates).map(([key, item]) => `<option value="${escapeHtml(key)}" ${device.template_key === key ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select><div class="bms-sub">${roleControls}</div></td></tr>`;
+      return `<tr><td>${escapeHtml(String(device.device_instance))}</td><td>${escapeHtml(device.device_name || "—")}</td><td><label>Assign to Group <select data-device-id="${escapeHtml(device.id)}">${names.map((name) => `<option value="${name}" ${groups.get(name)?.id === device.group_id || (!device.group_id && name === "Uncategorized") ? "selected" : ""}>${name}</option>`).join("")}</select></label></td><td><select data-template-device-id="${escapeHtml(device.id)}"><option value="">No template</option>${Object.entries(templates).map(([key, item]) => `<option value="${escapeHtml(key)}" ${device.template_key === key ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select><div class="bms-sub">${roleControls}</div></td></tr>`;
     }).join("");
     byId("save-configure-tree").onclick = async () => {
       for (const select of body.querySelectorAll("select[data-device-id]")) {
@@ -7453,9 +7461,10 @@ def gateway_navigation_html(gateway_id: str, current_page: str) -> str:
     escaped_gateway_id = escape(gateway_id, quote=True)
     escaped_page = escape(current_page, quote=True)
     return f"""
-  <aside class="gateway-nav-shell" aria-label="Gateway navigation"><nav class="gateway-nav" data-gateway-navigation data-current-page="{escaped_page}"><div class="gateway-nav-brand">{escaped_gateway_id}</div><span class="gateway-nav-empty">Loading navigation...</span></nav></aside>
+  <aside class="gateway-nav-shell" aria-label="Gateway navigation"><nav class="gateway-nav" data-gateway-navigation data-current-page="{escaped_page}"><div class="gateway-nav-brand">{escaped_gateway_id}</div><details class="gateway-nav-category"><summary>System</summary><span class="gateway-nav-empty">Loading navigation...</span></details></nav></aside>
   <style>
-    .gateway-nav-shell {{ position:fixed; inset:10px auto 10px 10px; z-index:40; width:244px; }}
+    body[data-page="gateway-workspace"],body[data-page="gateway-points"],body[data-page="gateway-bms"] {{ display:grid; grid-template-columns:264px minmax(0,1fr); min-width:0; overflow-x:clip; }}
+    .gateway-nav-shell {{ position:sticky; top:10px; grid-column:1; grid-row:1 / span 2; align-self:start; z-index:40; width:auto; height:calc(100vh - 20px); margin:10px; }}
     .gateway-nav {{ height:100%; overflow:auto; padding:0; border:1px solid rgba(255,255,255,.12); border-radius:18px; background:#111b26; color:#eef5fb; box-shadow:0 16px 34px rgba(0,0,0,.26); }}
     .gateway-nav-brand {{ display:flex; align-items:center; gap:10px; padding:12px; border-bottom:1px solid rgba(255,255,255,.12); font-weight:800; letter-spacing:.04em; }}
     .gateway-nav-collapse {{ margin-left:auto; width:34px; min-height:34px; padding:0; border:1px solid rgba(255,255,255,.12); border-radius:10px; color:inherit; background:rgba(255,255,255,.06); font-size:0; }} .gateway-nav-collapse::before{{content:"";display:block;width:14px;height:14px;margin:auto;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg);}}
@@ -7477,9 +7486,9 @@ def gateway_navigation_html(gateway_id: str, current_page: str) -> str:
     body[data-theme="light"] .gateway-nav-link {{ color:#0b0f14; }}
     body[data-theme="light"] .gateway-nav-link.is-active {{ background:rgba(42,120,214,.20); }}
     body[data-theme="light"] .gateway-nav-category summary,body[data-theme="light"] .gateway-nav-empty {{ color:#4c5766; }}
-    .gateway-nav-content {{ margin-left:264px !important; }}
-    html.gateway-nav-collapsed .gateway-nav-shell {{ width:52px; }} html.gateway-nav-collapsed .gateway-nav-content {{ margin-left:72px !important; }} html.gateway-nav-collapsed .gateway-nav {{ padding:8px; overflow:hidden; }} html.gateway-nav-collapsed .gateway-nav-label,html.gateway-nav-collapsed .gateway-nav-empty,html.gateway-nav-collapsed .gateway-nav-category summary::after,html.gateway-nav-collapsed .gateway-nav-brand span {{ display:none; }} html.gateway-nav-collapsed .gateway-nav-category {{ display:none; }} html.gateway-nav-collapsed .gateway-nav-link {{ padding:9px; }}
-    @media (max-width:1100px) {{ .gateway-nav-shell {{ position:static; width:auto; margin:10px; }} .gateway-nav {{ height:auto; max-height:42vh; }} .gateway-nav-content {{ margin-left:0 !important; }} }}
+    body[data-page="gateway-workspace"] > header,body[data-page="gateway-points"] > header,body[data-page="gateway-bms"] > header, .gateway-nav-content {{ grid-column:2; min-width:0; }}
+    html.gateway-nav-collapsed body[data-page="gateway-workspace"],html.gateway-nav-collapsed body[data-page="gateway-points"],html.gateway-nav-collapsed body[data-page="gateway-bms"] {{ grid-template-columns:72px minmax(0,1fr); }} html.gateway-nav-collapsed .gateway-nav-shell {{ width:auto; }} html.gateway-nav-collapsed .gateway-nav {{ padding:8px; overflow:hidden; }} html.gateway-nav-collapsed .gateway-nav-label,html.gateway-nav-collapsed .gateway-nav-empty,html.gateway-nav-collapsed .gateway-nav-category summary::after,html.gateway-nav-collapsed .gateway-nav-brand span {{ display:none; }} html.gateway-nav-collapsed .gateway-nav-category {{ display:none; }} html.gateway-nav-collapsed .gateway-nav-link {{ padding:9px; }}
+    @media (max-width:1100px) {{ body[data-page="gateway-workspace"],body[data-page="gateway-points"],body[data-page="gateway-bms"] {{ display:block; }} .gateway-nav-shell {{ position:static; width:auto; height:auto; margin:10px; }} .gateway-nav {{ height:auto; max-height:42vh; }} }}
   </style>"""
 
 
@@ -7641,6 +7650,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
         .bms-setpoint strong { display:block; margin-top:4px; font-size:20px; } .bms-setpoint button { min-height:26px; padding:2px 8px; margin-left:4px; opacity:.55; cursor:not-allowed; }
         .bms-trend { margin-top:16px; min-height:250px; height:auto; max-height:none; border-radius:9px; border:1px solid var(--border); background:linear-gradient(180deg,transparent,rgba(59,130,246,.14)); overflow:visible; }
         .bms-trend svg { width:100%; height:180px; display:block; } .bms-range{float:right;display:flex;gap:5px}.bms-range button{min-height:25px;padding:3px 8px}.bms-range button[disabled]{cursor:default;opacity:.7} @media (max-width:760px){ .bms-tile,.bms-tile.wide,.bms-tile.third,.bms-tile.status,.bms-tile.setpoint{grid-column:span 12;} }
+        .site-equipment-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px; margin-top:16px; min-width:0; } .equipment-category-section { grid-column:1 / -1; min-width:0; } .equipment-category-section > h3 { margin:0 0 8px; } .equipment-card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; min-width:0; } .equipment-summary-card { min-width:0; padding:16px; border:1px solid var(--border); border-radius:10px; background:rgba(4,12,14,.42); overflow-wrap:anywhere; } body[data-theme="light"] .equipment-summary-card { background:rgba(255,255,255,.7); } .equipment-summary-card h3 { margin:6px 0; font-size:18px; } .equipment-summary-card ul { margin:12px 0; padding-left:18px; display:grid; gap:5px; } .weather-summary-card { background:linear-gradient(135deg,rgba(59,130,246,.22),rgba(11,20,23,.42)); } .weather-summary-value { margin-top:10px; font-size:18px; line-height:1.45; font-weight:700; } @media (max-width:700px) { .site-equipment-grid,.equipment-card-grid { grid-template-columns:1fr; } }
       </style>
       <div class="bms-head"><div><span class="bms-kicker">Equipment graphic · demo values</span><h2 id="bms-graphic-title">RTU-1 · Rooftop Unit</h2><span class="bms-sub">Zone 2 · North Wing Retail — Level 1 · Presentation shell only — live point bindings arrive in Phase 2.</span></div><div class="bms-label">RTU &nbsp; AHU &nbsp; Minisplit</div><div class="bms-live">● OCCUPIED · NORMAL</div><a class="button bms-action" href="/gateways/{escaped_gateway_id}/points">All Points</a></div>
       <div class="bms-grid">
@@ -7656,9 +7666,10 @@ def gateway_workspace_html(gateway_id: str) -> str:
       </div>
       <div class="bms-trend" aria-label="Demo temperature trend"><div class="bms-label" style="padding:10px">Trend Log — Space Temp vs. Setpoint <span class="bms-range"><button disabled>4H</button><button disabled>24H</button><button disabled>7D</button><button disabled>30D</button></span><br><span class="bms-sub">━ Space Temp &nbsp; ━ Effective Setpoint</span></div><svg viewBox="0 0 600 84" preserveAspectRatio="none" role="img"><path d="M0 58 C80 42,120 62,190 44 S310 26,370 42 S500 64,600 24" fill="none" stroke="#3b82f6" stroke-width="3"/><path d="M0 50 L600 50" stroke="#d95926" stroke-width="2" stroke-dasharray="5 5"/></svg></div>
     </section>
-    <section>
+    <details class="workspace-panel technical-diagnostics">
+      <summary>Technical diagnostics (not required for mirrored Cloud inventory)</summary>
       <h2>Cloud BACnet Diagnostics</h2>
-      <div class="notice">Temporary diagnostics only. Normal commissioning should happen in the edge UI and be imported as a template.</div>
+      <div class="notice">Diagnostic/temporary use only. Normal Cloud BMS devices and points come from the mirrored Edge inventory; do not use discovery to populate the presentation tree.</div>
       <div class="toolbar">
         <button id="discover-devices" type="button">Discover devices</button>
       </div>
@@ -7706,7 +7717,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
           <tbody id="point-candidates"></tbody>
         </table>
       </div>
-    </section>
+    </details>
     <section id="technical-section" hidden>
       <h2>Technical</h2>
       <pre id="gateway-details">Loading...</pre>
@@ -7721,13 +7732,15 @@ def gateway_workspace_html(gateway_id: str) -> str:
     )
 
 
-def gateway_points_html(gateway_id: str) -> str:
+def gateway_points_html(gateway_id: str, device_id: str | None = None) -> str:
     escaped_gateway_id = escape(gateway_id, quote=True)
+    escaped_device_id = escape(device_id or "", quote=True)
+    title = "Device Points" if device_id else "All Points"
     body = f"""
-  <header><h1 id="points-title">All Points</h1><div class="toolbar"><span id="identity"></span><button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Light Mode</button><a id="workspace-link" class="button secondary" href="/gateways/{escaped_gateway_id}">Workspace</a><a class="button secondary" href="/app">Dashboard</a><button id="logout" class="secondary" type="button">Logout</button></div></header>
+  <header><h1 id="points-title">{title}</h1><div class="toolbar"><span id="identity"></span><button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Light Mode</button><a id="workspace-link" class="button secondary" href="/gateways/{escaped_gateway_id}">Workspace</a><a class="button secondary" href="/app">Dashboard</a><button id="logout" class="secondary" type="button">Logout</button></div></header>
   <main class="gateway-nav-content"><section class="workspace-panel all-points-panel"><div class="panel-title"><div><span class="eyebrow">Mirrored gateway points</span><h2>Live Devices table</h2></div><span id="all-points-count" class="panel-counter">Loading...</span></div><div id="points-status" class="notice">Object Identifier, Description, and Present Value / 85 are read-only Cloud mirrors.</div><div class="all-points-grid">{''.join(f'<section class="all-points-column"><h3>Column {column}</h3><div class="all-points-table-wrap"><table class="all-points-table"><thead><tr><th>Object Identifier</th><th>Description</th><th>Present Value / 85</th></tr></thead><tbody id="all-points-body-{column}"></tbody></table></div></section>' for column in range(1, 4))}</div></section></main>
   <style>body[data-page="gateway-points"]{{color-scheme:dark;--bg-page:#08090b;--bg-surface:#121317;--bg-tile:#16181d;--bg-tile-alt:#1b1e24;--border:rgba(255,255,255,.09);--ink:#fff;--muted:#aab2c0;--panel:#121317;--accent:#3987e5;--accent-strong:#8fc1fb;min-height:100vh;background:var(--bg-page);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}}body[data-page="gateway-points"][data-theme="light"]{{color-scheme:light;--bg-page:#eef1f5;--bg-surface:#fff;--bg-tile:#fff;--bg-tile-alt:#f4f6f9;--border:rgba(11,17,26,.10);--ink:#0b0f14;--muted:#4c5766;--panel:#fff;--accent:#2a78d6;--accent-strong:#184f95;background:var(--bg-page)}}body[data-page="gateway-points"] header{{border-bottom:1px solid var(--border);background:var(--bg-surface);padding:18px clamp(18px,3vw,38px)}}body[data-page="gateway-points"] main{{width:100%;max-width:none;margin:0;padding:clamp(16px,2.5vw,32px)}}body[data-page="gateway-points"] button.secondary,body[data-page="gateway-points"] .button.secondary{{color:var(--ink);background:var(--bg-tile-alt);border-color:var(--border)}}body[data-page="gateway-points"] .all-points-panel{{width:100%;box-sizing:border-box;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface);box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 8px 20px rgba(0,0,0,.35)}}body[data-page="gateway-points"] .all-points-panel,body[data-page="gateway-points"] .all-points-column{{border-bottom:0}}body[data-page="gateway-points"] .all-points-panel h2,body[data-page="gateway-points"] .all-points-column h3{{color:var(--ink)}}body[data-page="gateway-points"] .notice{{color:var(--muted);background:var(--bg-tile-alt);border:1px solid var(--border);border-radius:8px;padding:10px 12px}}body[data-page="gateway-points"] .all-points-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:start}}body[data-page="gateway-points"] .all-points-column{{padding:0}}body[data-page="gateway-points"] .all-points-column h3{{margin:8px 0;font-size:16px}}body[data-page="gateway-points"] .all-points-table-wrap{{overflow-x:auto}}body[data-page="gateway-points"] .all-points-table{{width:100%;border-collapse:collapse;background:var(--bg-tile)}}body[data-page="gateway-points"] .all-points-table th,body[data-page="gateway-points"] .all-points-table td{{padding:3px 5px;border:1px solid var(--border);font-size:12px;line-height:1.2;color:var(--ink)}}body[data-page="gateway-points"] .all-points-table th{{background:var(--bg-tile-alt);font-weight:700;white-space:nowrap}}body[data-page="gateway-points"] .all-points-table th:first-child,body[data-page="gateway-points"] .all-points-table td:first-child{{width:96px;white-space:nowrap}}body[data-page="gateway-points"] .all-points-table th:last-child,body[data-page="gateway-points"] .all-points-table td:last-child{{width:112px;color:var(--accent-strong);font-weight:700;white-space:nowrap}}body[data-page="gateway-points"] .all-points-table tbody tr:hover{{background:var(--bg-tile-alt)}}@media (max-width:1100px){{body[data-page="gateway-points"] .all-points-grid{{grid-template-columns:1fr}}}}</style>"""
-    return _layout("All Points - IOT Cloud Commissioning", gateway_navigation_html(gateway_id, "points") + body, "gateway-points", f'data-gateway-id="{escaped_gateway_id}"')
+    return _layout(f"{title} - IOT Cloud Commissioning", gateway_navigation_html(gateway_id, f"device:{device_id}" if device_id else "points") + body, "gateway-points", f'data-gateway-id="{escaped_gateway_id}" data-device-id="{escaped_device_id}"')
 
 
 def gateway_bms_shell_html(gateway_id: str, page: str, device_id: str | None = None) -> str:
