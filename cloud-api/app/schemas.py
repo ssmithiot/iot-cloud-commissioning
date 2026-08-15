@@ -167,6 +167,66 @@ class HeartbeatAccepted(BaseModel):
     latest_heartbeat_at: datetime
 
 
+class EdgeInventoryLastKnownIn(BaseModel):
+    display_value: str | None = Field(default=None, max_length=255)
+    raw_value: str | None = Field(default=None, max_length=255)
+    active_priority: int | None = Field(default=None, ge=1, le=16)
+    priority_array: str | None = Field(default=None, max_length=2000)
+    read_status: str | None = Field(default=None, max_length=255)
+    read_source: str | None = Field(default=None, max_length=255)
+    source_timestamp: datetime | None = None
+
+
+class EdgeInventoryPointIn(BaseModel):
+    object_type: str = Field(min_length=1, max_length=80)
+    object_instance: int = Field(ge=0)
+    property_name: Literal["present-value"] = "present-value"
+    object_name: str | None = Field(default=None, max_length=255)
+    last_known: EdgeInventoryLastKnownIn | None = None
+
+
+class EdgeInventoryDeviceIn(BaseModel):
+    edge_device_profile_id: str = Field(min_length=1, max_length=255)
+    device_instance: int = Field(ge=0)
+    device_name: str | None = Field(default=None, max_length=255)
+    metadata: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    last_refreshed_at: datetime | None = None
+    points: list[EdgeInventoryPointIn] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_points(self) -> "EdgeInventoryDeviceIn":
+        keys = [(point.object_type, point.object_instance, point.property_name) for point in self.points]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Inventory device contains duplicate point identities")
+        return self
+
+
+class EdgeInventorySnapshotIn(BaseModel):
+    inventory_hash: str = Field(min_length=1, max_length=128)
+    complete_snapshot: Literal[True]
+    devices: list[EdgeInventoryDeviceIn] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_profiles(self) -> "EdgeInventorySnapshotIn":
+        ids = [device.edge_device_profile_id for device in self.devices]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Inventory snapshot contains duplicate Edge profile identities")
+        return self
+
+
+class EdgeInventorySyncOut(BaseModel):
+    gateway_id: str
+    inventory_hash: str
+    created_devices: int
+    updated_devices: int
+    retired_devices: int
+    created_points: int
+    updated_points: int
+    retired_points: int
+
+
 class SiteOut(BaseModel):
     site_id: str
     name: str
@@ -621,6 +681,7 @@ class SavedDeviceOut(BaseModel):
     retired_at: datetime | None
     enabled: bool
     template_key: str | None
+    edge_device_profile_id: str | None
     created_at: datetime
     updated_at: datetime
 

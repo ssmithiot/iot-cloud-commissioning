@@ -416,7 +416,17 @@ class GatewayGroup(Base):
 
 class SavedBacnetDevice(Base):
     __tablename__ = "saved_bacnet_devices"
-    __table_args__ = (UniqueConstraint("gateway_id", "device_instance", name="uq_saved_devices_gateway_instance"),)
+    __table_args__ = (
+        Index("ix_saved_devices_gateway_instance", "gateway_id", "device_instance"),
+        Index(
+            "uq_saved_devices_gateway_edge_profile",
+            "gateway_id",
+            "edge_device_profile_id",
+            unique=True,
+            sqlite_where=text("edge_device_profile_id IS NOT NULL"),
+            postgresql_where=text("edge_device_profile_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     gateway_id: Mapped[str] = mapped_column(
@@ -427,6 +437,7 @@ class SavedBacnetDevice(Base):
     )
     group_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("gateway_groups.id", ondelete="SET NULL"), nullable=True)
     template_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    edge_device_profile_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     device_instance: Mapped[int] = mapped_column(Integer, nullable=False)
     device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     vendor_name: Mapped[str | None] = mapped_column(String(255), nullable=True)

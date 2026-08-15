@@ -75,6 +75,8 @@ from app.schemas import (
     CurrentOperatorOut,
     DirectConnectOut,
     EdgeJobClaimOut,
+    EdgeInventorySnapshotIn,
+    EdgeInventorySyncOut,
     EdgeTrendConfigOut,
     GatewayCredentialOut,
     GatewayGroupIn,
@@ -1215,6 +1217,7 @@ def _device_out(device: SavedBacnetDevice) -> dict[str, object]:
         "gateway_id": device.gateway_id,
         "group_id": str(device.group_id) if device.group_id else None,
         "template_key": device.template_key,
+        "edge_device_profile_id": device.edge_device_profile_id,
         "device_instance": device.device_instance,
         "device_name": device.device_name,
         "vendor_name": device.vendor_name,
@@ -3428,6 +3431,130 @@ def edge_upload_trend_samples(
         stored.append(existing)
     db.commit()
     return stored
+
+
+@app.put("/api/edge/{gateway_id}/inventory", response_model=EdgeInventorySyncOut)
+def edge_sync_inventory(
+    gateway_id: str,
+    payload: EdgeInventorySnapshotIn,
+    auth: GatewayAuthContext = Depends(require_gateway_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Mirror the Edge UI's saved Live Device profiles without BACnet I/O."""
+    if auth.gateway_id != gateway_id:
+        raise HTTPException(status_code=403, detail="Gateway credential does not match inventory gateway_id")
+    now = utc_now()
+    counts = {"created_devices": 0, "updated_devices": 0, "retired_devices": 0, "created_points": 0, "updated_points": 0, "retired_points": 0}
+    mirrored = {
+        device.edge_device_profile_id: device
+        for device in db.scalars(
+            select(SavedBacnetDevice).where(
+                SavedBacnetDevice.gateway_id == gateway_id,
+                SavedBacnetDevice.edge_device_profile_id.is_not(None),
+            )
+        ).all()
+    }
+    incoming_ids = {item.edge_device_profile_id for item in payload.devices}
+    for device in mirrored.values():
+        if device.edge_device_profile_id not in incoming_ids and device.enabled:
+            device.enabled = False
+            device.lifecycle_state = "retired"
+            device.retired_at = now
+            device.updated_at = now
+            counts["retired_devices"] += 1
+            for point in db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id)).all():
+                if point.enabled:
+                    point.enabled = False
+                    point.lifecycle_state = "retired"
+                    point.retired_at = now
+                    point.updated_at = now
+                    counts["retired_points"] += 1
+            continue
+
+    for incoming in payload.devices:
+        device = mirrored.get(incoming.edge_device_profile_id)
+        metadata = incoming.metadata
+        vendor = metadata.get("vendor")
+        network = metadata.get("network")
+        mac = metadata.get("mac")
+        if device is None:
+            device = SavedBacnetDevice(
+                gateway_id=gateway_id,
+                edge_device_profile_id=incoming.edge_device_profile_id,
+                device_instance=incoming.device_instance,
+                device_name=incoming.device_name,
+                vendor_name=vendor if isinstance(vendor, str) else None,
+                network_number=network if isinstance(network, int) and not isinstance(network, bool) else None,
+                mac_address=mac if isinstance(mac, str) else None,
+                first_seen_at=now,
+            )
+            db.add(device)
+            db.flush()
+            counts["created_devices"] += 1
+        else:
+            device.device_instance = incoming.device_instance
+            device.device_name = incoming.device_name
+            if isinstance(vendor, str):
+                device.vendor_name = vendor
+            if isinstance(network, int) and not isinstance(network, bool):
+                device.network_number = network
+            if isinstance(mac, str):
+                device.mac_address = mac
+            counts["updated_devices"] += 1
+        device.enabled = True
+        device.lifecycle_state = "active"
+        device.retired_at = None
+        device.last_seen_at = now
+        device.latest_discovered_at = incoming.updated_at or now
+        device.updated_at = now
+
+        existing_points = {
+            (point.object_type, point.object_instance, point.property_name): point
+            for point in db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id)).all()
+        }
+        incoming_point_keys = {(point.object_type, point.object_instance, point.property_name) for point in incoming.points}
+        for key, point in existing_points.items():
+            if key not in incoming_point_keys and point.enabled:
+                point.enabled = False
+                point.lifecycle_state = "retired"
+                point.retired_at = now
+                point.updated_at = now
+                counts["retired_points"] += 1
+        for incoming_point in incoming.points:
+            key = (incoming_point.object_type, incoming_point.object_instance, incoming_point.property_name)
+            point = existing_points.get(key)
+            if point is None:
+                point = SavedBacnetPoint(
+                    gateway_id=gateway_id,
+                    saved_device_id=device.id,
+                    device_instance=incoming.device_instance,
+                    object_type=incoming_point.object_type,
+                    object_instance=incoming_point.object_instance,
+                    property_name=incoming_point.property_name,
+                    first_seen_at=now,
+                )
+                db.add(point)
+                counts["created_points"] += 1
+            else:
+                counts["updated_points"] += 1
+            point.device_instance = incoming.device_instance
+            point.object_name = incoming_point.object_name
+            point.enabled = True
+            point.lifecycle_state = "active"
+            point.retired_at = None
+            point.last_seen_at = now
+            point.updated_at = now
+            if incoming_point.last_known is not None:
+                value = incoming_point.last_known.raw_value
+                if value is None:
+                    value = incoming_point.last_known.display_value
+                if value is not None:
+                    point.present_value = value
+                point.active_priority = incoming_point.last_known.active_priority
+                point.priority_array = incoming_point.last_known.priority_array
+                point.latest_read_at = incoming_point.last_known.source_timestamp
+    db.commit()
+    return {"gateway_id": gateway_id, "inventory_hash": payload.inventory_hash, **counts}
 
 
 @app.post("/api/edge/heartbeat", response_model=HeartbeatAccepted)
