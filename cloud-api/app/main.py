@@ -1,5 +1,7 @@
 import asyncio
 import contextlib
+import csv
+import io
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -47,6 +49,8 @@ from app.models import (
     GatewayCredential,
     GatewayGroup,
     GatewayUpdateRequest,
+    MappingTemplate,
+    MappingTemplateRule,
     PointTrendConfig,
     PointTrendSample,
     OperatorUser,
@@ -96,6 +100,9 @@ from app.schemas import (
     HeartbeatIn,
     JobCreateIn,
     JobOut,
+    MappingApplyOut,
+    MappingTemplateIn,
+    MappingTemplateOut,
     JobResultIn,
     OperatorUserOut,
     OperatorInviteIn,
@@ -1219,6 +1226,7 @@ def _device_out(device: SavedBacnetDevice) -> dict[str, object]:
         "gateway_id": device.gateway_id,
         "group_id": str(device.group_id) if device.group_id else None,
         "template_key": device.template_key,
+        "mapping_template_id": device.mapping_template_id,
         "edge_device_profile_id": device.edge_device_profile_id,
         "device_instance": device.device_instance,
         "device_name": device.device_name,
@@ -2598,6 +2606,79 @@ def ui_equipment_templates(auth: AdminAuthContext = Depends(require_operator_aut
     return {key: {"label": item["label"], "categories": sorted(item["categories"]), "roles": list(item["roles"]), "summary_roles": list(item["summary_roles"])} for key, item in TEMPLATES.items()}
 
 
+def _mapping_template_out(template: MappingTemplate) -> dict[str, object]:
+    return {"id": template.id, "name": template.name, "graphic_template_key": template.graphic_template_key, "rules": [{"logical_role": rule.logical_role, "match_field": rule.match_field, "match_value": rule.match_value, "object_type": rule.object_type, "required": rule.required} for rule in sorted(template.rules, key=lambda item: item.logical_role)]}
+
+
+def _validate_mapping_template(payload: MappingTemplateIn) -> None:
+    graphic = template_for(payload.graphic_template_key)
+    if graphic is None:
+        raise HTTPException(status_code=422, detail="Unknown graphic template")
+    roles = [rule.logical_role for rule in payload.rules]
+    if len(roles) != len(set(roles)):
+        raise HTTPException(status_code=422, detail="Duplicate logical role in mapping template")
+    for rule in payload.rules:
+        if rule.match_field != "object_name":
+            raise HTTPException(status_code=422, detail="Unsupported match field")
+        if rule.logical_role not in graphic["roles"]:
+            raise HTTPException(status_code=422, detail=f"Role {rule.logical_role} is not supported by {payload.graphic_template_key}")
+
+
+@app.get("/api/ui/mapping-templates", response_model=list[MappingTemplateOut])
+def ui_list_mapping_templates(auth: AdminAuthContext = Depends(require_operator_auth), db: Session = Depends(get_db)) -> list[dict[str, object]]:
+    return [_mapping_template_out(template) for template in db.scalars(select(MappingTemplate).order_by(MappingTemplate.name)).all()]
+
+
+@app.post("/api/ui/mapping-templates", response_model=MappingTemplateOut)
+def ui_create_mapping_template(payload: MappingTemplateIn, auth: AdminAuthContext = Depends(require_job_operator_auth), db: Session = Depends(get_db)) -> dict[str, object]:
+    _validate_mapping_template(payload)
+    template = MappingTemplate(name=payload.name.strip(), graphic_template_key=payload.graphic_template_key)
+    template.rules = [MappingTemplateRule(**rule.model_dump()) for rule in payload.rules]
+    db.add(template)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Mapping template name already exists") from None
+    db.refresh(template)
+    return _mapping_template_out(template)
+
+
+@app.get("/api/ui/mapping-templates/{template_id}/export")
+def ui_export_mapping_template(template_id: str, auth: AdminAuthContext = Depends(require_operator_auth), db: Session = Depends(get_db)) -> Response:
+    template = db.get(MappingTemplate, _tree_id(template_id))
+    if template is None:
+        raise HTTPException(status_code=404, detail="Mapping template not found")
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["template_name", "graphic_template", "logical_role", "match_field", "match_value", "object_type", "required"])
+    writer.writeheader()
+    for rule in sorted(template.rules, key=lambda item: item.logical_role):
+        writer.writerow({"template_name": template.name, "graphic_template": template.graphic_template_key, "logical_role": rule.logical_role, "match_field": rule.match_field, "match_value": rule.match_value, "object_type": rule.object_type or "", "required": str(rule.required).lower()})
+    return Response(output.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{template.name}.csv"'})
+
+
+@app.post("/api/ui/mapping-templates/import", response_model=MappingTemplateOut)
+def ui_import_mapping_template(csv_text: str = Body(..., media_type="text/plain"), auth: AdminAuthContext = Depends(require_job_operator_auth), db: Session = Depends(get_db)) -> dict[str, object]:
+    try:
+        rows = list(csv.DictReader(io.StringIO(csv_text)))
+    except csv.Error as exc:
+        raise HTTPException(status_code=422, detail="Malformed CSV") from exc
+    required_columns = {"template_name", "graphic_template", "logical_role", "match_field", "match_value", "object_type", "required"}
+    if not rows or set(rows[0]) != required_columns:
+        raise HTTPException(status_code=422, detail="CSV columns are invalid")
+    names = {row["template_name"].strip() for row in rows}
+    graphics = {row["graphic_template"].strip() for row in rows}
+    if len(names) != 1 or len(graphics) != 1 or not next(iter(names)):
+        raise HTTPException(status_code=422, detail="CSV must contain one named mapping template")
+    rules = []
+    for row in rows:
+        value = row["required"].strip().lower()
+        if value not in {"true", "false"}:
+            raise HTTPException(status_code=422, detail="required must be true or false")
+        rules.append({"logical_role": row["logical_role"].strip(), "match_field": row["match_field"].strip(), "match_value": row["match_value"].strip(), "object_type": row["object_type"].strip() or None, "required": value == "true"})
+    return ui_create_mapping_template(MappingTemplateIn(name=next(iter(names)), graphic_template_key=next(iter(graphics)), rules=rules), auth, db)
+
+
 @app.post("/api/ui/gateways/{gateway_id}/groups", response_model=GatewayGroupOut)
 def ui_create_group(
     gateway_id: str,
@@ -2763,6 +2844,13 @@ def ui_save_device_configuration(
     unsupported = sorted({role for role in final_roles.values() if role is not None and template is not None and role not in template["roles"]})
     if unsupported:
         raise HTTPException(status_code=422, detail="Role is not supported by template: " + ", ".join(unsupported))
+    if payload.mapping_template_id:
+        mapping_template = db.get(MappingTemplate, _tree_id(payload.mapping_template_id))
+        if mapping_template is None or mapping_template.graphic_template_key != payload.template_key:
+            raise HTTPException(status_code=422, detail="Mapping template is not compatible with the graphic template")
+        device.mapping_template_id = mapping_template.id
+    else:
+        device.mapping_template_id = None
     device.template_key = payload.template_key
     for point_id, role in payload.point_roles.items():
         point = points_by_id[point_id]
@@ -2778,6 +2866,47 @@ def ui_save_device_configuration(
     for point in points:
         db.refresh(point)
     return {"device": _device_out(device), "points": [_point_out(point) for point in points]}
+
+
+@app.post("/api/ui/devices/{device_id}/mapping-template/{template_id}/apply", response_model=MappingApplyOut)
+def ui_apply_mapping_template(device_id: str, template_id: str, auth: AdminAuthContext = Depends(require_job_operator_auth), db: Session = Depends(get_db)) -> dict[str, object]:
+    device = _require_device_site_access(db, auth, device_id)
+    template = db.get(MappingTemplate, _tree_id(template_id))
+    if template is None:
+        raise HTTPException(status_code=404, detail="Mapping template not found")
+    if device.template_key != template.graphic_template_key:
+        raise HTTPException(status_code=422, detail="Mapping template is not compatible with the device graphic template")
+    device.mapping_template_id = template.id
+    points = list(db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id, SavedBacnetPoint.enabled.is_(True))).all())
+    conflicts: list[str] = []
+    matched = unmatched_optional = missing_required = retained_existing = 0
+    claimed: set[str] = set()
+    for rule in template.rules:
+        matches = [point for point in points if (point.object_name or "").strip().casefold() == rule.match_value.strip().casefold() and (not rule.object_type or point.object_type == rule.object_type)]
+        if not matches:
+            if rule.required: missing_required += 1
+            else: unmatched_optional += 1
+            continue
+        if len(matches) != 1:
+            conflicts.append(f"{rule.logical_role}: {len(matches)} matches")
+            continue
+        point = matches[0]
+        if point.id in claimed:
+            conflicts.append(f"{rule.logical_role}: point also matches another role")
+            continue
+        claimed.add(point.id)
+        if point.logical_role is not None:
+            retained_existing += 1
+            continue
+        if any(other.logical_role == rule.logical_role for other in points):
+            retained_existing += 1
+            continue
+        point.logical_role = rule.logical_role
+        point.updated_at = utc_now()
+        matched += 1
+    device.updated_at = utc_now()
+    db.commit()
+    return {"matched": matched, "unmatched_optional": unmatched_optional, "missing_required": missing_required, "conflicts": conflicts, "retained_existing": retained_existing}
 
 
 @app.delete("/api/ui/devices/{device_id}", response_model=SavedDeviceOut)

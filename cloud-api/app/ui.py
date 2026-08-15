@@ -4624,24 +4624,32 @@ APP_SCRIPT = r"""
     const body = byId("configure-tree-body");
     if (!body) return;
     const gatewayId = document.body.dataset.gatewayId;
-    const [tree, templates] = await Promise.all([api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`), api("/api/ui/equipment-templates")]);
+    const [tree, templates, mappingTemplates] = await Promise.all([api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`), api("/api/ui/equipment-templates"), api("/api/ui/mapping-templates")]);
     const names = [...gatewayNavCategories, "System", "Uncategorized"];
     const groups = new Map((tree.groups || []).map((group) => [group.name, group]));
     body.innerHTML = (tree.devices || []).map((device) => {
       const points = (tree.points || []).filter((point) => point.saved_device_id === device.id);
       const template = templates[device.template_key];
       const roleControls = template ? points.map((point) => `<label class="binding-row"><span>${escapeHtml(point.object_name || `${point.object_type} ${point.object_instance}`)}</span><select data-point-id="${escapeHtml(point.id)}"><option value="">Not mapped</option>${template.roles.map((role) => `<option value="${escapeHtml(role)}" ${point.logical_role === role ? "selected" : ""}>${escapeHtml(roleLabel(role))}</option>`).join("")}</select></label>`).join("") : "<p class=\"bms-sub\">Save an RTU/AHU/Minisplit graphic template, then assign the manual point bindings.</p>";
-      return `<article class="configure-device-card" data-config-device-id="${escapeHtml(device.id)}"><div><span class="bms-kicker">BACnet instance ${escapeHtml(String(device.device_instance))}</span><h3>${escapeHtml(device.device_name || "Unnamed mirrored device")}</h3></div><div class="configure-fields"><label>Group <select data-device-group>${names.map((name) => `<option value="${name}" ${groups.get(name)?.id === device.group_id || (!device.group_id && name === "Uncategorized") ? "selected" : ""}>${name}</option>`).join("")}</select></label><label>Graphic Template <select data-device-template><option value="">No template</option>${Object.entries(templates).map(([key, item]) => `<option value="${escapeHtml(key)}" ${device.template_key === key ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select></label></div><details class="binding-details" open><summary>Manual bindings (${points.length} mirrored points)</summary><div class="binding-grid">${roleControls}</div></details></article>`;
+      const mappingOptions = mappingTemplates.filter((item) => item.graphic_template_key === device.template_key).map((item) => `<option value="${escapeHtml(item.id)}" ${device.mapping_template_id === item.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("");
+      return `<article class="configure-device-card" data-config-device-id="${escapeHtml(device.id)}"><div><span class="bms-kicker">BACnet instance ${escapeHtml(String(device.device_instance))}</span><h3>${escapeHtml(device.device_name || "Unnamed mirrored device")}</h3></div><div class="configure-fields"><label>Group <select data-device-group>${names.map((name) => `<option value="${name}" ${groups.get(name)?.id === device.group_id || (!device.group_id && name === "Uncategorized") ? "selected" : ""}>${name}</option>`).join("")}</select></label><label>Graphic Template <select data-device-template><option value="">No template</option>${Object.entries(templates).map(([key, item]) => `<option value="${escapeHtml(key)}" ${device.template_key === key ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}</select></label><label>Point Mapping Template <select data-mapping-template><option value="">No mapping template</option>${mappingOptions}</select></label></div><button class="apply-mapping-template secondary" type="button">Apply Mapping Template</button><div class="mapping-result bms-sub"></div><details class="binding-details" open><summary>Manual bindings (${points.length} mirrored points)</summary><div class="binding-grid">${roleControls}</div></details></article>`;
     }).join("");
     byId("save-configure-tree").onclick = async () => {
       const cards = [...body.querySelectorAll("[data-config-device-id]")];
       for (const card of cards) {
         const point_roles = Object.fromEntries([...card.querySelectorAll("select[data-point-id]")].map((select) => [select.dataset.pointId, select.value || null]));
-        await api(`/api/ui/devices/${encodeURIComponent(card.dataset.configDeviceId)}/configuration`, {method:"PUT", body:JSON.stringify({group_name:card.querySelector("[data-device-group]").value, template_key:card.querySelector("[data-device-template]").value || null, point_roles})});
+        await api(`/api/ui/devices/${encodeURIComponent(card.dataset.configDeviceId)}/configuration`, {method:"PUT", body:JSON.stringify({group_name:card.querySelector("[data-device-group]").value, template_key:card.querySelector("[data-device-template]").value || null, mapping_template_id:card.querySelector("[data-mapping-template]").value || null, point_roles})});
       }
       setText("configure-tree-status", `Saved configuration and manual bindings for ${cards.length} mirrored device${cards.length === 1 ? "" : "s"}.`);
       await initConfigureTree();
     };
+    body.querySelectorAll(".apply-mapping-template").forEach((button) => button.onclick = async () => {
+      const card = button.closest("[data-config-device-id]"); const templateId = card.querySelector("[data-mapping-template]").value;
+      if (!templateId) return setText("configure-tree-status", "Choose a point mapping template first.", true);
+      const result = await api(`/api/ui/devices/${encodeURIComponent(card.dataset.configDeviceId)}/mapping-template/${encodeURIComponent(templateId)}/apply`, {method:"POST"});
+      card.querySelector(".mapping-result").textContent = `Matched ${result.matched}; unmatched optional ${result.unmatched_optional}; missing required ${result.missing_required}; conflicts ${result.conflicts.length}; existing retained ${result.retained_existing}.`;
+      await initConfigureTree();
+    });
   }
 
   function renderUsers(users) {

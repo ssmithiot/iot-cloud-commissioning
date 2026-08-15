@@ -414,6 +414,33 @@ class GatewayGroup(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 
+class MappingTemplate(Base):
+    __tablename__ = "mapping_templates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    graphic_template_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    rules: Mapped[list["MappingTemplateRule"]] = relationship(back_populates="mapping_template", cascade="all, delete-orphan")
+
+
+class MappingTemplateRule(Base):
+    __tablename__ = "mapping_template_rules"
+    __table_args__ = (UniqueConstraint("mapping_template_id", "logical_role", name="uq_mapping_template_rule_role"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    mapping_template_id: Mapped[str] = mapped_column(String(36), ForeignKey("mapping_templates.id", ondelete="CASCADE"), nullable=False, index=True)
+    logical_role: Mapped[str] = mapped_column(String(80), nullable=False)
+    match_field: Mapped[str] = mapped_column(String(80), nullable=False)
+    match_value: Mapped[str] = mapped_column(String(255), nullable=False)
+    object_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    mapping_template: Mapped["MappingTemplate"] = relationship(back_populates="rules")
+
+
 class SavedBacnetDevice(Base):
     __tablename__ = "saved_bacnet_devices"
     __table_args__ = (
@@ -437,6 +464,7 @@ class SavedBacnetDevice(Base):
     )
     group_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("gateway_groups.id", ondelete="SET NULL"), nullable=True)
     template_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    mapping_template_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("mapping_templates.id", ondelete="SET NULL"), nullable=True, index=True)
     edge_device_profile_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     device_instance: Mapped[int] = mapped_column(Integer, nullable=False)
     device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)

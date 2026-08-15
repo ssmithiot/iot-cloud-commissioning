@@ -97,3 +97,24 @@ def test_explicit_device_configuration_persists_manual_bindings_for_both_bms_ren
     assert "rtu-graphic-grid" in graphic.text
     assert "pointValue(points.get(role))" in workspace.text
     assert "pointValue(bound.get(role))" in graphic.text
+
+
+def test_mapping_template_applies_own_points_to_three_devices() -> None:
+    gateway_id = f"GW-{uuid4().hex[:10]}"
+    create_gateway_token(gateway_id)
+    email = f"phase2-{uuid4().hex[:8]}@example.com"
+    user_id = create_operator_user(email, role="operator", status="active")
+    headers = user_headers(email, user_id)
+    mapping = client.post("/api/ui/mapping-templates", headers=headers, json={"name": "SE8650 RTU", "graphic_template_key": "rtu", "rules": [{"logical_role": "space_temp", "match_field": "object_name", "match_value": "Room Temperature", "object_type": "analog-value", "required": True}, {"logical_role": "occupancy_mode", "match_field": "object_name", "match_value": "Effective Occupancy", "object_type": "multi-state-input", "required": False}]}).json()
+    ids = []
+    for index in range(1, 4):
+        device = client.post(f"/api/ui/gateways/{gateway_id}/devices", headers=headers, json={"device_instance": 1100 + index, "device_name": f"SE8650U0Bxx-{index}"}).json()
+        client.post(f"/api/ui/devices/{device['id']}/points", headers=headers, json={"object_type": "analog-value", "object_instance": index, "object_name": f" Room Temperature ", "present_value": str(70 + index)})
+        client.post(f"/api/ui/devices/{device['id']}/points", headers=headers, json={"object_type": "multi-state-input", "object_instance": 20 + index, "object_name": "Effective Occupancy", "present_value": "Occupied"})
+        assert client.put(f"/api/ui/devices/{device['id']}/configuration", headers=headers, json={"group_name": "HVAC", "template_key": "rtu", "mapping_template_id": mapping["id"]}).status_code == 200
+        result = client.post(f"/api/ui/devices/{device['id']}/mapping-template/{mapping['id']}/apply", headers=headers)
+        assert result.status_code == 200 and result.json()["matched"] == 2
+        ids.append(device["id"])
+    tree = client.get(f"/api/ui/gateways/{gateway_id}/tree", headers=headers).json()
+    bound_ids = {point["saved_device_id"] for point in tree["points"] if point["logical_role"] == "space_temp"}
+    assert bound_ids == set(ids)

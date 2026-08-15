@@ -670,12 +670,42 @@ class DeviceConfigurationIn(BaseModel):
 
     group_name: str | None = Field(default=None, max_length=120)
     template_key: str | None = Field(default=None, max_length=80)
+    mapping_template_id: str | None = Field(default=None, max_length=36)
     point_roles: dict[str, str | None] = Field(default_factory=dict, max_length=500)
 
 
 class DeviceConfigurationOut(BaseModel):
     device: "SavedDeviceOut"
     points: list["SavedPointOut"]
+
+
+class MappingTemplateRuleIn(BaseModel):
+    logical_role: str = Field(min_length=1, max_length=80)
+    match_field: str = Field(min_length=1, max_length=80)
+    match_value: str = Field(min_length=1, max_length=255)
+    object_type: str | None = Field(default=None, max_length=80)
+    required: bool = False
+
+
+class MappingTemplateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    graphic_template_key: str = Field(min_length=1, max_length=80)
+    rules: list[MappingTemplateRuleIn] = Field(min_length=1, max_length=100)
+
+
+class MappingTemplateOut(BaseModel):
+    id: str
+    name: str
+    graphic_template_key: str
+    rules: list[MappingTemplateRuleIn]
+
+
+class MappingApplyOut(BaseModel):
+    matched: int
+    unmatched_optional: int
+    missing_required: int
+    conflicts: list[str]
+    retained_existing: int
 
 
 class SavedDeviceOut(BaseModel):
@@ -694,6 +724,7 @@ class SavedDeviceOut(BaseModel):
     retired_at: datetime | None
     enabled: bool
     template_key: str | None
+    mapping_template_id: str | None
     edge_device_profile_id: str | None
     created_at: datetime
     updated_at: datetime
