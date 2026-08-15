@@ -24,7 +24,10 @@ def upgrade():
         op.add_column("saved_bacnet_devices", sa.Column("edge_device_profile_id", sa.String(length=255), nullable=True))
     uniques = {item["name"] for item in inspector.get_unique_constraints("saved_bacnet_devices")}
     if OLD_UNIQUE in uniques:
-        op.drop_constraint(OLD_UNIQUE, "saved_bacnet_devices", type_="unique")
+        # SQLite cannot ALTER a constraint in place; batch mode rebuilds the
+        # table while preserving every existing row.
+        with op.batch_alter_table("saved_bacnet_devices") as batch:
+            batch.drop_constraint(OLD_UNIQUE, type_="unique")
     indexes = {item["name"] for item in sa.inspect(bind).get_indexes("saved_bacnet_devices")}
     if INSTANCE_INDEX not in indexes:
         op.create_index(INSTANCE_INDEX, "saved_bacnet_devices", ["gateway_id", "device_instance"], unique=False)
@@ -56,7 +59,8 @@ def downgrade():
         op.drop_index(PROFILE_INDEX, table_name="saved_bacnet_devices")
     if INSTANCE_INDEX in indexes:
         op.drop_index(INSTANCE_INDEX, table_name="saved_bacnet_devices")
-    op.create_unique_constraint(OLD_UNIQUE, "saved_bacnet_devices", ["gateway_id", "device_instance"])
     columns = {column["name"] for column in sa.inspect(bind).get_columns("saved_bacnet_devices")}
-    if "edge_device_profile_id" in columns:
-        op.drop_column("saved_bacnet_devices", "edge_device_profile_id")
+    with op.batch_alter_table("saved_bacnet_devices") as batch:
+        batch.create_unique_constraint(OLD_UNIQUE, ["gateway_id", "device_instance"])
+        if "edge_device_profile_id" in columns:
+            batch.drop_column("edge_device_profile_id")
