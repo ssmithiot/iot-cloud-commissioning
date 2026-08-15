@@ -74,6 +74,8 @@ from app.schemas import (
     CommissioningTemplateIn,
     CurrentOperatorOut,
     DirectConnectOut,
+    DeviceConfigurationIn,
+    DeviceConfigurationOut,
     EdgeJobClaimOut,
     EdgeInventorySnapshotIn,
     EdgeInventorySyncOut,
@@ -2716,6 +2718,66 @@ def ui_patch_device(
     db.commit()
     db.refresh(device)
     return _device_out(device)
+
+
+@app.put("/api/ui/devices/{device_id}/configuration", response_model=DeviceConfigurationOut)
+def ui_save_device_configuration(
+    device_id: str,
+    payload: DeviceConfigurationIn,
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """Persist one device's group, graphic template, and manual bindings together.
+
+    The browser deliberately saves only on this explicit action.  It is not a
+    template enforcer: every submitted role remains an operator-owned binding.
+    """
+    device = _require_device_site_access(db, auth, device_id)
+    group_name = (payload.group_name or "").strip()
+    if group_name and group_name != "Uncategorized":
+        group = db.scalar(select(GatewayGroup).where(GatewayGroup.gateway_id == device.gateway_id, GatewayGroup.name == group_name))
+        if group is None:
+            group = GatewayGroup(gateway_id=device.gateway_id, name=group_name)
+            db.add(group)
+            db.flush()
+        device.group_id = group.id
+    else:
+        device.group_id = None
+
+    points = list(db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id)).all())
+    points_by_id = {point.id: point for point in points}
+    if unknown_ids := sorted(set(payload.point_roles) - set(points_by_id)):
+        raise HTTPException(status_code=422, detail="Point does not belong to this device: " + ", ".join(unknown_ids))
+
+    template = template_for(payload.template_key)
+    if payload.template_key is not None and template is None:
+        raise HTTPException(status_code=422, detail="Unknown equipment template")
+    if template is not None and _device_category(db, device) not in template["categories"]:
+        raise HTTPException(status_code=422, detail=f"Template {payload.template_key} is not compatible with device group {_device_category(db, device) or 'Uncategorized'}")
+    final_roles = {point.id: payload.point_roles.get(point.id, point.logical_role) for point in points}
+    non_null_roles = [role for role in final_roles.values() if role is not None]
+    if len(non_null_roles) != len(set(non_null_roles)):
+        raise HTTPException(status_code=409, detail="A logical role can be bound to only one point on a device")
+    if any(role is not None for role in final_roles.values()) and template is None:
+        raise HTTPException(status_code=422, detail="Assign a compatible equipment template before binding roles")
+    unsupported = sorted({role for role in final_roles.values() if role is not None and template is not None and role not in template["roles"]})
+    if unsupported:
+        raise HTTPException(status_code=422, detail="Role is not supported by template: " + ", ".join(unsupported))
+    device.template_key = payload.template_key
+    for point_id, role in payload.point_roles.items():
+        point = points_by_id[point_id]
+        point.logical_role = role
+        point.updated_at = utc_now()
+    device.updated_at = utc_now()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That logical role is already bound to another point on this device") from None
+    db.refresh(device)
+    for point in points:
+        db.refresh(point)
+    return {"device": _device_out(device), "points": [_point_out(point) for point in points]}
 
 
 @app.delete("/api/ui/devices/{device_id}", response_model=SavedDeviceOut)

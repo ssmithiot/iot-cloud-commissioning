@@ -665,6 +665,19 @@ class SavedDevicePatchIn(BaseModel):
     template_key: str | None = Field(default=None, max_length=80)
 
 
+class DeviceConfigurationIn(BaseModel):
+    """One explicit operator save for a mirrored device and its bindings."""
+
+    group_name: str | None = Field(default=None, max_length=120)
+    template_key: str | None = Field(default=None, max_length=80)
+    point_roles: dict[str, str | None] = Field(default_factory=dict, max_length=500)
+
+
+class DeviceConfigurationOut(BaseModel):
+    device: "SavedDeviceOut"
+    points: list["SavedPointOut"]
+
+
 class SavedDeviceOut(BaseModel):
     id: str
     gateway_id: str

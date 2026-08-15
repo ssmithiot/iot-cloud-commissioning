@@ -1,7 +1,7 @@
 """Cloud Phase 2 template persistence and single-binding authority."""
 from uuid import uuid4
 
-from test_api import client, create_gateway_token, create_operator_user, user_headers
+from test_api import client, create_gateway_token, create_operator_user, reset_database, user_headers
 
 
 def test_template_and_logical_role_binding_are_persisted_and_unique() -> None:
@@ -48,3 +48,52 @@ def test_device_points_page_uses_device_scoped_mirrored_table() -> None:
     assert 'data-device-id="device-1"' in response.text
     assert "point.saved_device_id === deviceId" in response.text
     assert "View All Points" in response.text
+
+
+def test_explicit_device_configuration_persists_manual_bindings_for_both_bms_renderers() -> None:
+    gateway_id = f"GW-{uuid4().hex[:10]}"
+    create_gateway_token(gateway_id)
+    email = f"phase2-{uuid4().hex[:8]}@example.com"
+    user_id = create_operator_user(email, role="operator", status="active")
+    headers = user_headers(email, user_id)
+    device = client.post(
+        f"/api/ui/gateways/{gateway_id}/devices",
+        headers=headers,
+        json={"device_instance": 1101, "device_name": "SE8650U0Bxx-1"},
+    ).json()
+    points = {
+        name: client.post(
+            f"/api/ui/devices/{device['id']}/points",
+            headers=headers,
+            json={"object_type": object_type, "object_instance": instance, "object_name": name, "present_value": value},
+        ).json()
+        for name, object_type, instance, value in (
+            ("Room Temperature", "analog-value", 1, "72.1"),
+            ("UI22 Supply Temperature", "analog-value", 22, "55.0"),
+            ("Effective Occupancy", "multi-state-input", 3, "Occupied"),
+        )
+    }
+    saved = client.put(
+        f"/api/ui/devices/{device['id']}/configuration",
+        headers=headers,
+        json={
+            "group_name": "HVAC",
+            "template_key": "rtu",
+            "point_roles": {
+                points["Room Temperature"]["id"]: "space_temp",
+                points["UI22 Supply Temperature"]["id"]: "supply_air_temp",
+                points["Effective Occupancy"]["id"]: "occupancy_mode",
+            },
+        },
+    )
+    assert saved.status_code == 200
+    assert {point["logical_role"] for point in saved.json()["points"]} == {"space_temp", "supply_air_temp", "occupancy_mode"}
+    tree = client.get(f"/api/ui/gateways/{gateway_id}/tree", headers=headers).json()
+    roles = {point["logical_role"]: point["present_value"] for point in tree["points"]}
+    assert roles == {"space_temp": "72.1", "supply_air_temp": "55.0", "occupancy_mode": "Occupied"}
+    workspace = client.get(f"/gateways/{gateway_id}")
+    graphic = client.get(f"/gateways/{gateway_id}/devices/{device['id']}")
+    assert "equipment-values" in workspace.text
+    assert "rtu-graphic-grid" in graphic.text
+    assert "pointValue(points.get(role))" in workspace.text
+    assert "pointValue(bound.get(role))" in graphic.text
