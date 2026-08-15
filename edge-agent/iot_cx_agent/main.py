@@ -10,6 +10,7 @@ import requests
 from iot_cx_agent.config import DEFAULT_CONFIG_PATH, AgentConfig, load_config
 from iot_cx_agent.db import initialize_database, record_heartbeat_attempt
 from iot_cx_agent.heartbeat import send_heartbeat
+from iot_cx_agent.inventory import sync_inventory
 from iot_cx_agent.jobs import process_next_job
 from iot_cx_agent.status import collect_status, utc_timestamp
 from iot_cx_agent.tunnel import run_tunnel_forever
@@ -65,6 +66,8 @@ def run_once(config: AgentConfig) -> bool:
         logger.warning("Heartbeat upload failed: %s", exc)
 
     if sqlite_db_ok:
+        # File parsing/upload is independent of all BACnet execution paths.
+        run_step("Edge inventory sync", sync_inventory, config)
         # Each trend step is isolated. Local collection is Edge-owned and must
         # keep running when the cloud is unreachable, so a failed upload can
         # never stop sampling, and neither can stop job processing.
