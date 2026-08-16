@@ -2816,16 +2816,6 @@ def ui_save_device_configuration(
     """
     device = _require_device_site_access(db, auth, device_id)
     group_name = (payload.group_name or "").strip()
-    if group_name and group_name != "Uncategorized":
-        group = db.scalar(select(GatewayGroup).where(GatewayGroup.gateway_id == device.gateway_id, GatewayGroup.name == group_name))
-        if group is None:
-            group = GatewayGroup(gateway_id=device.gateway_id, name=group_name)
-            db.add(group)
-            db.flush()
-        device.group_id = group.id
-    else:
-        device.group_id = None
-
     points = list(db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id)).all())
     points_by_id = {point.id: point for point in points}
     if unknown_ids := sorted(set(payload.point_roles) - set(points_by_id)):
@@ -2834,12 +2824,19 @@ def ui_save_device_configuration(
     template = template_for(payload.template_key)
     if payload.template_key is not None and template is None:
         raise HTTPException(status_code=422, detail="Unknown equipment template")
-    if template is not None and _device_category(db, device) not in template["categories"]:
-        raise HTTPException(status_code=422, detail=f"Template {payload.template_key} is not compatible with device group {_device_category(db, device) or 'Uncategorized'}")
+    proposed_category = group_name if group_name and group_name != "Uncategorized" else None
+    if template is not None and proposed_category not in template["categories"]:
+        raise HTTPException(status_code=422, detail=f"Template {payload.template_key} is not compatible with device group {proposed_category or 'Uncategorized'}")
     final_roles = {point.id: payload.point_roles.get(point.id, point.logical_role) for point in points}
-    non_null_roles = [role for role in final_roles.values() if role is not None]
-    if len(non_null_roles) != len(set(non_null_roles)):
-        raise HTTPException(status_code=409, detail="A logical role can be bound to only one point on a device")
+    role_claims: dict[str, list[SavedBacnetPoint]] = {}
+    for point in points:
+        role = final_roles[point.id]
+        if role is not None:
+            role_claims.setdefault(role, []).append(point)
+    duplicate_claims = {role: claims for role, claims in role_claims.items() if len(claims) > 1}
+    if duplicate_claims:
+        detail = "; ".join(f"{role} is assigned to " + " and ".join(point.object_name or f"{point.object_type}:{point.object_instance}" for point in claims) for role, claims in sorted(duplicate_claims.items()))
+        raise HTTPException(status_code=409, detail=detail)
     if any(role is not None for role in final_roles.values()) and template is None:
         raise HTTPException(status_code=422, detail="Assign a compatible equipment template before binding roles")
     unsupported = sorted({role for role in final_roles.values() if role is not None and template is not None and role not in template["roles"]})
@@ -2852,6 +2849,15 @@ def ui_save_device_configuration(
         device.mapping_template_id = mapping_template.id
     else:
         device.mapping_template_id = None
+    if proposed_category:
+        group = db.scalar(select(GatewayGroup).where(GatewayGroup.gateway_id == device.gateway_id, GatewayGroup.name == proposed_category))
+        if group is None:
+            group = GatewayGroup(gateway_id=device.gateway_id, name=proposed_category)
+            db.add(group)
+            db.flush()
+        device.group_id = group.id
+    else:
+        device.group_id = None
     device.template_key = payload.template_key
     for point_id, role in payload.point_roles.items():
         point = points_by_id[point_id]

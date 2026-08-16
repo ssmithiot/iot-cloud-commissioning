@@ -94,7 +94,7 @@ def test_explicit_device_configuration_persists_manual_bindings_for_both_bms_ren
     workspace = client.get(f"/gateways/{gateway_id}")
     graphic = client.get(f"/gateways/{gateway_id}/devices/{device['id']}")
     assert "equipment-values" in workspace.text
-    assert "rtu-graphic-grid" in graphic.text
+    assert "rtu-grid" in graphic.text
     assert "pointValue(points.get(role))" in workspace.text
     assert "pointValue(bound.get(role))" in graphic.text
 
@@ -118,3 +118,30 @@ def test_mapping_template_applies_own_points_to_three_devices() -> None:
     tree = client.get(f"/api/ui/gateways/{gateway_id}/tree", headers=headers).json()
     bound_ids = {point["saved_device_id"] for point in tree["points"] if point["logical_role"] == "space_temp"}
     assert bound_ids == set(ids)
+
+
+def test_configuration_duplicate_role_names_points_and_rolls_back_then_succeeds() -> None:
+    gateway_id = f"GW-{uuid4().hex[:10]}"
+    create_gateway_token(gateway_id)
+    email = f"phase2-{uuid4().hex[:8]}@example.com"
+    user_id = create_operator_user(email, role="operator", status="active")
+    headers = user_headers(email, user_id)
+    device = client.post(f"/api/ui/gateways/{gateway_id}/devices", headers=headers, json={"device_instance": 1101}).json()
+    room = client.post(f"/api/ui/devices/{device['id']}/points", headers=headers, json={"object_type":"analog-value","object_instance":1,"object_name":"Room Temperature","present_value":"72.1"}).json()
+    av25 = client.post(f"/api/ui/devices/{device['id']}/points", headers=headers, json={"object_type":"analog-value","object_instance":25,"object_name":"AV25","present_value":"73.0"}).json()
+    duplicate_payload = {"group_name":"HVAC","template_key":"rtu","point_roles":{room["id"]:"space_temp",av25["id"]:"space_temp"}}
+    conflict = client.put(f"/api/ui/devices/{device['id']}/configuration", headers=headers, json=duplicate_payload)
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "space_temp is assigned to Room Temperature and AV25"
+    tree = client.get(f"/api/ui/gateways/{gateway_id}/tree", headers=headers).json()
+    assert not any(group["name"] == "HVAC" for group in tree["groups"])
+    assert all(point["logical_role"] is None for point in tree["points"])
+    duplicate_payload["point_roles"][av25["id"]] = "supply_air_temp"
+    saved = client.put(f"/api/ui/devices/{device['id']}/configuration", headers=headers, json=duplicate_payload)
+    assert saved.status_code == 200
+    assert {point["logical_role"] for point in saved.json()["points"]} == {"space_temp", "supply_air_temp"}
+    created = client.post(f"/api/ui/devices/{device['id']}/mapping-template", headers=headers, json={"name":"SE8650 generated"})
+    assert created.status_code == 200
+    rules = created.json()["rules"]
+    assert {(rule["logical_role"], rule["match_value"], rule["object_type"]) for rule in rules} == {("space_temp","Room Temperature","analog-value"),("supply_air_temp","AV25","analog-value")}
+    assert all(set(rule) == {"logical_role","match_field","match_value","object_type","required"} for rule in rules)
