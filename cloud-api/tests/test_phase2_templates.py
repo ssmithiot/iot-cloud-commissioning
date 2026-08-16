@@ -445,7 +445,10 @@ def test_workspace_renderer_emits_direct_weather_and_device_tiles_with_structure
     assert 'class="site-equipment-section"' in renderer
     assert 'class="equipment-grid"' in renderer
     assert renderer.count('<article class="tile weather-card weather-summary-card">') == 1
+    assert '<div class="weather-main">${bmsIcon("cloud", "weather-icon")}' in renderer
     assert renderer.count('<article class="tile equipment-summary-card">') == 1
+    assert '<div class="equipment-card-icon">${bmsIcon("building")}</div>' in renderer
+    assert '<div class="equipment-grid">${weatherCard}${classified.map(tile).join("")' in renderer
     assert 'class="equipment-key"' in renderer
     assert 'class="equipment-reading"' in renderer
     assert 'class="secondary equipment-action"' in renderer
@@ -453,6 +456,47 @@ def test_workspace_renderer_emits_direct_weather_and_device_tiles_with_structure
     assert '<section class="equipment-category-section">' not in renderer
     assert '<article class="equipment-summary-card">' not in renderer
     assert "byCategory" not in renderer
+
+
+def test_workspace_css_constrains_summary_grid_cards_and_inline_svg_icons() -> None:
+    page = client.get("/gateways/GW001")
+    assert page.status_code == 200
+    workspace_shell = '<section class="bms-shell" aria-labelledby="bms-graphic-title">'
+    workspace_style = '<style>\n        .bms-shell {\n          --bg-surface:#121317'
+    assert page.text.index(workspace_style) < page.text.index(workspace_shell)
+    workspace_css = page.text.split(
+        workspace_style, 1
+    )[1].split("</style>", 1)[0]
+
+    assert "{{" not in workspace_css
+    assert "}}" not in workspace_css
+    assert (
+        ".equipment-grid { display:grid; "
+        "grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr)); "
+        "gap:12px; margin-top:18px; min-width:0; align-items:start; }"
+    ) in workspace_css
+    assert (
+        ".bms-inline-icon { display:block; width:16px; height:16px; "
+        "max-width:16px; max-height:16px;"
+    ) in workspace_css
+    assert (
+        ".equipment-card-icon { display:flex; width:36px; height:36px; "
+        "min-width:36px; min-height:36px; max-width:36px; max-height:36px;"
+    ) in workspace_css
+    assert (
+        ".equipment-card-icon .bms-inline-icon { display:block; width:18px; "
+        "height:18px; max-width:18px; max-height:18px;"
+    ) in workspace_css
+    assert (
+        ".weather-summary-card .weather-icon,.weather-main .weather-icon { "
+        "display:block; width:40px; height:40px; max-width:40px; max-height:40px;"
+    ) in workspace_css
+    assert (
+        ".equipment-summary-card,.weather-summary-card { height:auto; min-height:0; "
+        "align-self:start; break-inside:avoid; }"
+    ) in workspace_css
+    assert "@media print {" in workspace_css
+    assert "page-break-inside:avoid;" in workspace_css
 
 
 def test_device_renderer_emits_reference_tile_hierarchy_and_no_legacy_graphic_markup() -> None:

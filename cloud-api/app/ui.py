@@ -7878,8 +7878,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
         </div>
       </div>
     </section>
-    <section class="bms-shell" aria-labelledby="bms-graphic-title">
-      <style>
+    <style>
         .bms-shell { height:auto; max-height:none; overflow:visible; margin:20px 0; padding:20px; border:1px solid var(--border); border-radius:12px; background:linear-gradient(135deg,rgba(59,130,246,.10),rgba(11,20,23,.86)); box-shadow:0 12px 30px rgba(0,0,0,.16); }
         body[data-theme="light"] .bms-shell { background:linear-gradient(135deg,rgba(37,99,235,.08),rgba(255,255,255,.92)); }
         .bms-head,.bms-grid,.bms-setpoints { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
@@ -7896,9 +7895,9 @@ def gateway_workspace_html(gateway_id: str) -> str:
         .bms-trend { margin-top:16px; min-height:250px; height:auto; max-height:none; border-radius:9px; border:1px solid var(--border); background:linear-gradient(180deg,transparent,rgba(59,130,246,.14)); overflow:visible; }
         .bms-trend svg { width:100%; height:180px; display:block; } .bms-range{float:right;display:flex;gap:5px}.bms-range button{min-height:25px;padding:3px 8px}.bms-range button[disabled]{cursor:default;opacity:.7} @media (max-width:760px){ .bms-tile,.bms-tile.wide,.bms-tile.third,.bms-tile.status,.bms-tile.setpoint{grid-column:span 12;} }
         .site-equipment-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px; margin-top:16px; min-width:0; } .equipment-category-section { grid-column:1 / -1; min-width:0; } .equipment-category-section > h3 { margin:0 0 8px; } .equipment-card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; min-width:0; } .equipment-summary-card { min-width:0; padding:16px; border:1px solid var(--border); border-radius:10px; background:rgba(4,12,14,.42); overflow-wrap:anywhere; } body[data-theme="light"] .equipment-summary-card { background:rgba(255,255,255,.7); } .equipment-summary-card h3 { margin:6px 0; font-size:18px; } .equipment-summary-card ul { margin:12px 0; padding-left:18px; display:grid; gap:5px; } .weather-summary-card { background:linear-gradient(135deg,rgba(59,130,246,.22),rgba(11,20,23,.42)); } .weather-summary-value { margin-top:10px; font-size:18px; line-height:1.45; font-weight:700; } @media (max-width:700px) { .site-equipment-grid,.equipment-card-grid { grid-template-columns:1fr; } }
-      </style>
-      <style>
-        .bms-shell {{
+    </style>
+    <style>
+        .bms-shell {
           --bg-surface:#121317; --bg-tile:#16181d; --bg-tile-alt:#1b1e24; --bg-raised:#1f232a;
           --border:rgba(255,255,255,.09); --border-strong:rgba(255,255,255,.16);
           --text-primary:#fff; --text-secondary:#aab2c0; --text-muted:#6d7684;
@@ -7908,8 +7907,8 @@ def gateway_workspace_html(gateway_id: str) -> str:
           --warning-soft:rgba(250,178,25,.14); --off:#4a5058;
           --shadow:0 1px 0 rgba(255,255,255,.03) inset,0 8px 20px rgba(0,0,0,.35);
           color:var(--text-primary); overflow-x:hidden;
-        }}
-        body[data-theme="light"] .bms-shell {{
+        }
+        body[data-theme="light"] .bms-shell {
           --bg-surface:#fff; --bg-tile:#fff; --bg-tile-alt:#f4f6f9; --bg-raised:#fff;
           --border:rgba(11,17,26,.10); --border-strong:rgba(11,17,26,.18);
           --text-primary:#0b0f14; --text-secondary:#4c5766; --text-muted:#7a8494;
@@ -7917,41 +7916,49 @@ def gateway_workspace_html(gateway_id: str) -> str:
           --accent-soft-strong:rgba(42,120,214,.20); --critical:#d03b3b;
           --critical-soft:rgba(208,59,59,.10); --warning:#c98500; --warning-soft:rgba(201,133,0,.12);
           --off:#aab2c0; --shadow:0 1px 0 rgba(255,255,255,.6) inset,0 6px 16px rgba(20,30,45,.08);
-        }}
-        .site-equipment-section {{ min-width:0; }}
-        .equipment-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,285px),1fr)); gap:14px; margin-top:18px; min-width:0; }}
-        .bms-shell .tile {{ min-width:0; padding:16px; border:1px solid var(--border); border-radius:12px; background:var(--bg-tile); box-shadow:var(--shadow); overflow:hidden; }}
-        .bms-shell .tile-head {{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }}
-        .bms-shell .tile-title {{ display:flex; align-items:center; gap:8px; color:var(--text-muted); font-size:11.5px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; }}
-        .bms-inline-icon {{ width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex:none; }}
-        .bms-shell .tile-title .bms-inline-icon {{ color:var(--accent); }}
-        .workspace-source-badge {{ display:flex; align-items:center; gap:7px; color:var(--accent); background:var(--accent-soft); border-radius:18px; padding:7px 10px; font-size:11px; font-weight:700; text-transform:uppercase; }}
-        .bms-shell .badge {{ display:inline-flex; color:var(--accent); background:var(--accent-soft); border-radius:5px; padding:3px 7px; font-size:10px; font-weight:700; letter-spacing:.3px; text-transform:uppercase; }}
-        .weather-summary-card {{ background:linear-gradient(145deg,var(--accent-soft),var(--bg-tile) 62%) !important; }}
-        .weather-main {{ display:flex; align-items:center; gap:12px; margin-bottom:10px; }}
-        .weather-icon {{ width:42px; height:42px; color:var(--accent); }}
-        .weather-temp {{ color:var(--text-primary); font-size:30px; font-weight:650; line-height:1; }}
-        .weather-desc {{ margin-top:4px; color:var(--text-secondary); font-size:12px; }}
-        .weather-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }}
-        .weather-stat {{ display:grid; gap:3px; min-width:0; padding:8px 9px; border:1px solid var(--border); border-radius:8px; background:var(--bg-tile-alt); }}
-        .weather-stat .k {{ color:var(--text-muted); font-size:10px; font-weight:700; letter-spacing:.3px; text-transform:uppercase; }}
-        .weather-stat .v {{ color:var(--text-primary); font-size:13px; overflow-wrap:anywhere; }}
-        .equipment-card-head {{ display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; }}
-        .equipment-card-icon {{ display:grid; width:38px; height:38px; place-items:center; border-radius:9px; color:var(--accent); background:var(--accent-soft); }}
-        .equipment-card-title {{ min-width:0; }} .equipment-card-title h3 {{ margin:0; color:var(--text-primary); font-size:16px; overflow-wrap:anywhere; }}
-        .equipment-card-title > span {{ color:var(--text-muted); font-size:11px; }}
-        .status-pill {{ display:inline-flex; align-items:center; gap:6px; padding:5px 8px; border-radius:16px; color:var(--text-muted); background:var(--bg-tile-alt); font-size:10px; font-weight:700; letter-spacing:.25px; text-transform:uppercase; }}
-        .status-pill .dot {{ width:6px; height:6px; border-radius:50%; background:currentColor; }}
-        .status-pill.on {{ color:var(--good); background:var(--good-soft); }} .status-pill.warning {{ color:var(--warning); background:var(--warning-soft); }} .status-pill.fault {{ color:var(--critical); background:var(--critical-soft); }}
-        .equipment-card-meta {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0; color:var(--text-muted); font-size:11px; }}
-        .equipment-values {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }}
-        .equipment-value {{ display:grid; gap:4px; min-width:0; padding:9px; border:1px solid var(--border); border-radius:8px; background:var(--bg-tile-alt); }}
-        .equipment-key {{ color:var(--text-muted); font-size:10px; font-weight:700; letter-spacing:.25px; text-transform:uppercase; }}
-        .equipment-reading {{ color:var(--text-primary); font-size:13px; overflow-wrap:anywhere; }}
-        .equipment-action {{ width:100%; margin-top:12px; }}
-        .equipment-empty {{ grid-column:1/-1; padding:28px; border:1px dashed var(--border-strong); border-radius:12px; color:var(--text-muted); text-align:center; }}
-        @media (max-width:560px) {{ .equipment-values,.weather-grid {{ grid-template-columns:1fr; }} .equipment-card-head {{ grid-template-columns:auto minmax(0,1fr); }} .equipment-card-head .status-pill {{ grid-column:1/-1; justify-self:start; }} }}
-      </style>
+        }
+        .site-equipment-section { min-width:0; }
+        .equipment-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr)); gap:12px; margin-top:18px; min-width:0; align-items:start; }
+        .bms-shell .tile { height:auto; min-height:0; min-width:0; align-self:start; padding:16px; border:1px solid var(--border); border-radius:12px; background:var(--bg-tile); box-shadow:var(--shadow); overflow:hidden; }
+        .bms-shell .tile-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+        .bms-shell .tile-title { display:flex; align-items:center; gap:8px; color:var(--text-muted); font-size:11.5px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; }
+        .bms-inline-icon { display:block; width:16px; height:16px; max-width:16px; max-height:16px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex:0 0 16px; }
+        .bms-shell .tile-title .bms-inline-icon { color:var(--accent); }
+        .workspace-source-badge { display:flex; align-items:center; gap:7px; color:var(--accent); background:var(--accent-soft); border-radius:18px; padding:7px 10px; font-size:11px; font-weight:700; text-transform:uppercase; }
+        .bms-shell .badge { display:inline-flex; color:var(--accent); background:var(--accent-soft); border-radius:5px; padding:3px 7px; font-size:10px; font-weight:700; letter-spacing:.3px; text-transform:uppercase; }
+        .equipment-summary-card,.weather-summary-card { height:auto; min-height:0; align-self:start; break-inside:avoid; }
+        .weather-summary-card { background:linear-gradient(145deg,var(--accent-soft),var(--bg-tile) 62%) !important; }
+        .weather-main { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+        .weather-summary-card .weather-icon,.weather-main .weather-icon { display:block; width:40px; height:40px; max-width:40px; max-height:40px; color:var(--accent); flex:0 0 40px; }
+        .weather-temp { color:var(--text-primary); font-size:30px; font-weight:650; line-height:1; }
+        .weather-desc { margin-top:4px; color:var(--text-secondary); font-size:12px; }
+        .weather-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+        .weather-stat { display:grid; gap:3px; min-width:0; padding:8px 9px; border:1px solid var(--border); border-radius:8px; background:var(--bg-tile-alt); }
+        .weather-stat .k { color:var(--text-muted); font-size:10px; font-weight:700; letter-spacing:.3px; text-transform:uppercase; }
+        .weather-stat .v { color:var(--text-primary); font-size:13px; overflow-wrap:anywhere; }
+        .equipment-card-head { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; }
+        .equipment-card-icon { display:flex; width:36px; height:36px; min-width:36px; min-height:36px; max-width:36px; max-height:36px; align-items:center; justify-content:center; border-radius:9px; color:var(--accent); background:var(--accent-soft); flex:0 0 36px; }
+        .equipment-card-icon .bms-inline-icon { display:block; width:18px; height:18px; max-width:18px; max-height:18px; flex:0 0 18px; }
+        .equipment-card-title { min-width:0; } .equipment-card-title h3 { margin:0; color:var(--text-primary); font-size:16px; overflow-wrap:anywhere; }
+        .equipment-card-title > span { color:var(--text-muted); font-size:11px; }
+        .status-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 8px; border-radius:16px; color:var(--text-muted); background:var(--bg-tile-alt); font-size:10px; font-weight:700; letter-spacing:.25px; text-transform:uppercase; }
+        .status-pill .dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
+        .status-pill.on { color:var(--good); background:var(--good-soft); } .status-pill.warning { color:var(--warning); background:var(--warning-soft); } .status-pill.fault { color:var(--critical); background:var(--critical-soft); }
+        .equipment-card-meta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0; color:var(--text-muted); font-size:11px; }
+        .equipment-values { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+        .equipment-value { display:grid; gap:4px; min-width:0; padding:9px; border:1px solid var(--border); border-radius:8px; background:var(--bg-tile-alt); }
+        .equipment-key { color:var(--text-muted); font-size:10px; font-weight:700; letter-spacing:.25px; text-transform:uppercase; }
+        .equipment-reading { color:var(--text-primary); font-size:13px; overflow-wrap:anywhere; }
+        .equipment-action { width:100%; margin-top:12px; }
+        .equipment-empty { grid-column:1/-1; padding:28px; border:1px dashed var(--border-strong); border-radius:12px; color:var(--text-muted); text-align:center; }
+        @media (max-width:560px) { .equipment-values,.weather-grid { grid-template-columns:1fr; } .equipment-card-head { grid-template-columns:auto minmax(0,1fr); } .equipment-card-head .status-pill { grid-column:1/-1; justify-self:start; } }
+        @media print {
+          .bms-shell .bms-inline-icon,.equipment-card-icon .bms-inline-icon,.weather-summary-card .weather-icon { max-width:40px !important; max-height:40px !important; }
+          .equipment-summary-card,.weather-summary-card { break-inside:avoid; page-break-inside:avoid; }
+          .equipment-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; align-items:start; }
+        }
+    </style>
+    <section class="bms-shell" aria-labelledby="bms-graphic-title">
       <div class="bms-head"><div><span class="bms-kicker">Site equipment</span><h2 id="bms-graphic-title">Loading mirrored equipment…</h2><span class="bms-sub">Waiting for the Cloud inventory mirror.</span></div></div>
       <section class="site-equipment-section" aria-live="polite"><div class="equipment-grid"><article class="tile equipment-summary-card"><div class="equipment-key">Equipment</div><strong class="equipment-reading">Loading…</strong></article></div></section>
     </section>
