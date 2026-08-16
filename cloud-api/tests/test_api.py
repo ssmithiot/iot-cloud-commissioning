@@ -644,28 +644,22 @@ def test_cloud_brand_uses_blue_accents_without_recoloring_semantic_statuses() ->
     assert "--danger: #ff6b6b;" in response.text
 
 
-def test_gateway_workspace_includes_demo_bms_graphic_before_diagnostics() -> None:
+def test_gateway_workspace_includes_mirrored_equipment_grid_before_diagnostics() -> None:
     response = client.get("/gateways/GW777")
 
     assert response.status_code == 200
-    assert "RTU-1 · Rooftop Unit" in response.text
-    assert "Presentation shell only — live point bindings arrive in Phase 2." in response.text
-    assert "Controls are read-only in Phase 1." in response.text
-    assert 'href="/gateways/GW777/points"' in response.text
-    assert response.text.index("RTU-1 · Rooftop Unit") < response.text.index("Cloud BACnet Diagnostics")
+    assert "Loading mirrored equipment…" in response.text
+    assert 'class="site-equipment-section"' in response.text
+    assert 'class="equipment-grid"' in response.text
+    assert '<article class="tile weather-card weather-summary-card">' in response.text
+    assert '<article class="tile equipment-summary-card">' in response.text
+    assert "pointValue(points.get(role))" in response.text
+    assert "RTU-1 · Rooftop Unit" not in response.text
+    assert "Presentation shell only — live point bindings arrive in Phase 2." not in response.text
+    assert response.text.index("Loading mirrored equipment…") < response.text.index("Cloud BACnet Diagnostics")
     assert response.text.index("Cloud BACnet Diagnostics") < response.text.index("<h2>Technical</h2>")
     assert ".bms-shell { height:auto; max-height:none; overflow:visible;" in response.text
-    assert ".bms-trend { margin-top:16px; min-height:250px; height:auto; max-height:none;" in response.text
-    assert "overflow:visible; }" in response.text
     assert "Point Workspace" not in response.text
-    for section in (
-        "Equipment Info", "Weather / Outdoor Air", "Reversing Valve &amp; Alarms",
-        "Space Temp", "Supply Air Temp", "Return Air Temp", "Supply Fan",
-        "Cool Stage 1", "Cool Stage 2", "Heat Stage 1", "Heat Stage 2",
-        "Filter / Damper", "Active Effective Setpoints", "Occupied Setpoints",
-        "Unoccupied Setpoints", "Trend Log — Space Temp vs. Setpoint", "All Points",
-    ):
-        assert section in response.text
 
 
 def test_gateway_all_points_page_uses_edge_live_device_three_columns() -> None:
@@ -712,9 +706,9 @@ def test_gateway_bms_pages_share_persistent_navigation_shell() -> None:
     assert 'data-current-page="weather"' in weather.text
     assert "const gatewayNavCategories = [\"HVAC\", \"Lighting\", \"Shades\", \"Power Monitoring\", \"Indoor Air Quality\"];" in workspace.text
     assert 'System</summary>' in workspace.text
-    assert 'globalLink("points", "All Points", `${base}/points`)' in workspace.text
-    assert 'globalLink("trends", "Trends", `${base}/trends`)' in workspace.text
-    assert 'globalLink("edge", "Edge", `${base}#edge-health`)' in workspace.text
+    assert 'globalLink("points", "All Points", `${base}/points`, "bacnet")' in workspace.text
+    assert 'globalLink("trends", "Trends", `${base}/trends`, "trends")' in workspace.text
+    assert 'globalLink("edge", "Edge", `${base}#edge-health`, "devices")' in workspace.text
     assert 'id="edge-health"' in workspace.text
     assert "api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tree`)" in workspace.text
     assert "No categorized equipment" in workspace.text

@@ -572,7 +572,7 @@ APP_SCRIPT = r"""
     return data.session;
   }
 
-  async function api(path, options = {}) {
+  async function authenticatedResponse(path, options = {}) {
     const session = await getSession();
     if (!session) {
       window.location.assign(statePaths.login);
@@ -584,16 +584,16 @@ APP_SCRIPT = r"""
       ...(options.headers || {})
     };
     const response = await fetch(path, { ...options, headers });
-    const text = await response.text();
-    let body = null;
-    if (text) {
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = { detail: text };
-      }
-    }
     if (!response.ok) {
+      const text = await response.text();
+      let body = null;
+      if (text) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = { detail: text };
+        }
+      }
       if (response.status === 401) {
         window.__cloudIdleStopped = true;
         const client = await getSupabase();
@@ -605,7 +605,54 @@ APP_SCRIPT = r"""
       error.status = response.status;
       throw error;
     }
+    return response;
+  }
+
+  async function api(path, options = {}) {
+    const response = await authenticatedResponse(path, options);
+    const text = await response.text();
+    let body = null;
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = { detail: text };
+      }
+    }
     return body;
+  }
+
+  function csvCell(value) {
+    const text = String(value ?? "");
+    return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  }
+
+  function csvText(rows) {
+    return `${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r\n`;
+  }
+
+  function csvFilename(name, fallback = "mapping-template") {
+    const stem = String(name || fallback).trim().replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "");
+    return `${stem || fallback}.csv`;
+  }
+
+  function downloadCsvText(text, filename) {
+    const url = URL.createObjectURL(new Blob([text], {type:"text/csv;charset=utf-8"}));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  async function downloadMappingTemplateCsv(templateId, templateName) {
+    const response = await authenticatedResponse(`/api/ui/mapping-templates/${encodeURIComponent(templateId)}/export`, {headers:{"Accept":"text/csv"}});
+    const filename = csvFilename(templateName);
+    downloadCsvText(await response.text(), filename);
+    return filename;
   }
 
   async function ensureProfile() {
@@ -3903,25 +3950,65 @@ APP_SCRIPT = r"""
     if (seconds < 3600) return `Updated ${Math.floor(seconds / 60)}m ago`;
     return `Updated ${Math.floor(seconds / 3600)}h ago`;
   }
+
+  function pointFreshness(point) {
+    if (!point) return "Not mapped";
+    const timestamp = point.latest_read_at;
+    if (!timestamp) return "No refresh timestamp";
+    const age = Date.now() - new Date(timestamp).getTime();
+    return `${pointAge(timestamp)}${Number.isFinite(age) && age > 15 * 60 * 1000 ? " · STALE" : ""}`;
+  }
+
+  function formatBmsTime(timestamp) {
+    return timestamp ? new Date(timestamp).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) : "—";
+  }
+
+  function bmsIcon(name, className = "") {
+    const paths = {
+      building: '<path d="M4 21V5a1 1 0 0 1 1-1h7v17M4 21h16M12 7h8v14M8 8h.01M8 12h.01M8 16h.01M16 11h.01M16 15h.01"/>',
+      cloud: '<path d="M7 18a4 4 0 1 1 1.2-7.83A5.5 5.5 0 0 1 18.5 12.5 3.5 3.5 0 0 1 18 19H7z"/>',
+      thermo: '<path d="M14 14.76V4a2 2 0 0 0-4 0v10.76a4 4 0 1 0 4 0Z"/>',
+      fan: '<path d="M12 12a3 3 0 1 0 0-6c-1.2 0-2.4.8-2.9 2.4C8.6 10 8 12 8 12M12 12a3 3 0 1 1 0 6c-1.2 0-2.4-.8-2.9-2.4C8.6 14 8 12 8 12M12 12a3 3 0 1 1 6 0c0 1.2-.8 2.4-2.4 2.9C14 15.4 12 12 12 12"/><circle cx="12" cy="12" r="1"/>',
+      snow: '<path d="M12 2v20M4.5 6.5l15 11M19.5 6.5l-15 11M8 4l4 3 4-3M8 20l4-3 4 3"/>',
+      flame: '<path d="M12 22a6.5 6.5 0 0 0 6.5-6.5c0-4-3-5.5-3-9.5a8 8 0 0 1-3 6c-1-1-1-3-.5-4.5-3 2-5 5-5 8a5.5 5.5 0 0 0 5 6Z"/>',
+      valve: '<path d="M3 12h6M15 12h6M9 12l3-3M9 12l3 3M15 12l-3-3M15 12l-3 3"/><circle cx="12" cy="12" r="9"/>',
+      chart: '<path d="M4 19V5M4 19h16M8 16v-4M12 16V8M16 16V9"/>',
+      info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 8v.01"/>',
+      wind: '<path d="M3 8h11a2.5 2.5 0 1 0-2.2-3.5M3 16h13a2.5 2.5 0 1 1-2.2 3.5M3 12h16a2.5 2.5 0 1 0-2.2-3.5"/>',
+      grid: '<rect x="3" y="3" width="7" height="7" rx="1.2"/><rect x="14" y="3" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><rect x="14" y="14" width="7" height="7" rx="1.2"/>'
+    };
+    return `<svg class="bms-inline-icon ${className}" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.info}</svg>`;
+  }
+
+  function pointStateClass(point) {
+    const state = String(point?.present_value ?? "").trim().toLowerCase();
+    if (!state || ["unknown", "not mapped", "n/a", "null"].includes(state)) return "unknown";
+    if (/(fault|error|failed|critical|alarm)/.test(state)) return "fault";
+    if (/(warn|dirty|attention)/.test(state)) return "warning";
+    if (/^(1|true|active|on|running|run|normal|online|occupied|energized|enabled|clean|open|cooling|heating)$/.test(state)) return "on";
+    if (/^(0|false|inactive|off|idle|standby|disabled|closed|unoccupied)$/.test(state)) return "off";
+    return "unknown";
+  }
+
   function renderSiteEquipmentOverview(tree, weather, templates, gateway) {
     const shell = document.querySelector(".bms-shell");
     if (!shell) return;
     const groups = new Map((tree.groups || []).map((group) => [group.id, group.name]));
-    const classified = tree.devices || [];
-    const byCategory = new Map();
-    for (const device of classified) {
-      const category = groups.get(device.group_id) || "Uncategorized";
-      if (!byCategory.has(category)) byCategory.set(category, []);
-      byCategory.get(category).push(device);
-    }
-    const weatherText = weather?.available ? [weather.temperature_f != null ? `${Math.round(weather.temperature_f)}°F` : null, weather.condition, weather.wind_speed_mph != null ? `${Math.round(weather.wind_speed_mph)} mph wind` : null, weather.sunrise_at ? `Sunrise ${new Date(weather.sunrise_at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}` : null, weather.sunset_at ? `Sunset ${new Date(weather.sunset_at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}` : null, weather.solar_noon_at ? `Solar noon ${new Date(weather.solar_noon_at).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}` : null].filter(Boolean).join(" · ") : (weather?.reason || "Weather unavailable");
+    const classified = [...(tree.devices || [])].sort((a, b) => (groups.get(a.group_id) || "Uncategorized").localeCompare(groups.get(b.group_id) || "Uncategorized") || a.device_instance - b.device_instance);
+    const weatherAvailable = Boolean(weather?.available);
+    const weatherCard = `<article class="tile weather-card weather-summary-card"><div class="tile-head"><div class="tile-title">${bmsIcon("cloud")}Weather</div><span class="badge">${weatherAvailable ? "Live" : "Unavailable"}</span></div><div class="weather-main">${bmsIcon("cloud", "weather-icon")}<div><div class="weather-temp">${escapeHtml(weatherAvailable && weather.temperature_f != null ? `${Math.round(weather.temperature_f)}°F` : "—")}</div><div class="weather-desc">${escapeHtml(weatherAvailable ? (weather.condition || "Conditions unavailable") : (weather?.reason || "Weather unavailable"))}</div></div></div><div class="weather-grid compact-weather-grid"><div class="weather-stat"><span class="k">Wind</span><strong class="v">${escapeHtml(weatherAvailable && weather.wind_speed_mph != null ? `${Math.round(weather.wind_speed_mph)} mph` : "—")}</strong></div><div class="weather-stat"><span class="k">Sunrise</span><strong class="v">${escapeHtml(formatBmsTime(weather?.sunrise_at))}</strong></div><div class="weather-stat"><span class="k">Sunset</span><strong class="v">${escapeHtml(formatBmsTime(weather?.sunset_at))}</strong></div><div class="weather-stat"><span class="k">Solar noon</span><strong class="v">${escapeHtml(formatBmsTime(weather?.solar_noon_at))}</strong></div></div></article>`;
     const tile = (device) => {
       const template = templates[device.template_key];
       const points = new Map((tree.points || []).filter((point) => point.saved_device_id === device.id).map((point) => [point.logical_role, point]));
-      const roles = (template?.summary_roles || []).map((role) => `<div class="equipment-value"><span>${escapeHtml(roleLabel(role))}</span><strong>${escapeHtml(pointValue(points.get(role)))}</strong></div>`).join("");
-      return `<article class="equipment-summary-card"><div class="tile-head"><span class="bms-label">${escapeHtml(template?.label || "Template not configured")}</span><span class="status-pill"><i class="dot"></i>${escapeHtml(gateway?.latest_status || "unknown")}</span></div><h3>${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</h3><div class="bms-sub">${escapeHtml(groups.get(device.group_id) || "Uncategorized")} · Edge mirror</div><div class="equipment-values">${roles || "<div class=\"equipment-value\"><span>Bindings</span><strong>Not mapped</strong></div>"}</div><a class="button secondary" href="/gateways/${encodeURIComponent(device.gateway_id)}/devices/${encodeURIComponent(device.id)}">View Device</a></article>`;
+      const summaryRoles = template?.summary_roles || [];
+      const roles = summaryRoles.map((role) => `<div class="equipment-value"><span class="equipment-key">${escapeHtml(roleLabel(role))}</span><strong class="equipment-reading">${escapeHtml(pointValue(points.get(role)))}</strong></div>`).join("");
+      const deviceStatus = device.lifecycle_state && device.lifecycle_state !== "active" ? device.lifecycle_state : (gateway?.latest_status || device.lifecycle_state || "unknown");
+      const state = pointStateClass({present_value:deviceStatus});
+      const href = `/gateways/${encodeURIComponent(device.gateway_id)}/devices/${encodeURIComponent(device.id)}`;
+      return `<article class="tile equipment-summary-card"><div class="equipment-card-head"><div class="equipment-card-icon">${bmsIcon("building")}</div><div class="equipment-card-title"><h3>${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</h3><span>Device ${escapeHtml(String(device.device_instance))}</span></div><span class="status-pill ${state}"><i class="dot"></i>${escapeHtml(deviceStatus)}</span></div><div class="equipment-card-meta"><span class="badge">${escapeHtml(template?.label || "Template not configured")}</span><span>${escapeHtml(groups.get(device.group_id) || "Uncategorized")} · Edge mirror</span></div><div class="equipment-values">${roles || '<div class="equipment-value"><span class="equipment-key">Bindings</span><strong class="equipment-reading">Not mapped</strong></div>'}</div><button class="secondary equipment-action" type="button" data-device-href="${href}">View Device</button></article>`;
     };
-    shell.innerHTML = `<div class="bms-head"><div><span class="bms-kicker">Site equipment overview</span><h2 id="bms-graphic-title">Equipment</h2><span class="bms-sub">Mirrored Edge inventory and operator bindings.</span></div></div><div class="site-equipment-grid"><article class="equipment-summary-card weather-summary-card"><span class="bms-label">Weather</span><div class="weather-summary-value">${escapeHtml(weatherText)}</div></article>${[...byCategory.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([category, devices]) => `<section class="equipment-category-section"><h3>${escapeHtml(category)}</h3><div class="equipment-card-grid">${devices.sort((a,b) => a.device_instance - b.device_instance).map(tile).join("")}</div></section>`).join("") || "<p>No mirrored devices are available.</p>"}</div>`;
+    shell.innerHTML = `<section class="site-equipment-section"><div class="bms-head"><div><span class="bms-kicker">Site equipment overview</span><h2 id="bms-graphic-title">Equipment</h2><span class="bms-sub">Mirrored Edge inventory and operator bindings.</span></div><span class="workspace-source-badge">${bmsIcon("building")}Cloud workspace</span></div><div class="equipment-grid">${weatherCard}${classified.map(tile).join("") || '<div class="equipment-empty">No mirrored devices are available.</div>'}</div></section>`;
+    shell.querySelectorAll("[data-device-href]").forEach((button) => button.addEventListener("click", () => window.location.assign(button.dataset.deviceHref)));
   }
 
   function resourcePercent(value) {
@@ -4613,11 +4700,41 @@ APP_SCRIPT = r"""
       const template = templates[device.template_key];
       const groups = new Map((tree.groups || []).map((group) => [group.id, group.name]));
       const bound = new Map((tree.points || []).filter((point) => point.saved_device_id === device.id).map((point) => [point.logical_role, point]));
-      const value = (role) => escapeHtml(pointValue(bound.get(role)));
-      const stat = (role, label) => `<article class="tile c-temp"><div class="tile-head"><span class="tile-title">${label}</span></div><div class="stat-value"><span class="num">${value(role)}</span></div><div class="stat-sub">${bound.get(role) ? pointAge(bound.get(role).latest_read_at) : "Not mapped"}</div></article>`;
-      const status = (role, label) => `<article class="tile c-status6 eq-tile"><div class="eq-icon-wrap">●</div><strong class="eq-name">${label}</strong><span class="eq-state">${value(role)}</span></article>`;
-      const weatherValue = weather?.available ? `${weather.temperature_f ?? "—"}°F · ${weather.condition || "—"}` : "Weather unavailable";
-      target.innerHTML = `<div class="rtu-topbar"><div><span class="bms-kicker">Equipment graphic · Edge mirror · read only</span><h2>${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</h2><span class="bms-sub">${escapeHtml(groups.get(device.group_id) || "Uncategorized")}</span></div><div class="type-tabs"><span class="type-tab active">${escapeHtml(template?.label || "Unconfigured")}</span></div><span class="status-pill"><i class="dot"></i>${escapeHtml(device.lifecycle_state || "unknown")}</span><div class="toolbar"><a class="button secondary" href="${pointsLink}">All Points</a><a class="button secondary" href="/gateways/${encodeURIComponent(gatewayId)}/configure-tree">Configure Device</a></div></div><div class="rtu-grid"><article class="tile c-info"><div class="tile-head"><span class="tile-title">Equipment Info</span></div><div class="info-rows"><div class="info-row"><span>Equipment tag</span><b>${escapeHtml(device.device_name || "—")}</b></div><div class="info-row"><span>BACnet instance</span><b>${device.device_instance}</b></div><div class="info-row"><span>Graphic template</span><b>${escapeHtml(template?.label || "—")}</b></div><div class="info-row"><span>Group</span><b>${escapeHtml(groups.get(device.group_id) || "—")}</b></div><div class="info-row"><span>Last Edge refresh</span><b>${escapeHtml(pointAge(device.last_seen_at))}</b></div></div></article><article class="tile c-weather"><div class="tile-head"><span class="tile-title">Weather / Outdoor Air</span></div><div class="weather-main"><span class="weather-temp">${escapeHtml(weatherValue)}</span></div><div class="weather-grid"><div class="weather-stat">Wind<br><b>${escapeHtml(weather?.wind_speed_mph != null ? `${weather.wind_speed_mph} mph` : "—")}</b></div><div class="weather-stat">Sunrise<br><b>${escapeHtml(weather?.sunrise_at ? new Date(weather.sunrise_at).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}) : "—")}</b></div></div></article><article class="tile c-alarm"><div class="tile-head"><span class="tile-title">Reversing Valve & Alarms</span></div><div class="info-rows"><div class="info-row"><span>Reversing valve</span><b>${value("reversing_valve")}</b></div><div class="info-row"><span>Alarm count</span><b>${value("alarm_count")}</b></div><div class="info-row"><span>Communication</span><b>${escapeHtml(device.lifecycle_state || "unknown")}</b></div></div></article>${stat("space_temp","Space Temp")}${stat("supply_air_temp","Supply Air Temp")}${stat("return_air_temp","Return Air Temp")}${["supply_fan_status","cool_stage_1","cool_stage_2","heat_stage_1","heat_stage_2","filter_status"].map((role)=>status(role,roleLabel(role))).join("")}<article class="tile c-setpoint"><div class="tile-head"><span class="tile-title">Active Effective Setpoints</span><span class="badge">Read only</span></div><div class="weather-grid"><div class="weather-stat">Cool to<br><b>${value("effective_cool_sp")}</b></div><div class="weather-stat">Heat to<br><b>${value("effective_heat_sp")}</b></div></div><p class="bms-sub">Controls disabled — BACnet writes are not enabled.</p></article><article class="tile c-trend"><div class="tile-head"><span class="tile-title">Trend Log</span><span class="badge">Not yet bound</span></div><div class="trend-empty">No trend series is connected to this graphic. No synthetic data is shown.</div></article></div>`;
+      const displayPoint = (role) => {
+        const point = bound.get(role);
+        return {
+          point,
+          value: point ? String(point.present_value ?? "—") : "—",
+          units: point?.units || "",
+          freshness: pointFreshness(point)
+        };
+      };
+      const tileTitle = (icon, text) => `<div class="tile-title">${bmsIcon(icon)}${text}</div>`;
+      const statTile = (role, label) => {
+        const display = displayPoint(role);
+        return `<article class="tile c-temp"><div class="tile-head">${tileTitle("thermo", label)}</div><div class="stat-value"><span class="num">${escapeHtml(display.value)}</span>${display.units ? `<span class="unit">${escapeHtml(display.units)}</span>` : ""}</div><div class="stat-sub">${escapeHtml(display.freshness)}</div></article>`;
+      };
+      const statusIcon = {supply_fan_status:"fan", cool_stage_1:"snow", cool_stage_2:"snow", heat_stage_1:"flame", heat_stage_2:"flame", filter_status:"wind"};
+      const statusTile = (role, label) => {
+        const display = displayPoint(role);
+        const state = pointStateClass(display.point);
+        return `<article class="tile c-status6 eq-tile ${state}"><div class="eq-icon-wrap">${bmsIcon(statusIcon[role] || "info")}</div><div class="eq-copy"><div class="eq-name">${escapeHtml(label)}</div><div class="eq-state"><span class="sdot"></span><span>${escapeHtml(display.point ? display.value : "Not mapped")}</span></div></div><div class="eq-meta">${escapeHtml(display.freshness)}</div></article>`;
+      };
+      const weatherAvailable = Boolean(weather?.available);
+      const weatherTemperature = weatherAvailable && weather.temperature_f != null ? `${Math.round(weather.temperature_f)}°F` : "—";
+      const weatherCondition = weatherAvailable ? (weather.condition || "Conditions unavailable") : (weather?.reason || "Weather unavailable");
+      const reversingValve = displayPoint("reversing_valve");
+      const reversingState = pointStateClass(reversingValve.point);
+      const alarmCount = displayPoint("alarm_count");
+      const numericAlarmCount = Number(alarmCount.point?.present_value);
+      const alarmClass = alarmCount.point && Number.isFinite(numericAlarmCount) ? (numericAlarmCount === 0 ? "good-text" : "warning-text") : "";
+      const occupancy = displayPoint("occupancy_mode");
+      const communicationState = tree.gateway?.latest_status || device.lifecycle_state || "unknown";
+      const deviceState = pointStateClass({present_value:communicationState});
+      const topStatus = occupancy.point ? `${occupancy.value} · ${communicationState}` : communicationState;
+      const setpointDisplay = (role) => escapeHtml(pointValue(bound.get(role)));
+      const setpointRow = (label, coolRole, heatRole, badge, badgeClass) => `<div class="sp-block"><div class="sp-label-row"><span class="sp-label">${label}</span><span class="sp-mode-badge ${badgeClass}">${badge}</span></div><div class="readonly-setpoint-grid"><div class="stepper-group"><span class="lbl">Cool</span><span class="step-val">${setpointDisplay(coolRole)}</span></div><div class="stepper-group"><span class="lbl">Heat</span><span class="step-val">${setpointDisplay(heatRole)}</span></div></div></div>`;
+      target.innerHTML = `<div class="topbar equipment-topbar"><div class="topbar-left"><div class="brand"><div class="brand-mark">${bmsIcon("building")}</div><div class="brand-text"><div class="tag">${escapeHtml(device.device_name || `Device ${device.device_instance}`)}</div><div class="sub">${escapeHtml(groups.get(device.group_id) || "Uncategorized")} · Device ${escapeHtml(String(device.device_instance))}</div></div></div><div class="type-tabs"><span class="type-tab active">${escapeHtml(template?.label || "Unconfigured")}</span></div><span class="status-pill ${deviceState}"><i class="dot"></i>${escapeHtml(topStatus)}</span></div><div class="topbar-right"><span class="mirror-source">Edge mirror · read only</span><a class="ghost-btn" href="${pointsLink}">${bmsIcon("grid")}All Points</a><a class="primary-btn" href="/gateways/${encodeURIComponent(gatewayId)}/configure-tree">Configure Device</a></div></div><div class="rtu-grid"><article class="tile c-info"><div class="tile-head">${tileTitle("info", "Equipment Info")}<span class="badge">Edge mirror</span></div><div class="info-rows"><div class="info-row"><span class="k">Equipment tag</span><span class="v">${escapeHtml(device.device_name || "—")}</span></div><div class="info-row"><span class="k">BACnet instance</span><span class="v">${escapeHtml(String(device.device_instance))}</span></div><div class="info-row"><span class="k">Graphic template</span><span class="v">${escapeHtml(template?.label || "Not configured")}</span></div><div class="info-row"><span class="k">Category / group</span><span class="v">${escapeHtml(groups.get(device.group_id) || "Uncategorized")}</span></div><div class="info-row"><span class="k">Inventory state</span><span class="v">${escapeHtml(device.lifecycle_state || "unknown")}</span></div><div class="info-row"><span class="k">Last Edge refresh</span><span class="v">${escapeHtml(pointAge(device.last_seen_at))}</span></div></div></article><article class="tile c-weather weather-card"><div class="tile-head">${tileTitle("cloud", "Weather / Outdoor Air")}<span class="badge">${weatherAvailable ? "Live" : "Unavailable"}</span></div><div class="weather-main">${bmsIcon("cloud", "weather-icon")}<div><div class="weather-temp">${escapeHtml(weatherTemperature)}</div><div class="weather-desc">${escapeHtml(weatherCondition)}</div></div></div><div class="weather-grid"><div class="weather-stat"><span class="k">Humidity</span><strong class="v">${escapeHtml(weatherAvailable && weather.relative_humidity_percent != null ? `${weather.relative_humidity_percent}%` : "—")}</strong></div><div class="weather-stat"><span class="k">Wind</span><strong class="v">${escapeHtml(weatherAvailable && weather.wind_speed_mph != null ? `${Math.round(weather.wind_speed_mph)} mph` : "—")}</strong></div><div class="weather-stat"><span class="k">Sunrise</span><strong class="v">${escapeHtml(formatBmsTime(weather?.sunrise_at))}</strong></div><div class="weather-stat"><span class="k">Sunset</span><strong class="v">${escapeHtml(formatBmsTime(weather?.sunset_at))}</strong></div></div><div class="weather-solar">Solar noon ${escapeHtml(formatBmsTime(weather?.solar_noon_at))}</div></article><article class="tile c-alarm"><div class="tile-head">${tileTitle("valve", "Reversing Valve & Alarms")}</div><div class="alarm-equipment eq-tile ${reversingState}"><div class="eq-icon-wrap">${bmsIcon("valve")}</div><div class="eq-copy"><div class="eq-name">Reversing Valve</div><div class="eq-state"><span class="sdot"></span><span>${escapeHtml(reversingValve.point ? reversingValve.value : "Not mapped")}</span></div></div></div><div class="info-rows alarm-rows"><div class="info-row"><span class="k">Active alarms</span><span class="v ${alarmClass}">${escapeHtml(alarmCount.point ? alarmCount.value : "Not mapped")}</span></div><div class="info-row"><span class="k">Communication</span><span class="v">${escapeHtml(communicationState)}</span></div><div class="info-row"><span class="k">Source</span><span class="v">Cached Edge inventory</span></div></div></article>${statTile("space_temp","Space Temp")}${statTile("supply_air_temp","Supply Air Temp")}${statTile("return_air_temp","Return Air Temp")}${["supply_fan_status","cool_stage_1","cool_stage_2","heat_stage_1","heat_stage_2","filter_status"].map((role) => statusTile(role, role === "filter_status" ? "Filter / Damper" : roleLabel(role))).join("")}<article class="tile c-setpoint"><div class="tile-head">${tileTitle("thermo", "Active Effective Setpoints")}<span class="sp-mode-badge ${occupancy.point ? "active" : "idle"}">${escapeHtml(occupancy.point ? occupancy.value : "Read only")}</span></div><div class="sp-active-values"><div class="sp-active-card cool"><span class="k">Cool to</span><strong class="num">${setpointDisplay("effective_cool_sp")}</strong></div><div class="sp-active-card heat"><span class="k">Heat to</span><strong class="num">${setpointDisplay("effective_heat_sp")}</strong></div></div>${setpointRow("Occupied Setpoints", "occupied_cool_sp", "occupied_heat_sp", occupancy.point ? "Configured" : "Read only", occupancy.point ? "active" : "idle")}${setpointRow("Unoccupied Setpoints", "unoccupied_cool_sp", "unoccupied_heat_sp", "Standby", "idle")}<div class="readonly-note">BACnet writes are not enabled.</div></article><article class="tile c-trend"><div class="trend-head">${tileTitle("chart", "Trend Log — Space Temp vs. Setpoint")}<span class="badge">Not yet bound</span><div class="range-tabs" aria-label="Trend ranges unavailable"><button class="range-tab" type="button" disabled>4H</button><button class="range-tab active" type="button" disabled>24H</button><button class="range-tab" type="button" disabled>7D</button><button class="range-tab" type="button" disabled>30D</button></div></div><div class="trend-chart-wrap"><div class="trend-empty">No trend series connected to this graphic.</div></div></article></div>`;
     } catch (error) {
       target.innerHTML = `<div class="bms-head"><div><span class="bms-kicker">Mirrored device</span><h2>Device unavailable</h2><span class="bms-sub">${escapeHtml(errorMessage(error))}</span></div><a class="button secondary" href="${pointsLink}">View All Points</a></div><p class="bms-sub">The device route remains available while Cloud inventory refreshes.</p>`;
     }
@@ -4632,12 +4749,46 @@ APP_SCRIPT = r"""
     const groups = new Map((tree.groups || []).map((group) => [group.name, group]));
     const manager = byId("mapping-template-manager");
     if (manager) {
-      const example = "template_name,graphic_template,logical_role,match_field,match_value,object_type,required\\nSE8650 RTU,rtu,space_temp,object_name,Room Temperature,analog-value,false\\nSE8650 RTU,rtu,supply_air_temp,object_name,UI22 Supply Temperature,analog-value,false\\nSE8650 RTU,rtu,occupancy_mode,object_name,Effective Occupancy,multi-state-input,false\\n";
-      manager.innerHTML = `<section class="mapping-manager"><div class="tile-head"><div><strong>Point Mapping Templates</strong><div class="bms-sub">${mappingTemplates.length} reusable controller mapping${mappingTemplates.length === 1 ? "" : "s"}</div></div><div class="toolbar"><label class="button secondary" for="mapping-template-file">Import CSV</label><input id="mapping-template-file" type="file" accept=".csv,text/csv" hidden><button id="download-mapping-example" class="secondary" type="button">Download Example CSV</button></div></div><div id="mapping-import-status" class="bms-sub"></div><div class="mapping-template-list">${mappingTemplates.map((item) => `<article><strong>${escapeHtml(item.name)}</strong><span class="badge">${escapeHtml(item.graphic_template_key)}</span><span class="bms-sub">${item.rules.length} rules</span><details><summary>View Rules</summary><ul>${item.rules.map((rule) => `<li>${escapeHtml(rule.logical_role)} ← ${escapeHtml(rule.match_value)}</li>`).join("")}</ul></details><a class="button secondary" href="/api/ui/mapping-templates/${encodeURIComponent(item.id)}/export">Export CSV</a></article>`).join("") || "<p class=\"bms-sub\">Create one from a configured device or import a CSV.</p>"}</div></section>`;
+      const example = csvText([
+        ["template_name","graphic_template","logical_role","match_field","match_value","object_type","required"],
+        ["SE8650 RTU","rtu","space_temp","object_name","Room Temperature","analog-value","false"],
+        ["SE8650 RTU","rtu","supply_air_temp","object_name","UI22 Supply Temperature","analog-value","false"],
+        ["SE8650 RTU","rtu","occupancy_mode","object_name","Effective Occupancy","multi-state-input","false"],
+        ["SE8650 RTU","rtu","cool_stage_1","object_name","Y1 Status","binary-output","false"],
+        ["SE8650 RTU","rtu","cool_stage_2","object_name","Y2 Status","binary-output","false"],
+        ["SE8650 RTU","rtu","heat_stage_1","object_name","W1 Status","binary-output","false"],
+        ["SE8650 RTU","rtu","heat_stage_2","object_name","W2/OB Status","binary-output","false"]
+      ]);
+      manager.innerHTML = `<section class="mapping-manager"><div class="tile-head"><div><strong>Point Mapping Templates</strong><div class="bms-sub">${mappingTemplates.length} reusable controller mapping${mappingTemplates.length === 1 ? "" : "s"}</div></div><div class="toolbar"><label class="button secondary" for="mapping-template-file">Import CSV</label><input id="mapping-template-file" type="file" accept=".csv,text/csv" hidden><button id="download-mapping-example" class="secondary" type="button">Download Example CSV</button></div></div><div id="mapping-import-status" class="bms-sub"></div><div class="mapping-template-list">${mappingTemplates.map((item) => `<article><strong>${escapeHtml(item.name)}</strong><span class="badge">${escapeHtml(item.graphic_template_key)}</span><span class="bms-sub">${item.rules.length} rules</span><details><summary>View Rules</summary><ul>${item.rules.map((rule) => `<li>${escapeHtml(rule.logical_role)} ← ${escapeHtml(rule.match_value)}</li>`).join("")}</ul></details><button class="secondary export-mapping-template-item" type="button" data-mapping-template-id="${escapeHtml(item.id)}" data-mapping-template-name="${escapeHtml(item.name)}">Export CSV</button></article>`).join("") || "<p class=\"bms-sub\">Create one from a configured device or import a CSV.</p>"}</div></section>`;
+      manager.querySelectorAll(".export-mapping-template-item").forEach((button) => {
+        const templateId = button.dataset.mappingTemplateId;
+        const templateName = button.dataset.mappingTemplateName;
+        button.onclick = async () => {
+          try {
+            const filename = await downloadMappingTemplateCsv(templateId, templateName);
+            setText("mapping-import-status", `Downloaded ${filename}`);
+          } catch (error) {
+            setText("mapping-import-status", `Export failed: ${errorMessage(error)}`, true);
+          }
+        };
+      });
       manager.querySelector(".toolbar").insertAdjacentHTML("beforeend", `<select id="mapping-template-export" aria-label="Template to export"><option value="">Choose template</option>${mappingTemplates.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("")}</select><button id="export-mapping-template" class="secondary" type="button" ${mappingTemplates.length ? "" : "disabled"}>Export CSV</button><button id="manage-mapping-templates" class="secondary" type="button">Manage Templates</button>`);
       byId("mapping-template-file").onchange = async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const created = await api("/api/ui/mapping-templates/import", {method:"POST", body:JSON.stringify(await file.text())}); setText("mapping-import-status", `Imported ${created.name} — ${created.rules.length} rules.`); await initConfigureTree(); } catch (error) { setText("mapping-import-status", `Import failed: ${errorMessage(error)}`, true); } };
-      byId("download-mapping-example").onclick = () => { const url = URL.createObjectURL(new Blob([example], {type:"text/csv"})); const link=document.createElement("a"); link.href=url; link.download="se8650-rtu-example.csv"; link.click(); URL.revokeObjectURL(url); };
-      byId("export-mapping-template").onclick = () => { const templateId = byId("mapping-template-export").value; if (!templateId) return setText("mapping-import-status", "Choose a template to export.", true); window.location.assign(`/api/ui/mapping-templates/${encodeURIComponent(templateId)}/export`); };
+      byId("download-mapping-example").onclick = () => {
+        downloadCsvText(example, "se8650-rtu-example.csv");
+        setText("mapping-import-status", "Downloaded se8650-rtu-example.csv");
+      };
+      byId("export-mapping-template").onclick = async () => {
+        const templateId = byId("mapping-template-export").value;
+        if (!templateId) return setText("mapping-import-status", "Choose a template to export.", true);
+        const item = mappingTemplates.find((candidate) => candidate.id === templateId);
+        try {
+          const filename = await downloadMappingTemplateCsv(templateId, item?.name);
+          setText("mapping-import-status", `Downloaded ${filename}`);
+        } catch (error) {
+          setText("mapping-import-status", `Export failed: ${errorMessage(error)}`, true);
+        }
+      };
       byId("manage-mapping-templates").onclick = () => manager.querySelector(".mapping-template-list")?.scrollIntoView({behavior:"smooth", block:"start"});
     }
     body.innerHTML = (tree.devices || []).map((device) => {
@@ -7708,8 +7859,63 @@ def gateway_workspace_html(gateway_id: str) -> str:
         .bms-trend svg { width:100%; height:180px; display:block; } .bms-range{float:right;display:flex;gap:5px}.bms-range button{min-height:25px;padding:3px 8px}.bms-range button[disabled]{cursor:default;opacity:.7} @media (max-width:760px){ .bms-tile,.bms-tile.wide,.bms-tile.third,.bms-tile.status,.bms-tile.setpoint{grid-column:span 12;} }
         .site-equipment-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px; margin-top:16px; min-width:0; } .equipment-category-section { grid-column:1 / -1; min-width:0; } .equipment-category-section > h3 { margin:0 0 8px; } .equipment-card-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; min-width:0; } .equipment-summary-card { min-width:0; padding:16px; border:1px solid var(--border); border-radius:10px; background:rgba(4,12,14,.42); overflow-wrap:anywhere; } body[data-theme="light"] .equipment-summary-card { background:rgba(255,255,255,.7); } .equipment-summary-card h3 { margin:6px 0; font-size:18px; } .equipment-summary-card ul { margin:12px 0; padding-left:18px; display:grid; gap:5px; } .weather-summary-card { background:linear-gradient(135deg,rgba(59,130,246,.22),rgba(11,20,23,.42)); } .weather-summary-value { margin-top:10px; font-size:18px; line-height:1.45; font-weight:700; } @media (max-width:700px) { .site-equipment-grid,.equipment-card-grid { grid-template-columns:1fr; } }
       </style>
+      <style>
+        .bms-shell {{
+          --bg-surface:#121317; --bg-tile:#16181d; --bg-tile-alt:#1b1e24; --bg-raised:#1f232a;
+          --border:rgba(255,255,255,.09); --border-strong:rgba(255,255,255,.16);
+          --text-primary:#fff; --text-secondary:#aab2c0; --text-muted:#6d7684;
+          --accent:#3987e5; --accent-dim:#1c5cab; --accent-soft:rgba(57,135,229,.14);
+          --accent-soft-strong:rgba(57,135,229,.28); --good:#0ca30c; --good-soft:rgba(12,163,12,.16);
+          --critical:#e66767; --critical-soft:rgba(230,103,103,.14); --warning:#fab219;
+          --warning-soft:rgba(250,178,25,.14); --off:#4a5058;
+          --shadow:0 1px 0 rgba(255,255,255,.03) inset,0 8px 20px rgba(0,0,0,.35);
+          color:var(--text-primary); overflow-x:hidden;
+        }}
+        body[data-theme="light"] .bms-shell {{
+          --bg-surface:#fff; --bg-tile:#fff; --bg-tile-alt:#f4f6f9; --bg-raised:#fff;
+          --border:rgba(11,17,26,.10); --border-strong:rgba(11,17,26,.18);
+          --text-primary:#0b0f14; --text-secondary:#4c5766; --text-muted:#7a8494;
+          --accent:#2a78d6; --accent-dim:#184f95; --accent-soft:rgba(42,120,214,.10);
+          --accent-soft-strong:rgba(42,120,214,.20); --critical:#d03b3b;
+          --critical-soft:rgba(208,59,59,.10); --warning:#c98500; --warning-soft:rgba(201,133,0,.12);
+          --off:#aab2c0; --shadow:0 1px 0 rgba(255,255,255,.6) inset,0 6px 16px rgba(20,30,45,.08);
+        }}
+        .site-equipment-section {{ min-width:0; }}
+        .equipment-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,285px),1fr)); gap:14px; margin-top:18px; min-width:0; }}
+        .bms-shell .tile {{ min-width:0; padding:16px; border:1px solid var(--border); border-radius:12px; background:var(--bg-tile); box-shadow:var(--shadow); overflow:hidden; }}
+        .bms-shell .tile-head {{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }}
+        .bms-shell .tile-title {{ display:flex; align-items:center; gap:8px; color:var(--text-muted); font-size:11.5px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; }}
+        .bms-inline-icon {{ width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex:none; }}
+        .bms-shell .tile-title .bms-inline-icon {{ color:var(--accent); }}
+        .workspace-source-badge {{ display:flex; align-items:center; gap:7px; color:var(--accent); background:var(--accent-soft); border-radius:18px; padding:7px 10px; font-size:11px; font-weight:700; text-transform:uppercase; }}
+        .bms-shell .badge {{ display:inline-flex; color:var(--accent); background:var(--accent-soft); border-radius:5px; padding:3px 7px; font-size:10px; font-weight:700; letter-spacing:.3px; text-transform:uppercase; }}
+        .weather-summary-card {{ background:linear-gradient(145deg,var(--accent-soft),var(--bg-tile) 62%) !important; }}
+        .weather-main {{ display:flex; align-items:center; gap:12px; margin-bottom:10px; }}
+        .weather-icon {{ width:42px; height:42px; color:var(--accent); }}
+        .weather-temp {{ color:var(--text-primary); font-size:30px; font-weight:650; line-height:1; }}
+        .weather-desc {{ margin-top:4px; color:var(--text-secondary); font-size:12px; }}
+        .weather-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }}
+        .weather-stat {{ display:grid; gap:3px; min-width:0; padding:8px 9px; border:1px solid var(--border); border-radius:8px; background:var(--bg-tile-alt); }}
+        .weather-stat .k {{ color:var(--text-muted); font-size:10px; font-weight:700; letter-spacing:.3px; text-transform:uppercase; }}
+        .weather-stat .v {{ color:var(--text-primary); font-size:13px; overflow-wrap:anywhere; }}
+        .equipment-card-head {{ display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; }}
+        .equipment-card-icon {{ display:grid; width:38px; height:38px; place-items:center; border-radius:9px; color:var(--accent); background:var(--accent-soft); }}
+        .equipment-card-title {{ min-width:0; }} .equipment-card-title h3 {{ margin:0; color:var(--text-primary); font-size:16px; overflow-wrap:anywhere; }}
+        .equipment-card-title > span {{ color:var(--text-muted); font-size:11px; }}
+        .status-pill {{ display:inline-flex; align-items:center; gap:6px; padding:5px 8px; border-radius:16px; color:var(--text-muted); background:var(--bg-tile-alt); font-size:10px; font-weight:700; letter-spacing:.25px; text-transform:uppercase; }}
+        .status-pill .dot {{ width:6px; height:6px; border-radius:50%; background:currentColor; }}
+        .status-pill.on {{ color:var(--good); background:var(--good-soft); }} .status-pill.warning {{ color:var(--warning); background:var(--warning-soft); }} .status-pill.fault {{ color:var(--critical); background:var(--critical-soft); }}
+        .equipment-card-meta {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0; color:var(--text-muted); font-size:11px; }}
+        .equipment-values {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; }}
+        .equipment-value {{ display:grid; gap:4px; min-width:0; padding:9px; border:1px solid var(--border); border-radius:8px; background:var(--bg-tile-alt); }}
+        .equipment-key {{ color:var(--text-muted); font-size:10px; font-weight:700; letter-spacing:.25px; text-transform:uppercase; }}
+        .equipment-reading {{ color:var(--text-primary); font-size:13px; overflow-wrap:anywhere; }}
+        .equipment-action {{ width:100%; margin-top:12px; }}
+        .equipment-empty {{ grid-column:1/-1; padding:28px; border:1px dashed var(--border-strong); border-radius:12px; color:var(--text-muted); text-align:center; }}
+        @media (max-width:560px) {{ .equipment-values,.weather-grid {{ grid-template-columns:1fr; }} .equipment-card-head {{ grid-template-columns:auto minmax(0,1fr); }} .equipment-card-head .status-pill {{ grid-column:1/-1; justify-self:start; }} }}
+      </style>
       <div class="bms-head"><div><span class="bms-kicker">Site equipment</span><h2 id="bms-graphic-title">Loading mirrored equipment…</h2><span class="bms-sub">Waiting for the Cloud inventory mirror.</span></div></div>
-      <div class="site-equipment-grid" aria-live="polite"><article class="equipment-summary-card"><span class="bms-label">Equipment</span><div class="weather-summary-value">Loading…</div></article></div>
+      <section class="site-equipment-section" aria-live="polite"><div class="equipment-grid"><article class="tile equipment-summary-card"><div class="equipment-key">Equipment</div><strong class="equipment-reading">Loading…</strong></article></div></section>
     </section>
     <details class="workspace-panel technical-diagnostics">
       <summary>Technical diagnostics (not required for mirrored Cloud inventory)</summary>
@@ -7797,8 +8003,79 @@ def gateway_bms_shell_html(gateway_id: str, page: str, device_id: str | None = N
   <header><h1 id="gateway-bms-page-title">{title}</h1><div class="toolbar"><span id="identity"></span><button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Light Mode</button><a class="button secondary" href="/app">Dashboard</a><button id="logout" class="secondary" type="button">Logout</button></div></header>
   <main class="gateway-nav-content"><section class="gateway-bms-shell"><span class="eyebrow">Gateway BMS</span><h2>{title}</h2><p>{detail}</p>{'<div id="device-graphic" class="bms-shell"></div>' if page == 'device' else ''}{'<div id="mapping-template-manager"></div><div id="configure-tree-body" class="configure-device-grid"></div><button id="save-configure-tree" type="button">Save configuration</button><div id="configure-tree-status" class="notice" aria-live="polite"></div>' if page == 'configure-tree' else ''}</section></main>
   <style>body[data-page="gateway-bms"]{{color-scheme:dark;--bg-page:#08090b;--bg-surface:#121317;--bg-tile:#16181d;--bg-tile-alt:#1b1e24;--border:rgba(255,255,255,.09);--border-strong:rgba(255,255,255,.16);--ink:#fff;--muted:#aab2c0;--accent:#3987e5;--accent-dim:#1c5cab;--shadow:0 1px 0 rgba(255,255,255,.03) inset,0 8px 20px rgba(0,0,0,.35);min-height:100vh;background:var(--bg-page);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}}body[data-page="gateway-bms"][data-theme="light"]{{color-scheme:light;--bg-page:#eef1f5;--bg-surface:#fff;--bg-tile:#fff;--bg-tile-alt:#f4f6f9;--border:rgba(11,17,26,.10);--border-strong:rgba(11,17,26,.18);--ink:#0b0f14;--muted:#4c5766;--accent:#2a78d6;--accent-dim:#184f95;--shadow:0 1px 0 rgba(255,255,255,.6) inset,0 6px 16px rgba(20,30,45,.08)}}body[data-page="gateway-bms"] header{{border-bottom:1px solid var(--border);background:var(--bg-surface);padding:18px clamp(18px,3vw,38px)}}body[data-page="gateway-bms"] main{{width:100%;max-width:none;margin:0;padding:clamp(16px,2.5vw,32px)}}body[data-page="gateway-bms"] button.secondary,body[data-page="gateway-bms"] .button.secondary{{color:var(--ink);background:var(--bg-tile-alt);border-color:var(--border)}}.gateway-bms-shell{{padding:20px;border:1px solid var(--border);border-radius:12px;background:var(--bg-surface);box-shadow:var(--shadow)}}.gateway-bms-shell h2{{color:var(--ink)}}.gateway-bms-shell p{{color:var(--muted)}}.configure-device-grid,.rtu-graphic-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin:16px 0}}.configure-device-card,.rtu-value-card{{min-width:0;padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--bg-tile);box-shadow:var(--shadow)}}.configure-device-card h3{{margin:5px 0 14px}}.configure-fields{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}}.configure-fields label,.binding-row{{display:grid;gap:6px;color:var(--muted);font-size:12px;font-weight:700}}.binding-details{{margin-top:14px;border-top:1px solid var(--border);padding-top:12px}}.binding-details summary{{cursor:pointer;color:var(--ink);font-weight:700}}.binding-grid{{display:grid;gap:8px;margin-top:12px}}.binding-row{{grid-template-columns:minmax(0,1fr) minmax(160px,1fr);align-items:center}}body[data-page="gateway-bms"] select,body[data-page="gateway-bms"] input{{width:100%;color:var(--ink);background:var(--bg-tile-alt);border:1px solid var(--border-strong);border-radius:8px;padding:8px 10px;font:inherit}}body[data-page="gateway-bms"] select option{{color:var(--ink);background:var(--bg-surface)}}body[data-page="gateway-bms"] select:hover,body[data-page="gateway-bms"] input:hover{{border-color:var(--accent)}}body[data-page="gateway-bms"] select:focus,body[data-page="gateway-bms"] input:focus{{outline:2px solid color-mix(in srgb,var(--accent) 55%,transparent);outline-offset:2px;border-color:var(--accent)}}.rtu-value-card .bms-value{{font-size:28px;font-weight:700;margin:7px 0}}@media(max-width:680px){{.configure-fields,.binding-row{{grid-template-columns:1fr}}}}</style>"""
-    body = body.replace("</style>", """.rtu-topbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 16px;margin-bottom:14px;background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow)}.rtu-topbar .toolbar{margin-left:auto}.rtu-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px}.rtu-grid .tile{min-width:0;padding:14px;background:var(--bg-tile);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow)}.c-info,.c-weather,.c-alarm,.c-temp,.c-setpoint{grid-column:span 4}.c-status6{grid-column:span 2}.c-trend{grid-column:span 12}.tile-head,.info-row{display:flex;justify-content:space-between;gap:10px}.tile-title{color:var(--muted);font-size:11px;font-weight:700;text-transform:uppercase}.info-rows{display:grid;gap:8px;margin-top:12px}.info-row{font-size:13px;color:var(--muted)}.info-row b{color:var(--ink);text-align:right}.weather-temp,.num{font-size:32px;font-weight:700}.weather-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.weather-stat{padding:8px;background:var(--bg-tile-alt);border:1px solid var(--border);border-radius:8px;color:var(--muted)}.weather-stat b{color:var(--ink)}.eq-tile{gap:8px}.eq-icon-wrap{color:var(--accent)}.eq-state{color:var(--muted);font-size:12px}.trend-empty{padding:24px;color:var(--muted);text-align:center}@media(max-width:900px){.c-info,.c-weather,.c-alarm,.c-temp,.c-setpoint{grid-column:span 6}.c-status6{grid-column:span 4}}@media(max-width:640px){.c-info,.c-weather,.c-alarm,.c-temp,.c-setpoint,.c-status6{grid-column:span 12}}</style>""")
     body += "<style>.binding-conflict{padding:7px;border:1px solid #e66767;border-radius:8px;background:rgba(230,103,103,.14)}</style>"
+    body += """<style>
+body[data-page="gateway-bms"]{
+  --bg-page:#08090b;--bg-surface:#121317;--bg-tile:#16181d;--bg-tile-alt:#1b1e24;--bg-raised:#1f232a;
+  --border:rgba(255,255,255,.09);--border-strong:rgba(255,255,255,.16);
+  --text-primary:#fff;--text-secondary:#aab2c0;--text-muted:#6d7684;
+  --accent:#3987e5;--accent-dim:#1c5cab;--accent-soft:rgba(57,135,229,.14);--accent-soft-strong:rgba(57,135,229,.28);
+  --series-1:#3987e5;--series-2:#d95926;--track:#262a31;
+  --good:#0ca30c;--good-soft:rgba(12,163,12,.16);--critical:#e66767;--critical-soft:rgba(230,103,103,.14);
+  --warning:#fab219;--warning-soft:rgba(250,178,25,.14);--off:#4a5058;
+  --shadow:0 1px 0 rgba(255,255,255,.03) inset,0 8px 20px rgba(0,0,0,.35);
+  --ink:var(--text-primary);--muted:var(--text-secondary);overflow-x:hidden;
+}
+body[data-page="gateway-bms"][data-theme="light"]{
+  --bg-page:#eef1f5;--bg-surface:#fff;--bg-tile:#fff;--bg-tile-alt:#f4f6f9;--bg-raised:#fff;
+  --border:rgba(11,17,26,.10);--border-strong:rgba(11,17,26,.18);
+  --text-primary:#0b0f14;--text-secondary:#4c5766;--text-muted:#7a8494;
+  --accent:#2a78d6;--accent-dim:#184f95;--accent-soft:rgba(42,120,214,.10);--accent-soft-strong:rgba(42,120,214,.20);
+  --series-1:#2a78d6;--series-2:#eb6834;--track:#e3e8ee;
+  --good:#0ca30c;--good-soft:rgba(12,163,12,.12);--critical:#d03b3b;--critical-soft:rgba(208,59,59,.10);
+  --warning:#c98500;--warning-soft:rgba(201,133,0,.12);--off:#aab2c0;
+  --shadow:0 1px 0 rgba(255,255,255,.6) inset,0 6px 16px rgba(20,30,45,.08);
+}
+body[data-page="gateway-bms"] .gateway-bms-shell{background:transparent;border:0;box-shadow:none;padding:0;}
+body[data-page="gateway-bms"] .gateway-bms-shell>h2,body[data-page="gateway-bms"] .gateway-bms-shell>p,body[data-page="gateway-bms"] .gateway-bms-shell>.eyebrow{display:none;}
+body[data-page="gateway-bms"] .bms-inline-icon{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none;}
+body[data-page="gateway-bms"] .topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:12px 16px;margin-bottom:14px;background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);}
+body[data-page="gateway-bms"] .topbar-left,body[data-page="gateway-bms"] .topbar-right{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+body[data-page="gateway-bms"] .brand{display:flex;align-items:center;gap:10px;}
+body[data-page="gateway-bms"] .brand-mark{display:grid;width:36px;height:36px;place-items:center;border-radius:8px;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent-dim));}
+body[data-page="gateway-bms"] .brand-mark .bms-inline-icon{width:20px;height:20px;}
+body[data-page="gateway-bms"] .brand-text .tag{color:var(--text-primary);font-size:15px;font-weight:700;letter-spacing:.2px;}
+body[data-page="gateway-bms"] .brand-text .sub{margin-top:2px;color:var(--text-muted);font-size:11.5px;}
+body[data-page="gateway-bms"] .type-tabs{display:flex;gap:4px;padding:3px;border:1px solid var(--border);border-radius:9px;background:var(--bg-tile-alt);}
+body[data-page="gateway-bms"] .type-tab{padding:6px 12px;border-radius:7px;color:#fff;background:var(--accent);font-size:12px;font-weight:700;}
+body[data-page="gateway-bms"] .status-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border-radius:20px;color:var(--text-muted);background:var(--bg-tile-alt);font-size:11px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;}
+body[data-page="gateway-bms"] .status-pill .dot{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 0 3px color-mix(in srgb,currentColor 20%,transparent);}
+body[data-page="gateway-bms"] .status-pill.on{color:var(--good);background:var(--good-soft);}body[data-page="gateway-bms"] .status-pill.warning{color:var(--warning);background:var(--warning-soft);}body[data-page="gateway-bms"] .status-pill.fault{color:var(--critical);background:var(--critical-soft);}
+body[data-page="gateway-bms"] .mirror-source{color:var(--text-muted);font-size:11px;font-weight:600;}
+body[data-page="gateway-bms"] .ghost-btn,body[data-page="gateway-bms"] .primary-btn{display:inline-flex;align-items:center;gap:7px;min-height:34px;padding:8px 13px;border:1px solid var(--border);border-radius:8px;text-decoration:none;font-size:12px;font-weight:700;}
+body[data-page="gateway-bms"] .ghost-btn{color:var(--text-primary);background:var(--bg-tile-alt);}body[data-page="gateway-bms"] .primary-btn{color:#fff;background:var(--accent);border-color:var(--accent);}
+body[data-page="gateway-bms"] .rtu-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:12px;min-width:0;}
+body[data-page="gateway-bms"] .rtu-grid .tile{min-width:0;padding:14px;background:var(--bg-tile);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);}
+body[data-page="gateway-bms"] .c-info,body[data-page="gateway-bms"] .c-weather,body[data-page="gateway-bms"] .c-alarm,body[data-page="gateway-bms"] .c-temp,body[data-page="gateway-bms"] .c-setpoint{grid-column:span 4;}
+body[data-page="gateway-bms"] .c-status6{grid-column:span 2;}body[data-page="gateway-bms"] .c-trend{grid-column:span 12;}
+body[data-page="gateway-bms"] .tile-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;}
+body[data-page="gateway-bms"] .tile-title{display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:11.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;}
+body[data-page="gateway-bms"] .tile-title .bms-inline-icon{width:15px;height:15px;color:var(--accent);}
+body[data-page="gateway-bms"] .badge{display:inline-flex;padding:3px 7px;border-radius:5px;color:var(--accent);background:var(--accent-soft);font-size:10px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;}
+body[data-page="gateway-bms"] .info-rows{display:flex;flex-direction:column;gap:7px;margin-top:0;}
+body[data-page="gateway-bms"] .info-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;color:var(--text-secondary);font-size:12.5px;}
+body[data-page="gateway-bms"] .info-row .k{color:var(--text-muted);}body[data-page="gateway-bms"] .info-row .v{color:var(--text-primary);font-weight:600;text-align:right;overflow-wrap:anywhere;}
+body[data-page="gateway-bms"] .weather-main{display:flex;align-items:center;gap:12px;margin-bottom:8px;}
+body[data-page="gateway-bms"] .weather-icon{width:42px;height:42px;color:var(--accent);}
+body[data-page="gateway-bms"] .weather-temp{color:var(--text-primary);font-size:30px;font-weight:650;line-height:1;}
+body[data-page="gateway-bms"] .weather-desc{margin-top:3px;color:var(--text-secondary);font-size:12px;}
+body[data-page="gateway-bms"] .weather-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;}
+body[data-page="gateway-bms"] .weather-stat{display:grid;gap:2px;padding:7px 9px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tile-alt);}
+body[data-page="gateway-bms"] .weather-stat .k{color:var(--text-muted);font-size:10px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;}body[data-page="gateway-bms"] .weather-stat .v{color:var(--text-primary);font-size:14px;}
+body[data-page="gateway-bms"] .weather-solar{margin-top:7px;color:var(--text-muted);font-size:10.5px;text-align:right;}
+body[data-page="gateway-bms"] .stat-value{display:flex;align-items:baseline;gap:4px;}body[data-page="gateway-bms"] .stat-value .num{color:var(--text-primary);font-size:36px;font-weight:600;line-height:1;letter-spacing:-.5px;}body[data-page="gateway-bms"] .stat-value .unit{color:var(--text-secondary);font-size:15px;font-weight:600;}
+body[data-page="gateway-bms"] .stat-sub{margin-top:7px;color:var(--text-muted);font-size:11.5px;}body[data-page="gateway-bms"] .stat-sub:has(+*){color:var(--text-muted);}
+body[data-page="gateway-bms"] .eq-tile{display:flex;flex-direction:column;align-items:flex-start;gap:8px;}body[data-page="gateway-bms"] .eq-icon-wrap{display:grid;width:38px;height:38px;place-items:center;border:1px solid var(--border);border-radius:9px;color:var(--text-muted);background:var(--bg-tile-alt);}
+body[data-page="gateway-bms"] .eq-icon-wrap .bms-inline-icon{width:19px;height:19px;}body[data-page="gateway-bms"] .eq-name{color:var(--text-primary);font-size:12.5px;font-weight:700;}body[data-page="gateway-bms"] .eq-state{display:flex;align-items:center;gap:5px;color:var(--text-muted);font-size:11px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;overflow-wrap:anywhere;}body[data-page="gateway-bms"] .eq-state .sdot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none;}body[data-page="gateway-bms"] .eq-meta{color:var(--text-muted);font-size:11px;}
+body[data-page="gateway-bms"] .eq-tile.on .eq-icon-wrap{color:var(--good);background:var(--good-soft);border-color:transparent;}body[data-page="gateway-bms"] .eq-tile.on .eq-state{color:var(--good);}body[data-page="gateway-bms"] .eq-tile.warning .eq-icon-wrap{color:var(--warning);background:var(--warning-soft);border-color:transparent;}body[data-page="gateway-bms"] .eq-tile.warning .eq-state{color:var(--warning);}body[data-page="gateway-bms"] .eq-tile.fault .eq-icon-wrap{color:var(--critical);background:var(--critical-soft);border-color:transparent;}body[data-page="gateway-bms"] .eq-tile.fault .eq-state{color:var(--critical);}
+body[data-page="gateway-bms"] .alarm-equipment{display:grid;grid-template-columns:auto 1fr;align-items:center;margin-bottom:12px;}body[data-page="gateway-bms"] .alarm-rows{padding-top:10px;border-top:1px solid var(--border);}body[data-page="gateway-bms"] .good-text{color:var(--good)!important;}body[data-page="gateway-bms"] .warning-text{color:var(--warning)!important;}
+body[data-page="gateway-bms"] .sp-active-values{display:flex;gap:10px;}body[data-page="gateway-bms"] .sp-active-card{display:grid;gap:4px;flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--bg-tile-alt);}body[data-page="gateway-bms"] .sp-active-card .k{color:var(--text-muted);font-size:10.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;}body[data-page="gateway-bms"] .sp-active-card .num{font-size:22px;font-weight:700;}body[data-page="gateway-bms"] .sp-active-card.cool .num{color:var(--accent);}body[data-page="gateway-bms"] .sp-active-card.heat .num{color:var(--series-2);}
+body[data-page="gateway-bms"] .sp-block{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);}body[data-page="gateway-bms"] .sp-label-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}body[data-page="gateway-bms"] .sp-label{color:var(--text-muted);font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;}body[data-page="gateway-bms"] .sp-mode-badge{padding:3px 7px;border-radius:5px;font-size:10px;font-weight:700;}body[data-page="gateway-bms"] .sp-mode-badge.active{color:var(--accent);background:var(--accent-soft-strong);}body[data-page="gateway-bms"] .sp-mode-badge.idle{color:var(--text-muted);background:var(--bg-tile-alt);}
+body[data-page="gateway-bms"] .readonly-setpoint-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}body[data-page="gateway-bms"] .stepper-group{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px;border:1px solid var(--border);border-radius:9px;background:var(--bg-tile-alt);}body[data-page="gateway-bms"] .stepper-group .lbl{color:var(--text-muted);font-size:11px;font-weight:600;}body[data-page="gateway-bms"] .step-val{color:var(--text-primary);font-size:13px;font-weight:700;text-align:right;}body[data-page="gateway-bms"] .readonly-note{margin-top:10px;color:var(--text-muted);font-size:10.5px;}
+body[data-page="gateway-bms"] .trend-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}body[data-page="gateway-bms"] .range-tabs{display:flex;gap:4px;padding:3px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tile-alt);}body[data-page="gateway-bms"] .range-tab{padding:5px 10px;border:0;border-radius:6px;color:var(--text-secondary);background:transparent;font-size:11px;font-weight:600;}body[data-page="gateway-bms"] .range-tab.active{color:#fff;background:var(--accent);}body[data-page="gateway-bms"] .range-tab:disabled{cursor:default;opacity:.72;}body[data-page="gateway-bms"] .trend-chart-wrap{display:grid;min-height:220px;margin-top:8px;place-items:center;border-radius:9px;background:linear-gradient(180deg,transparent,var(--accent-soft));}body[data-page="gateway-bms"] .trend-empty{padding:24px;color:var(--text-muted);text-align:center;}
+@media(max-width:980px){body[data-page="gateway-bms"] .c-info,body[data-page="gateway-bms"] .c-weather,body[data-page="gateway-bms"] .c-alarm,body[data-page="gateway-bms"] .c-temp,body[data-page="gateway-bms"] .c-setpoint{grid-column:span 6;}body[data-page="gateway-bms"] .c-status6{grid-column:span 4;}}
+@media(max-width:640px){body[data-page="gateway-bms"] .c-info,body[data-page="gateway-bms"] .c-weather,body[data-page="gateway-bms"] .c-alarm,body[data-page="gateway-bms"] .c-temp,body[data-page="gateway-bms"] .c-setpoint,body[data-page="gateway-bms"] .c-status6{grid-column:span 12;}body[data-page="gateway-bms"] .topbar-right{width:100%;}body[data-page="gateway-bms"] .readonly-setpoint-grid{grid-template-columns:1fr;}}
+</style>"""
     current_page = f"device:{device_id}" if device_id else page
     attrs = f'data-gateway-id="{escaped_gateway_id}" data-device-id="{escaped_device_id}" data-bms-page="{escape(page, quote=True)}"'
     return _layout(f"{title} - IOT Cloud Commissioning", gateway_navigation_html(gateway_id, current_page) + body, "gateway-bms", attrs)

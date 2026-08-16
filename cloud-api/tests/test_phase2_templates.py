@@ -1,7 +1,21 @@
 """Cloud Phase 2 template persistence and single-binding authority."""
+import csv
+import io
 from uuid import uuid4
 
 from test_api import client, create_gateway_token, create_operator_user, reset_database, user_headers
+
+
+CSV_COLUMNS = ["template_name", "graphic_template", "logical_role", "match_field", "match_value", "object_type", "required"]
+EXAMPLE_RULES = [
+    ("space_temp", "Room Temperature", "analog-value"),
+    ("supply_air_temp", "UI22 Supply Temperature", "analog-value"),
+    ("occupancy_mode", "Effective Occupancy", "multi-state-input"),
+    ("cool_stage_1", "Y1 Status", "binary-output"),
+    ("cool_stage_2", "Y2 Status", "binary-output"),
+    ("heat_stage_1", "W1 Status", "binary-output"),
+    ("heat_stage_2", "W2/OB Status", "binary-output"),
+]
 
 
 def test_template_and_logical_role_binding_are_persisted_and_unique() -> None:
@@ -145,3 +159,134 @@ def test_configuration_duplicate_role_names_points_and_rolls_back_then_succeeds(
     rules = created.json()["rules"]
     assert {(rule["logical_role"], rule["match_value"], rule["object_type"]) for rule in rules} == {("space_temp","Room Temperature","analog-value"),("supply_air_temp","AV25","analog-value")}
     assert all(set(rule) == {"logical_role","match_field","match_value","object_type","required"} for rule in rules)
+
+
+def test_mapping_csv_download_uses_authenticated_blob_transport_and_real_crlf_example() -> None:
+    page = client.get("/gateways/GW001/configure-tree")
+    assert page.status_code == 200
+    source = page.text
+    assert "async function authenticatedResponse" in source
+    assert '"Authorization": `Bearer ${session.access_token}`' in source
+    assert 'new Blob([text], {type:"text/csv;charset=utf-8"})' in source
+    assert "URL.createObjectURL" in source
+    assert "URL.revokeObjectURL" in source
+    assert "downloadMappingTemplateCsv(templateId" in source
+    assert 'data-mapping-template-id="${escapeHtml(item.id)}"' in source
+    assert '<a class="button secondary" href="/api/ui/mapping-templates/' not in source
+    assert "window.location.assign(`/api/ui/mapping-templates/" not in source
+    assert '.join("\\r\\n")' in source
+    assert "required\\\\nSE8650 RTU" not in source
+    assert 'downloadCsvText(example, "se8650-rtu-example.csv")' in source
+
+
+def test_example_csv_import_export_round_trip_has_seven_columns_and_one_rule_per_record() -> None:
+    email = f"phase2-admin-{uuid4().hex[:8]}@example.com"
+    user_id = create_operator_user(email, role="admin", status="active")
+    headers = user_headers(email, user_id)
+    rows = [
+        {
+            "template_name": "SE8650 RTU",
+            "graphic_template": "rtu",
+            "logical_role": logical_role,
+            "match_field": "object_name",
+            "match_value": match_value,
+            "object_type": object_type,
+            "required": "false",
+        }
+        for logical_role, match_value, object_type in EXAMPLE_RULES
+    ]
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=CSV_COLUMNS, lineterminator="\r\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    example_csv = stream.getvalue()
+
+    assert example_csv.count("\r\n") == len(rows) + 1
+    parsed_example = list(csv.DictReader(io.StringIO(example_csv)))
+    assert list(parsed_example[0]) == CSV_COLUMNS
+    assert len(parsed_example) == 7
+    assert all(len(row) == 7 for row in parsed_example)
+
+    imported = client.post("/api/ui/mapping-templates/import", headers=headers, json=example_csv)
+    assert imported.status_code == 200, imported.text
+    assert imported.json()["name"] == "SE8650 RTU"
+    assert len(imported.json()["rules"]) == 7
+
+    assert client.get(f"/api/ui/mapping-templates/{imported.json()['id']}/export").status_code == 401
+    exported = client.get(f"/api/ui/mapping-templates/{imported.json()['id']}/export", headers=headers)
+    assert exported.status_code == 200
+    assert exported.headers["content-type"].startswith("text/csv")
+    assert b"\r\n" in exported.content
+    parsed_export = list(csv.DictReader(io.StringIO(exported.text)))
+    assert list(parsed_export[0]) == CSV_COLUMNS
+    assert len(parsed_export) == 7
+    assert all(len(row) == 7 for row in parsed_export)
+    assert {
+        (row["logical_role"], row["match_value"], row["object_type"], row["required"])
+        for row in parsed_export
+    } == {(role, match_value, object_type, "false") for role, match_value, object_type in EXAMPLE_RULES}
+
+
+def test_mapping_csv_export_uses_standard_escaping_for_commas_quotes_and_newlines() -> None:
+    email = f"phase2-admin-{uuid4().hex[:8]}@example.com"
+    user_id = create_operator_user(email, role="admin", status="active")
+    headers = user_headers(email, user_id)
+    match_value = 'Room, "North"\nTemperature'
+    created = client.post(
+        "/api/ui/mapping-templates",
+        headers=headers,
+        json={
+            "name": 'Quoted, "Template"',
+            "graphic_template_key": "rtu",
+            "rules": [{"logical_role": "space_temp", "match_field": "object_name", "match_value": match_value, "object_type": "analog-value", "required": False}],
+        },
+    )
+    assert created.status_code == 200, created.text
+    exported = client.get(f"/api/ui/mapping-templates/{created.json()['id']}/export", headers=headers)
+    assert exported.status_code == 200
+    assert '"Quoted, ""Template"""' in exported.text
+    assert '"Room, ""North""\nTemperature"' in exported.text
+    parsed = list(csv.DictReader(io.StringIO(exported.text)))
+    assert len(parsed) == 1
+    assert parsed[0]["template_name"] == 'Quoted, "Template"'
+    assert parsed[0]["match_value"] == match_value
+
+
+def test_workspace_renderer_emits_direct_weather_and_device_tiles_with_structured_values() -> None:
+    page = client.get("/gateways/GW001")
+    assert page.status_code == 200
+    renderer = page.text.split("function renderSiteEquipmentOverview", 1)[1].split("function resourcePercent", 1)[0]
+    assert 'class="site-equipment-section"' in renderer
+    assert 'class="equipment-grid"' in renderer
+    assert renderer.count('<article class="tile weather-card weather-summary-card">') == 1
+    assert renderer.count('<article class="tile equipment-summary-card">') == 1
+    assert 'class="equipment-key"' in renderer
+    assert 'class="equipment-reading"' in renderer
+    assert 'class="secondary equipment-action"' in renderer
+    assert 'data-device-href="${href}"' in renderer
+    assert '<section class="equipment-category-section">' not in renderer
+    assert '<article class="equipment-summary-card">' not in renderer
+    assert "byCategory" not in renderer
+
+
+def test_device_renderer_emits_reference_tile_hierarchy_and_no_legacy_graphic_markup() -> None:
+    page = client.get("/gateways/GW001/devices/device-1")
+    assert page.status_code == 200
+    renderer = page.text.split("async function loadDeviceGraphic", 1)[1].split("async function initConfigureTree", 1)[0]
+    assert '<div class="topbar equipment-topbar">' in renderer
+    assert 'class="brand-mark"' in renderer
+    assert 'class="status-pill ${deviceState}"' in renderer
+    assert '<article class="tile c-info">' in renderer
+    assert '<article class="tile c-weather weather-card">' in renderer
+    assert '<article class="tile c-alarm">' in renderer
+    assert '<article class="tile c-temp">' in renderer
+    assert '<article class="tile c-status6 eq-tile ${state}">' in renderer
+    assert '<article class="tile c-setpoint">' in renderer
+    assert '<article class="tile c-trend">' in renderer
+    assert 'class="stat-value"' in renderer
+    assert 'class="eq-name"' in renderer and 'class="eq-state"' in renderer
+    assert "Trend Log — Space Temp vs. Setpoint" in renderer
+    assert "No trend series connected to this graphic." in renderer
+    assert '<div class="rtu-topbar">' not in renderer
+    assert "Supply Fan Statusactive" not in renderer
+    assert renderer.count("target.innerHTML =") == 2  # graphic and error fallback
