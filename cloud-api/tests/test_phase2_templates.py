@@ -6,7 +6,8 @@ from uuid import uuid4
 from test_api import client, create_gateway_token, create_operator_user, reset_database, user_headers
 
 
-CSV_COLUMNS = ["template_name", "graphic_template", "logical_role", "match_field", "match_value", "object_type", "required"]
+LEGACY_CSV_COLUMNS = ["template_name", "graphic_template", "logical_role", "match_field", "match_value", "object_type", "required"]
+CSV_COLUMNS = ["template_name", "graphic_template", "logical_role", "display_label", "match_field", "match_value", "object_type", "required"]
 EXAMPLE_RULES = [
     ("space_temp", "Room Temperature", "analog-value"),
     ("supply_air_temp", "UI22 Supply Temperature", "analog-value"),
@@ -134,6 +135,187 @@ def test_mapping_template_applies_own_points_to_three_devices() -> None:
     assert bound_ids == set(ids)
 
 
+def test_role_first_configuration_persists_labels_blocks_duplicate_points_and_uses_all_points_authority() -> None:
+    gateway_id = f"GW-{uuid4().hex[:10]}"
+    create_gateway_token(gateway_id)
+    email = f"phase2-{uuid4().hex[:8]}@example.com"
+    user_id = create_operator_user(email, role="operator", status="active")
+    headers = user_headers(email, user_id)
+    device = client.post(
+        f"/api/ui/gateways/{gateway_id}/devices",
+        headers=headers,
+        json={"device_instance": 8650, "device_name": "SE8650"},
+    ).json()
+    created = []
+    for instance in range(32):
+        created.append(
+            client.post(
+                f"/api/ui/devices/{device['id']}/points",
+                headers=headers,
+                json={
+                    "object_type": "analog-value" if instance < 30 else "binary-output",
+                    "object_instance": instance,
+                    "object_name": "Room Temperature" if instance == 0 else f"Point {instance}",
+                    "present_value": str(70 + instance / 10),
+                },
+            ).json()
+        )
+    room, supply = created[0], created[1]
+
+    duplicate = client.put(
+        f"/api/ui/devices/{device['id']}/configuration",
+        headers=headers,
+        json={
+            "group_name": "HVAC",
+            "template_key": "rtu",
+            "role_points": {"space_temp": room["id"], "return_air_temp": room["id"]},
+            "role_display_labels": {"space_temp": "Space Temperature", "return_air_temp": "Return Air Temperature"},
+        },
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "Room Temperature is already assigned to Space Temperature and cannot also be assigned to Return Air Temperature."
+
+    saved = client.put(
+        f"/api/ui/devices/{device['id']}/configuration",
+        headers=headers,
+        json={
+            "group_name": "HVAC",
+            "template_key": "rtu",
+            "role_points": {"space_temp": room["id"], "supply_air_temp": supply["id"]},
+            "role_display_labels": {"space_temp": "  Space Temperature  ", "supply_air_temp": " Sales Floor Supply Air "},
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    by_role = {point["logical_role"]: point for point in saved.json()["points"] if point["logical_role"]}
+    assert by_role["space_temp"]["display_label"] is None
+    assert by_role["supply_air_temp"]["display_label"] == "Sales Floor Supply Air"
+    too_long = client.put(
+        f"/api/ui/devices/{device['id']}/configuration",
+        headers=headers,
+        json={
+            "group_name": "HVAC",
+            "template_key": "rtu",
+            "role_points": {"space_temp": room["id"], "supply_air_temp": supply["id"]},
+            "role_display_labels": {"space_temp": "x" * 121, "supply_air_temp": "Changed"},
+        },
+    )
+    assert too_long.status_code == 422
+
+    tree = client.get(f"/api/ui/gateways/{gateway_id}/tree", headers=headers).json()
+    persisted_by_role = {point["logical_role"]: point for point in tree["points"] if point["logical_role"]}
+    assert persisted_by_role["space_temp"]["display_label"] is None
+    assert persisted_by_role["supply_air_temp"]["display_label"] == "Sales Floor Supply Air"
+    registry = client.get("/api/ui/equipment-templates", headers=headers).json()
+    assert registry["rtu"]["role_labels"]["space_temp"] == "Space Temperature"
+    all_points_identifiers = {
+        f"{point['object_type']}:{point['object_instance']}"
+        for point in tree["points"]
+        if point["saved_device_id"] == device["id"]
+    }
+    configure_selectable_identifiers = {
+        f"{point['object_type']}:{point['object_instance']}"
+        for point in tree["points"]
+        if point["saved_device_id"] == device["id"]
+    }
+    assert all_points_identifiers == configure_selectable_identifiers
+    assert len(all_points_identifiers) == 32
+
+    source = client.get(f"/gateways/{gateway_id}/configure-tree").text
+    configure = source.split("async function initConfigureTree", 1)[1].split("function renderUsers", 1)[0]
+    assert "Graphic Point Bindings" in configure
+    assert "Graphic Role" in configure and "Display Label" in configure and "Device Point" in configure
+    assert "template.roles.map((role)" in configure
+    assert "const pointOptions = (selectedId) => points.map((point)" in configure
+    assert 'select.addEventListener("change"' in configure
+    assert "renderRoleControls(device, select.value)" in configure
+    assert 'select[data-point-id]' not in configure
+    assert "select[data-role-point]" in configure
+    assert "object_type}:${point.object_instance} — ${currentValue}" in configure
+    assert "Saved successfully · Bindings saved:" in configure
+    assert "Display label overrides:" in configure
+
+
+def test_mapping_labels_apply_to_new_device_but_retain_explicit_device_override() -> None:
+    gateway_id = f"GW-{uuid4().hex[:10]}"
+    create_gateway_token(gateway_id)
+    email = f"phase2-{uuid4().hex[:8]}@example.com"
+    user_id = create_operator_user(email, role="operator", status="active")
+    headers = user_headers(email, user_id)
+    mapping = client.post(
+        "/api/ui/mapping-templates",
+        headers=headers,
+        json={
+            "name": f"SE8650 Labels {uuid4().hex[:6]}",
+            "graphic_template_key": "rtu",
+            "rules": [{
+                "logical_role": "space_temp",
+                "display_label": "Standard Room Temperature",
+                "match_field": "object_name",
+                "match_value": "Room Temperature",
+                "object_type": "analog-value",
+                "required": False,
+            }],
+        },
+    ).json()
+
+    devices = []
+    for instance in (1, 2):
+        device = client.post(
+            f"/api/ui/gateways/{gateway_id}/devices",
+            headers=headers,
+            json={"device_instance": 8600 + instance, "device_name": f"RTU-{instance}"},
+        ).json()
+        point = client.post(
+            f"/api/ui/devices/{device['id']}/points",
+            headers=headers,
+            json={"object_type": "analog-value", "object_instance": 100, "object_name": "Room Temperature", "present_value": str(72 + instance)},
+        ).json()
+        label = "Sales Floor Temperature" if instance == 2 else None
+        client.put(
+            f"/api/ui/devices/{device['id']}/configuration",
+            headers=headers,
+            json={
+                "group_name": "HVAC",
+                "template_key": "rtu",
+                "mapping_template_id": mapping["id"],
+                "role_points": {"space_temp": point["id"]} if label else {},
+                "role_display_labels": {"space_temp": label} if label else {},
+            },
+        )
+        result = client.post(f"/api/ui/devices/{device['id']}/mapping-template/{mapping['id']}/apply", headers=headers)
+        assert result.status_code == 200
+        devices.append(device)
+
+    tree = client.get(f"/api/ui/gateways/{gateway_id}/tree", headers=headers).json()
+    labels = {
+        point["saved_device_id"]: (point["logical_role"], point["display_label"], point["present_value"])
+        for point in tree["points"]
+    }
+    assert labels[devices[0]["id"]] == ("space_temp", "Standard Room Temperature", "73")
+    assert labels[devices[1]["id"]] == ("space_temp", "Sales Floor Temperature", "74")
+    workspace = client.get(f"/gateways/{gateway_id}").text
+    detail = client.get(f"/gateways/{gateway_id}/devices/{devices[1]['id']}").text
+    assert "resolvedRoleLabel(points.get(role), template, role)" in workspace
+    assert "resolvedRoleLabel(display.point, template, role)" in detail
+
+
+def test_new_csv_display_label_round_trip() -> None:
+    email = f"phase2-admin-{uuid4().hex[:8]}@example.com"
+    user_id = create_operator_user(email, role="admin", status="active")
+    headers = user_headers(email, user_id)
+    csv_text = (
+        "template_name,graphic_template,logical_role,display_label,match_field,match_value,object_type,required\r\n"
+        "Labeled RTU,rtu,space_temp,Sales Floor Temperature,object_name,Room Temperature,analog-value,false\r\n"
+    )
+    imported = client.post("/api/ui/mapping-templates/import", headers=headers, json=csv_text)
+    assert imported.status_code == 200, imported.text
+    assert imported.json()["rules"][0]["display_label"] == "Sales Floor Temperature"
+    exported = client.get(f"/api/ui/mapping-templates/{imported.json()['id']}/export", headers=headers)
+    row = next(csv.DictReader(io.StringIO(exported.text)))
+    assert list(row) == CSV_COLUMNS
+    assert row["display_label"] == "Sales Floor Temperature"
+
+
 def test_configuration_duplicate_role_names_points_and_rolls_back_then_succeeds() -> None:
     gateway_id = f"GW-{uuid4().hex[:10]}"
     create_gateway_token(gateway_id)
@@ -158,7 +340,8 @@ def test_configuration_duplicate_role_names_points_and_rolls_back_then_succeeds(
     assert created.status_code == 200
     rules = created.json()["rules"]
     assert {(rule["logical_role"], rule["match_value"], rule["object_type"]) for rule in rules} == {("space_temp","Room Temperature","analog-value"),("supply_air_temp","AV25","analog-value")}
-    assert all(set(rule) == {"logical_role","match_field","match_value","object_type","required"} for rule in rules)
+    assert all(set(rule) == {"logical_role","display_label","match_field","match_value","object_type","required"} for rule in rules)
+    assert {rule["display_label"] for rule in rules} == {"Space Temperature", "Supply Air Temperature"}
 
 
 def test_mapping_csv_download_uses_authenticated_blob_transport_and_real_crlf_example() -> None:
@@ -179,7 +362,7 @@ def test_mapping_csv_download_uses_authenticated_blob_transport_and_real_crlf_ex
     assert 'downloadCsvText(example, "se8650-rtu-example.csv")' in source
 
 
-def test_example_csv_import_export_round_trip_has_seven_columns_and_one_rule_per_record() -> None:
+def test_legacy_seven_column_csv_imports_and_exports_as_eight_human_readable_columns() -> None:
     email = f"phase2-admin-{uuid4().hex[:8]}@example.com"
     user_id = create_operator_user(email, role="admin", status="active")
     headers = user_headers(email, user_id)
@@ -196,14 +379,14 @@ def test_example_csv_import_export_round_trip_has_seven_columns_and_one_rule_per
         for logical_role, match_value, object_type in EXAMPLE_RULES
     ]
     stream = io.StringIO(newline="")
-    writer = csv.DictWriter(stream, fieldnames=CSV_COLUMNS, lineterminator="\r\n")
+    writer = csv.DictWriter(stream, fieldnames=LEGACY_CSV_COLUMNS, lineterminator="\r\n")
     writer.writeheader()
     writer.writerows(rows)
     example_csv = stream.getvalue()
 
     assert example_csv.count("\r\n") == len(rows) + 1
     parsed_example = list(csv.DictReader(io.StringIO(example_csv)))
-    assert list(parsed_example[0]) == CSV_COLUMNS
+    assert list(parsed_example[0]) == LEGACY_CSV_COLUMNS
     assert len(parsed_example) == 7
     assert all(len(row) == 7 for row in parsed_example)
 
@@ -211,6 +394,7 @@ def test_example_csv_import_export_round_trip_has_seven_columns_and_one_rule_per
     assert imported.status_code == 200, imported.text
     assert imported.json()["name"] == "SE8650 RTU"
     assert len(imported.json()["rules"]) == 7
+    assert all(rule["display_label"] is None for rule in imported.json()["rules"])
 
     assert client.get(f"/api/ui/mapping-templates/{imported.json()['id']}/export").status_code == 401
     exported = client.get(f"/api/ui/mapping-templates/{imported.json()['id']}/export", headers=headers)
@@ -220,7 +404,9 @@ def test_example_csv_import_export_round_trip_has_seven_columns_and_one_rule_per
     parsed_export = list(csv.DictReader(io.StringIO(exported.text)))
     assert list(parsed_export[0]) == CSV_COLUMNS
     assert len(parsed_export) == 7
-    assert all(len(row) == 7 for row in parsed_export)
+    assert all(len(row) == 8 for row in parsed_export)
+    assert all(row["display_label"] for row in parsed_export)
+    assert next(row for row in parsed_export if row["logical_role"] == "space_temp")["display_label"] == "Space Temperature"
     assert {
         (row["logical_role"], row["match_value"], row["object_type"], row["required"])
         for row in parsed_export
@@ -285,7 +471,7 @@ def test_device_renderer_emits_reference_tile_hierarchy_and_no_legacy_graphic_ma
     assert '<article class="tile c-trend">' in renderer
     assert 'class="stat-value"' in renderer
     assert 'class="eq-name"' in renderer and 'class="eq-state"' in renderer
-    assert "Trend Log — Space Temp vs. Setpoint" in renderer
+    assert "Trend Log — ${escapeHtml(resolvedRoleLabel" in renderer
     assert "No trend series connected to this graphic." in renderer
     assert '<div class="rtu-topbar">' not in renderer
     assert "Supply Fan Statusactive" not in renderer

@@ -63,7 +63,7 @@ from app.models import (
     SiteWeather,
     utc_now,
 )
-from app.template_registry import TEMPLATES, template_for
+from app.template_registry import TEMPLATES, default_display_label, template_for
 from app.schema import require_current_schema, schema_revision_status
 from app.schemas import (
     AccessMembershipRecordOut,
@@ -1255,6 +1255,7 @@ def _point_out(point: SavedBacnetPoint, trend_config: PointTrendConfig | None = 
         "object_instance": point.object_instance,
         "object_name": point.object_name,
         "logical_role": point.logical_role,
+        "display_label": point.display_label,
         "property": point.property_name,
         "present_value": point.present_value,
         "units": point.units,
@@ -2604,11 +2605,20 @@ def ui_get_gateway_tree(
 @app.get("/api/ui/equipment-templates")
 def ui_equipment_templates(auth: AdminAuthContext = Depends(require_operator_auth)) -> dict[str, object]:
     """Registry metadata for configuring and rendering Cloud equipment."""
-    return {key: {"label": item["label"], "categories": sorted(item["categories"]), "roles": list(item["roles"]), "summary_roles": list(item["summary_roles"])} for key, item in TEMPLATES.items()}
+    return {
+        key: {
+            "label": item["label"],
+            "categories": sorted(item["categories"]),
+            "roles": list(item["roles"]),
+            "role_labels": {role: default_display_label(role) for role in item["roles"]},
+            "summary_roles": list(item["summary_roles"]),
+        }
+        for key, item in TEMPLATES.items()
+    }
 
 
 def _mapping_template_out(template: MappingTemplate) -> dict[str, object]:
-    return {"id": template.id, "name": template.name, "graphic_template_key": template.graphic_template_key, "rules": [{"logical_role": rule.logical_role, "match_field": rule.match_field, "match_value": rule.match_value, "object_type": rule.object_type, "required": rule.required} for rule in sorted(template.rules, key=lambda item: item.logical_role)]}
+    return {"id": template.id, "name": template.name, "graphic_template_key": template.graphic_template_key, "rules": [{"logical_role": rule.logical_role, "display_label": rule.display_label, "match_field": rule.match_field, "match_value": rule.match_value, "object_type": rule.object_type, "required": rule.required} for rule in sorted(template.rules, key=lambda item: item.logical_role)]}
 
 
 def _validate_mapping_template(payload: MappingTemplateIn) -> None:
@@ -2634,7 +2644,10 @@ def ui_list_mapping_templates(auth: AdminAuthContext = Depends(require_operator_
 def ui_create_mapping_template(payload: MappingTemplateIn, auth: AdminAuthContext = Depends(require_job_operator_auth), db: Session = Depends(get_db)) -> dict[str, object]:
     _validate_mapping_template(payload)
     template = MappingTemplate(name=payload.name.strip(), graphic_template_key=payload.graphic_template_key)
-    template.rules = [MappingTemplateRule(**rule.model_dump()) for rule in payload.rules]
+    template.rules = [
+        MappingTemplateRule(**(rule.model_dump() | {"display_label": (rule.display_label or "").strip() or None}))
+        for rule in payload.rules
+    ]
     db.add(template)
     try:
         db.commit()
@@ -2651,10 +2664,10 @@ def ui_export_mapping_template(template_id: str, auth: AdminAuthContext = Depend
     if template is None:
         raise HTTPException(status_code=404, detail="Mapping template not found")
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=["template_name", "graphic_template", "logical_role", "match_field", "match_value", "object_type", "required"])
+    writer = csv.DictWriter(output, fieldnames=["template_name", "graphic_template", "logical_role", "display_label", "match_field", "match_value", "object_type", "required"])
     writer.writeheader()
     for rule in sorted(template.rules, key=lambda item: item.logical_role):
-        writer.writerow({"template_name": template.name, "graphic_template": template.graphic_template_key, "logical_role": rule.logical_role, "match_field": rule.match_field, "match_value": rule.match_value, "object_type": rule.object_type or "", "required": str(rule.required).lower()})
+        writer.writerow({"template_name": template.name, "graphic_template": template.graphic_template_key, "logical_role": rule.logical_role, "display_label": rule.display_label or default_display_label(rule.logical_role), "match_field": rule.match_field, "match_value": rule.match_value, "object_type": rule.object_type or "", "required": str(rule.required).lower()})
     return Response(output.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{template.name}.csv"'})
 
 
@@ -2664,8 +2677,9 @@ def ui_import_mapping_template(csv_text: str = Body(..., media_type="text/plain"
         rows = list(csv.DictReader(io.StringIO(csv_text)))
     except csv.Error as exc:
         raise HTTPException(status_code=422, detail="Malformed CSV") from exc
-    required_columns = {"template_name", "graphic_template", "logical_role", "match_field", "match_value", "object_type", "required"}
-    if not rows or set(rows[0]) != required_columns:
+    legacy_columns = {"template_name", "graphic_template", "logical_role", "match_field", "match_value", "object_type", "required"}
+    current_columns = legacy_columns | {"display_label"}
+    if not rows or frozenset(rows[0]) not in {frozenset(legacy_columns), frozenset(current_columns)}:
         raise HTTPException(status_code=422, detail="CSV columns are invalid")
     names = {row["template_name"].strip() for row in rows}
     graphics = {row["graphic_template"].strip() for row in rows}
@@ -2676,7 +2690,7 @@ def ui_import_mapping_template(csv_text: str = Body(..., media_type="text/plain"
         value = row["required"].strip().lower()
         if value not in {"true", "false"}:
             raise HTTPException(status_code=422, detail="required must be true or false")
-        rules.append({"logical_role": row["logical_role"].strip(), "match_field": row["match_field"].strip(), "match_value": row["match_value"].strip(), "object_type": row["object_type"].strip() or None, "required": value == "true"})
+        rules.append({"logical_role": row["logical_role"].strip(), "display_label": (row.get("display_label") or "").strip() or None, "match_field": row["match_field"].strip(), "match_value": row["match_value"].strip(), "object_type": row["object_type"].strip() or None, "required": value == "true"})
     return ui_create_mapping_template(MappingTemplateIn(name=next(iter(names)), graphic_template_key=next(iter(graphics)), rules=rules), auth, db)
 
 
@@ -2818,25 +2832,67 @@ def ui_save_device_configuration(
     group_name = (payload.group_name or "").strip()
     points = list(db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id)).all())
     points_by_id = {point.id: point for point in points}
-    if unknown_ids := sorted(set(payload.point_roles) - set(points_by_id)):
-        raise HTTPException(status_code=422, detail="Point does not belong to this device: " + ", ".join(unknown_ids))
-
     template = template_for(payload.template_key)
     if payload.template_key is not None and template is None:
         raise HTTPException(status_code=422, detail="Unknown equipment template")
     proposed_category = group_name if group_name and group_name != "Uncategorized" else None
     if template is not None and proposed_category not in template["categories"]:
         raise HTTPException(status_code=422, detail=f"Template {payload.template_key} is not compatible with device group {proposed_category or 'Uncategorized'}")
-    final_roles = {point.id: payload.point_roles.get(point.id, point.logical_role) for point in points}
-    role_claims: dict[str, list[SavedBacnetPoint]] = {}
-    for point in points:
-        role = final_roles[point.id]
-        if role is not None:
-            role_claims.setdefault(role, []).append(point)
-    duplicate_claims = {role: claims for role, claims in role_claims.items() if len(claims) > 1}
-    if duplicate_claims:
-        detail = "; ".join(f"{role} is assigned to " + " and ".join(point.object_name or f"{point.object_type}:{point.object_instance}" for point in claims) for role, claims in sorted(duplicate_claims.items()))
-        raise HTTPException(status_code=409, detail=detail)
+
+    role_first = "role_points" in payload.model_fields_set or "role_display_labels" in payload.model_fields_set
+    if role_first and "point_roles" in payload.model_fields_set and payload.point_roles:
+        raise HTTPException(status_code=422, detail="Submit role_points or point_roles, not both")
+    final_roles: dict[str, str | None]
+    normalized_labels: dict[str, str | None] = {}
+    if role_first:
+        if template is None:
+            if any(payload.role_points.values()):
+                raise HTTPException(status_code=422, detail="Assign a compatible equipment template before binding roles")
+            supported_roles: set[str] = set()
+        else:
+            supported_roles = set(template["roles"])
+        if unknown_roles := sorted((set(payload.role_points) | set(payload.role_display_labels)) - supported_roles):
+            raise HTTPException(status_code=422, detail="Role is not supported by template: " + ", ".join(unknown_roles))
+        selected_ids = [point_id for point_id in payload.role_points.values() if point_id is not None]
+        if unknown_ids := sorted(set(selected_ids) - set(points_by_id)):
+            raise HTTPException(status_code=422, detail="Point does not belong to this device: " + ", ".join(unknown_ids))
+        point_claims: dict[str, list[str]] = {}
+        for role, point_id in payload.role_points.items():
+            if point_id:
+                point_claims.setdefault(point_id, []).append(role)
+        duplicate_points = {point_id: roles for point_id, roles in point_claims.items() if len(roles) > 1}
+        if duplicate_points:
+            messages = []
+            for point_id, roles in duplicate_points.items():
+                point = points_by_id[point_id]
+                point_name = point.object_name or f"{point.object_type}:{point.object_instance}"
+                messages.append(
+                    f"{point_name} is already assigned to {default_display_label(roles[0])} "
+                    f"and cannot also be assigned to {default_display_label(roles[1])}."
+                )
+            raise HTTPException(status_code=409, detail=" ".join(messages))
+        for role, value in payload.role_display_labels.items():
+            label = (value or "").strip()
+            if len(label) > 120:
+                raise HTTPException(status_code=422, detail=f"Display label for {role} exceeds 120 characters")
+            normalized_labels[role] = None if not label or label == default_display_label(role) else label
+        final_roles = {point.id: None for point in points}
+        for role, point_id in payload.role_points.items():
+            if point_id:
+                final_roles[point_id] = role
+    else:
+        if unknown_ids := sorted(set(payload.point_roles) - set(points_by_id)):
+            raise HTTPException(status_code=422, detail="Point does not belong to this device: " + ", ".join(unknown_ids))
+        final_roles = {point.id: payload.point_roles.get(point.id, point.logical_role) for point in points}
+        role_claims: dict[str, list[SavedBacnetPoint]] = {}
+        for point in points:
+            role = final_roles[point.id]
+            if role is not None:
+                role_claims.setdefault(role, []).append(point)
+        duplicate_claims = {role: claims for role, claims in role_claims.items() if len(claims) > 1}
+        if duplicate_claims:
+            detail = "; ".join(f"{role} is assigned to " + " and ".join(point.object_name or f"{point.object_type}:{point.object_instance}" for point in claims) for role, claims in sorted(duplicate_claims.items()))
+            raise HTTPException(status_code=409, detail=detail)
     if any(role is not None for role in final_roles.values()) and template is None:
         raise HTTPException(status_code=422, detail="Assign a compatible equipment template before binding roles")
     unsupported = sorted({role for role in final_roles.values() if role is not None and template is not None and role not in template["roles"]})
@@ -2859,10 +2915,18 @@ def ui_save_device_configuration(
     else:
         device.group_id = None
     device.template_key = payload.template_key
-    for point_id, role in payload.point_roles.items():
-        point = points_by_id[point_id]
-        point.logical_role = role
-        point.updated_at = utc_now()
+    if role_first:
+        for point in points:
+            point.logical_role = final_roles[point.id]
+            point.display_label = normalized_labels.get(point.logical_role) if point.logical_role else None
+            point.updated_at = utc_now()
+    else:
+        for point_id, role in payload.point_roles.items():
+            point = points_by_id[point_id]
+            point.logical_role = role
+            if role is None:
+                point.display_label = None
+            point.updated_at = utc_now()
     device.updated_at = utc_now()
     try:
         db.commit()
@@ -2902,6 +2966,12 @@ def ui_apply_mapping_template(device_id: str, template_id: str, auth: AdminAuthC
             conflicts.append(f"{rule.logical_role}: point also matches another role")
             continue
         claimed.add(point.id)
+        if point.logical_role == rule.logical_role:
+            if point.display_label is None and rule.display_label is not None:
+                point.display_label = rule.display_label
+                point.updated_at = utc_now()
+            retained_existing += 1
+            continue
         if point.logical_role is not None:
             retained_existing += 1
             continue
@@ -2909,6 +2979,7 @@ def ui_apply_mapping_template(device_id: str, template_id: str, auth: AdminAuthC
             retained_existing += 1
             continue
         point.logical_role = rule.logical_role
+        point.display_label = rule.display_label
         point.updated_at = utc_now()
         matched += 1
     device.updated_at = utc_now()
@@ -2927,7 +2998,7 @@ def ui_create_mapping_template_from_device(device_id: str, payload: MappingTempl
     if any(not point.object_name for point in points):
         raise HTTPException(status_code=422, detail="A bound point is missing an object name and cannot become a reusable rule")
     template = MappingTemplate(name=payload.name.strip(), graphic_template_key=device.template_key)
-    template.rules = [MappingTemplateRule(logical_role=point.logical_role, match_field="object_name", match_value=point.object_name, object_type=point.object_type, required=False) for point in points]
+    template.rules = [MappingTemplateRule(logical_role=point.logical_role, display_label=point.display_label or default_display_label(point.logical_role), match_field="object_name", match_value=point.object_name, object_type=point.object_type, required=False) for point in points]
     db.add(template)
     try:
         db.commit()
@@ -3335,6 +3406,11 @@ def ui_patch_point(
     if "logical_role" in payload.model_fields_set:
         _validate_logical_role(db, point, payload.logical_role)
         point.logical_role = payload.logical_role
+        if payload.logical_role is None:
+            point.display_label = None
+    if "display_label" in payload.model_fields_set:
+        label = (payload.display_label or "").strip()
+        point.display_label = None if not label or (point.logical_role and label == default_display_label(point.logical_role)) else label
     point.updated_at = utc_now()
     try:
         db.commit()

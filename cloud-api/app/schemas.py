@@ -672,6 +672,8 @@ class DeviceConfigurationIn(BaseModel):
     template_key: str | None = Field(default=None, max_length=80)
     mapping_template_id: str | None = Field(default=None, max_length=36)
     point_roles: dict[str, str | None] = Field(default_factory=dict, max_length=500)
+    role_points: dict[str, str | None] = Field(default_factory=dict, max_length=100)
+    role_display_labels: dict[str, str | None] = Field(default_factory=dict, max_length=100)
 
 
 class DeviceConfigurationOut(BaseModel):
@@ -681,6 +683,7 @@ class DeviceConfigurationOut(BaseModel):
 
 class MappingTemplateRuleIn(BaseModel):
     logical_role: str = Field(min_length=1, max_length=80)
+    display_label: str | None = Field(default=None, max_length=120)
     match_field: str = Field(min_length=1, max_length=80)
     match_value: str = Field(min_length=1, max_length=255)
     object_type: str | None = Field(default=None, max_length=80)
@@ -752,6 +755,7 @@ class SavedPointPatchIn(BaseModel):
     writable: bool | None = None
     enabled: bool | None = None
     logical_role: str | None = Field(default=None, max_length=80)
+    display_label: str | None = Field(default=None, max_length=120)
 
 
 class SavedPointsBulkRemoveIn(BaseModel):
@@ -924,6 +928,7 @@ class SavedPointOut(BaseModel):
     object_instance: int
     object_name: str | None
     logical_role: str | None
+    display_label: str | None
     property: str
     present_value: str | None
     units: str | None
