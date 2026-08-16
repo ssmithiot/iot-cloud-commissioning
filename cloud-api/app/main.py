@@ -101,6 +101,7 @@ from app.schemas import (
     JobCreateIn,
     JobOut,
     MappingApplyOut,
+    MappingTemplateFromDeviceIn,
     MappingTemplateIn,
     MappingTemplateOut,
     JobResultIn,
@@ -2907,6 +2908,28 @@ def ui_apply_mapping_template(device_id: str, template_id: str, auth: AdminAuthC
     device.updated_at = utc_now()
     db.commit()
     return {"matched": matched, "unmatched_optional": unmatched_optional, "missing_required": missing_required, "conflicts": conflicts, "retained_existing": retained_existing}
+
+
+@app.post("/api/ui/devices/{device_id}/mapping-template", response_model=MappingTemplateOut)
+def ui_create_mapping_template_from_device(device_id: str, payload: MappingTemplateFromDeviceIn, auth: AdminAuthContext = Depends(require_job_operator_auth), db: Session = Depends(get_db)) -> dict[str, object]:
+    device = _require_device_site_access(db, auth, device_id)
+    if template_for(device.template_key) is None:
+        raise HTTPException(status_code=422, detail="Choose a graphic template before saving a mapping template")
+    points = list(db.scalars(select(SavedBacnetPoint).where(SavedBacnetPoint.saved_device_id == device.id, SavedBacnetPoint.logical_role.is_not(None))).all())
+    if not points:
+        raise HTTPException(status_code=422, detail="No saved bindings available to create a mapping template")
+    if any(not point.object_name for point in points):
+        raise HTTPException(status_code=422, detail="A bound point is missing an object name and cannot become a reusable rule")
+    template = MappingTemplate(name=payload.name.strip(), graphic_template_key=device.template_key)
+    template.rules = [MappingTemplateRule(logical_role=point.logical_role, match_field="object_name", match_value=point.object_name, object_type=point.object_type, required=False) for point in points]
+    db.add(template)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Mapping template name already exists") from None
+    db.refresh(template)
+    return _mapping_template_out(template)
 
 
 @app.delete("/api/ui/devices/{device_id}", response_model=SavedDeviceOut)

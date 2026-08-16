@@ -708,6 +708,10 @@ class MappingApplyOut(BaseModel):
     retained_existing: int
 
 
+class MappingTemplateFromDeviceIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
 class SavedDeviceOut(BaseModel):
     id: str
     gateway_id: str
