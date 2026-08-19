@@ -4325,11 +4325,20 @@ def admin_evaluate_alerts(
 @app.get("/api/edge/{gateway_id}/jobs/next", response_model=EdgeJobClaimOut | None)
 def claim_next_job(
     gateway_id: str,
+    response: Response,
     auth: GatewayAuthContext = Depends(require_gateway_auth),
     db: Session = Depends(get_db),
 ) -> EdgeJobClaimOut | None:
     if auth.gateway_id != gateway_id:
         raise HTTPException(status_code=403, detail="Gateway credential does not match requested gateway_id")
+
+    # Reuse the existing in-memory admission lease: no DB lookup or new poll.
+    expires_at = tunnel_allowlist.expires_at(gateway_id)
+    if expires_at is None:
+        response.headers["X-IOT-Tunnel-Lease"] = "none"
+    else:
+        response.headers["X-IOT-Tunnel-Lease"] = "active"
+        response.headers["X-IOT-Tunnel-Lease-Expires-At"] = expires_at.isoformat()
 
     # Stale-claim recovery: a gateway that dies mid-job leaves the job
     # 'claimed' forever. Requeue this gateway's stale claims at poll time.
