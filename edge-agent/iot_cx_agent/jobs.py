@@ -1,4 +1,7 @@
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -21,14 +24,31 @@ from iot_cx_agent.status import utc_timestamp
 logger = logging.getLogger("iot-cx-agent")
 
 
-def fetch_next_job(config: AgentConfig) -> dict[str, Any] | None:
+@dataclass(frozen=True)
+class NextJobPoll:
+    job: dict[str, Any] | None
+    lease_expires_at: float | None
+    lease_known: bool
+
+
+def fetch_next_job(config: AgentConfig) -> NextJobPoll:
     response = requests.get(
         f"{config.cloud_url}/api/edge/{config.gateway_id}/jobs/next",
         headers=auth_headers(config),
         timeout=10,
     )
     response.raise_for_status()
-    return response.json()
+    headers = getattr(response, "headers", {})
+    state = headers.get("X-IOT-Tunnel-Lease", "").lower()
+    if state == "none":
+        return NextJobPoll(response.json(), None, True)
+    if state == "active":
+        try:
+            expires_at = datetime.fromisoformat(headers["X-IOT-Tunnel-Lease-Expires-At"].replace("Z", "+00:00"))
+            return NextJobPoll(response.json(), expires_at.astimezone(timezone.utc).timestamp(), True)
+        except (KeyError, ValueError):
+            logger.warning("Cloud returned an invalid tunnel lease; preserving known lease until expiry")
+    return NextJobPoll(response.json(), None, False)
 
 
 def post_job_result(
@@ -109,12 +129,17 @@ def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str
     return "failed", None, f"Unknown job_type: {job_type}"
 
 
-def process_next_job(config: AgentConfig) -> bool:
+def process_next_job(config: AgentConfig, lease_consumer: Callable[[float | None], None] | None = None) -> bool:
     try:
-        job = fetch_next_job(config)
+        poll = fetch_next_job(config)
     except requests.RequestException as exc:
         logger.warning("Job poll failed: %s", exc)
         return False
+
+    if poll.lease_known and lease_consumer is not None:
+        lease_consumer(poll.lease_expires_at)
+
+    job = poll.job
 
     if job is None:
         return True

@@ -7,7 +7,7 @@ import pytest
 import requests
 
 from iot_cx_agent.config import AgentConfig
-from iot_cx_agent.tunnel import handle_tunnel_message, local_ui_base_url, run_tunnel, tunnel_url
+from iot_cx_agent.tunnel import TunnelLeaseWorker, handle_tunnel_message, local_ui_base_url, run_tunnel, run_tunnel_forever, tunnel_url
 
 
 def test_tunnel_url_uses_gateway_id() -> None:
@@ -19,6 +19,24 @@ def test_tunnel_url_uses_gateway_id() -> None:
     )
 
     assert tunnel_url(config) == "wss://cloud.example.com/api/edge/tunnels/GW%20001"
+
+
+def test_no_lease_starts_no_worker(monkeypatch, tmp_path: Path) -> None:
+    config = AgentConfig(gateway_id="GW001", site_id="demo", cloud_url="https://cloud.example", gateway_api_token="token", sqlite_path=tmp_path / "edge.db")
+    started = []
+    monkeypatch.setattr("iot_cx_agent.tunnel.threading.Thread", lambda *args, **kwargs: started.append((args, kwargs)))
+    worker = TunnelLeaseWorker(config)
+    worker.update(None)
+    assert started == []
+
+
+def test_active_lease_retries_with_bounded_backoff(monkeypatch, tmp_path: Path) -> None:
+    config = AgentConfig(gateway_id="GW001", site_id="demo", cloud_url="https://cloud.example", gateway_api_token="token", sqlite_path=tmp_path / "edge.db")
+    calls, delays, states = [], [], [True, True, False]
+    monkeypatch.setattr("iot_cx_agent.tunnel.run_tunnel", lambda *args, **kwargs: (calls.append(1), (_ for _ in ()).throw(RuntimeError("lost")))[1])
+    run_tunnel_forever(config, requested=lambda: states.pop(0) if states else False, on_lease_ended=lambda: None, sleep=delays.append)
+    assert calls == [1]
+    assert delays == [1.0]
 
 
 def test_handle_tunnel_message_proxies_to_local_ui(monkeypatch, caplog) -> None:

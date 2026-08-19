@@ -4,7 +4,7 @@ from pathlib import Path
 from iot_cx_agent.config import AgentConfig, load_config, resolve_bacnet_port
 from iot_cx_agent.heartbeat import auth_headers
 from iot_cx_agent.jobs import execute_job
-from iot_cx_agent.main import run_once
+from iot_cx_agent.main import run_once, startup_stagger_seconds
 
 
 def config(tmp_path: Path) -> AgentConfig:
@@ -34,6 +34,11 @@ def test_echo_job_returns_expected_payload(tmp_path: Path) -> None:
         "gateway_id": "GW001",
         "agent_version": "0.1.0",
     }
+
+
+def test_startup_stagger_is_deterministic_and_bounded() -> None:
+    assert startup_stagger_seconds("GW001") == startup_stagger_seconds("gw001")
+    assert 0 <= startup_stagger_seconds("GW001") <= 30
 
 
 def test_bacnet_read_job_dispatches_to_handler(tmp_path: Path, monkeypatch) -> None:
