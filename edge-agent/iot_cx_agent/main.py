@@ -13,6 +13,7 @@ from iot_cx_agent.heartbeat import send_heartbeat
 from iot_cx_agent.jobs import process_next_job
 from iot_cx_agent.status import collect_status, utc_timestamp
 from iot_cx_agent.tunnel import TunnelLeaseWorker
+from iot_cx_agent.network_traffic import report as network_traffic_report
 from iot_cx_agent.trends import (
     sample_configured_trends,
     sample_local_edge_trends,
@@ -126,9 +127,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the IOT Cx edge heartbeat agent.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--once", action="store_true", help="Send one heartbeat and exit.")
+    parser.add_argument("--network-traffic", action="store_true", help="Print local agent network traffic history and exit.")
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.network_traffic:
+        import json
+        print(json.dumps(network_traffic_report(config.sqlite_path), indent=2, sort_keys=True))
+        return
     if args.once:
         raise SystemExit(0 if run_once(config) else 1)
     run_forever(config)

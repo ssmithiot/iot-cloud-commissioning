@@ -74,6 +74,20 @@ CREATE TABLE IF NOT EXISTS jobs (
     completed_at TEXT,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS agent_network_traffic (
+    bucket_start_utc TEXT PRIMARY KEY,
+    heartbeat_tx INTEGER NOT NULL DEFAULT 0, heartbeat_rx INTEGER NOT NULL DEFAULT 0, heartbeat_requests INTEGER NOT NULL DEFAULT 0, heartbeat_successes INTEGER NOT NULL DEFAULT 0, heartbeat_failures INTEGER NOT NULL DEFAULT 0,
+    jobs_poll_tx INTEGER NOT NULL DEFAULT 0, jobs_poll_rx INTEGER NOT NULL DEFAULT 0, jobs_poll_requests INTEGER NOT NULL DEFAULT 0, jobs_poll_successes INTEGER NOT NULL DEFAULT 0, jobs_poll_failures INTEGER NOT NULL DEFAULT 0,
+    trend_poll_tx INTEGER NOT NULL DEFAULT 0, trend_poll_rx INTEGER NOT NULL DEFAULT 0, trend_poll_requests INTEGER NOT NULL DEFAULT 0, trend_poll_successes INTEGER NOT NULL DEFAULT 0, trend_poll_failures INTEGER NOT NULL DEFAULT 0,
+    trend_upload_tx INTEGER NOT NULL DEFAULT 0, trend_upload_rx INTEGER NOT NULL DEFAULT 0, trend_upload_requests INTEGER NOT NULL DEFAULT 0, trend_upload_successes INTEGER NOT NULL DEFAULT 0, trend_upload_failures INTEGER NOT NULL DEFAULT 0,
+    job_result_tx INTEGER NOT NULL DEFAULT 0, job_result_rx INTEGER NOT NULL DEFAULT 0, job_result_requests INTEGER NOT NULL DEFAULT 0, job_result_successes INTEGER NOT NULL DEFAULT 0, job_result_failures INTEGER NOT NULL DEFAULT 0,
+    tunnel_lease_tx INTEGER NOT NULL DEFAULT 0, tunnel_lease_rx INTEGER NOT NULL DEFAULT 0, tunnel_lease_requests INTEGER NOT NULL DEFAULT 0, tunnel_lease_successes INTEGER NOT NULL DEFAULT 0, tunnel_lease_failures INTEGER NOT NULL DEFAULT 0,
+    tunnel_handshake_tx INTEGER NOT NULL DEFAULT 0, tunnel_handshake_rx INTEGER NOT NULL DEFAULT 0, tunnel_handshake_requests INTEGER NOT NULL DEFAULT 0, tunnel_handshake_successes INTEGER NOT NULL DEFAULT 0, tunnel_handshake_failures INTEGER NOT NULL DEFAULT 0,
+    tunnel_payload_tx INTEGER NOT NULL DEFAULT 0, tunnel_payload_rx INTEGER NOT NULL DEFAULT 0, tunnel_payload_requests INTEGER NOT NULL DEFAULT 0, tunnel_payload_successes INTEGER NOT NULL DEFAULT 0, tunnel_payload_failures INTEGER NOT NULL DEFAULT 0,
+    other_agent_tx INTEGER NOT NULL DEFAULT 0, other_agent_rx INTEGER NOT NULL DEFAULT 0, other_agent_requests INTEGER NOT NULL DEFAULT 0, other_agent_successes INTEGER NOT NULL DEFAULT 0, other_agent_failures INTEGER NOT NULL DEFAULT 0,
+    tunnel_attempt_count INTEGER NOT NULL DEFAULT 0
+);
 """
 
 JOB_COLUMNS = {
@@ -121,6 +135,35 @@ def connect(path: Path) -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+
+
+def record_network_traffic(path: Path, category: str, *, tx_bytes: int, rx_bytes: int, success: bool | None, tunnel_attempt: bool, now: object | None = None) -> None:
+    if category not in {"heartbeat", "jobs_poll", "trend_poll", "trend_upload", "job_result", "tunnel_lease", "tunnel_handshake", "tunnel_payload", "other_agent"}:
+        raise ValueError("unknown network category")
+    from datetime import datetime, timedelta, timezone
+    current = now if isinstance(now, datetime) else datetime.now(timezone.utc)
+    current = current.astimezone(timezone.utc).replace(second=0, microsecond=0)
+    bucket = current - timedelta(minutes=current.minute % 5)
+    prefix = category
+    with connect(path) as conn:
+        conn.execute("INSERT OR IGNORE INTO agent_network_traffic (bucket_start_utc) VALUES (?)", (bucket.isoformat(),))
+        conn.execute(f"UPDATE agent_network_traffic SET {prefix}_tx={prefix}_tx+?, {prefix}_rx={prefix}_rx+?, {prefix}_requests={prefix}_requests+1, {prefix}_successes={prefix}_successes+?, {prefix}_failures={prefix}_failures+?, tunnel_attempt_count=tunnel_attempt_count+? WHERE bucket_start_utc=?", (tx_bytes, rx_bytes, int(success is True), int(success is False), int(tunnel_attempt), bucket.isoformat()))
+        cutoff = (current - timedelta(days=30)).isoformat()
+        conn.execute("DELETE FROM agent_network_traffic WHERE bucket_start_utc < ?", (cutoff,))
+        conn.commit()
+
+
+def network_traffic_report(path: Path, *, now: object | None = None) -> dict[str, object]:
+    from datetime import datetime, timedelta, timezone
+    current = now if isinstance(now, datetime) else datetime.now(timezone.utc)
+    current = current.astimezone(timezone.utc)
+    with connect(path) as conn:
+        rows = conn.execute("SELECT * FROM agent_network_traffic ORDER BY bucket_start_utc DESC").fetchall()
+    periods = {"current_hour": current.replace(minute=0, second=0, microsecond=0), "current_day": current.replace(hour=0, minute=0, second=0, microsecond=0), "rolling_24h": current-timedelta(hours=24), "rolling_7d": current-timedelta(days=7), "rolling_30d": current-timedelta(days=30)}
+    def totals(since):
+        selected = [r for r in rows if str(r["bucket_start_utc"]) >= since.isoformat()]
+        return {c: {"tx_bytes": sum(r[f"{c}_tx"] for r in selected), "rx_bytes": sum(r[f"{c}_rx"] for r in selected), "request_count": sum(r[f"{c}_requests"] for r in selected), "success_count": sum(r[f"{c}_successes"] for r in selected), "failure_count": sum(r[f"{c}_failures"] for r in selected)} for c in ("heartbeat","jobs_poll","trend_poll","trend_upload","job_result","tunnel_lease","tunnel_handshake","tunnel_payload","other_agent")}
+    return {"application_bytes_not_wire_tls_bytes": True, "periods": {name: totals(since) for name, since in periods.items()}, "recent_buckets": [dict(r) for r in rows[:24]]}
 
 
 def queued_upload_count(path: Path) -> int:

@@ -19,6 +19,8 @@ from iot_cx_agent.db import record_claimed_job, record_job_result
 from iot_cx_agent.heartbeat import auth_headers
 from iot_cx_agent.local_write import dispatch_bacnet_write_batch
 from iot_cx_agent.status import utc_timestamp
+from iot_cx_agent.network_traffic import record_http
+from iot_cx_agent.network_traffic import record as record_network
 
 
 logger = logging.getLogger("iot-cx-agent")
@@ -32,13 +34,21 @@ class NextJobPoll:
 
 
 def fetch_next_job(config: AgentConfig) -> NextJobPoll:
-    response = requests.get(
+    try:
+        response = requests.get(
         f"{config.cloud_url}/api/edge/{config.gateway_id}/jobs/next",
         headers=auth_headers(config),
         timeout=10,
-    )
+        )
+    except requests.RequestException:
+        record_http(config.sqlite_path, "jobs_poll", success=False)
+        raise
+    record_http(config.sqlite_path, "jobs_poll", response)
     response.raise_for_status()
     headers = getattr(response, "headers", {})
+    lease_bytes = sum(len(str(value).encode()) for key, value in headers.items() if str(key).lower().startswith("x-iot-tunnel-lease"))
+    if lease_bytes:
+        record_network(config.sqlite_path, "tunnel_lease", rx_bytes=lease_bytes, success=True)
     state = headers.get("X-IOT-Tunnel-Lease", "").lower()
     if state == "none":
         return NextJobPoll(response.json(), None, True)
@@ -58,12 +68,18 @@ def post_job_result(
     result: dict[str, object] | None = None,
     error_message: str | None = None,
 ) -> requests.Response:
-    return requests.post(
+    try:
+        response = requests.post(
         f"{config.cloud_url}/api/edge/jobs/{job_id}/result",
         headers=auth_headers(config),
         json={"status": status, "result": result, "error_message": error_message},
         timeout=10,
-    )
+        )
+    except requests.RequestException:
+        record_http(config.sqlite_path, "job_result", tx_body=result, success=False)
+        raise
+    record_http(config.sqlite_path, "job_result", response, tx_body=result)
+    return response
 
 
 def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str, object] | None, str | None]:
