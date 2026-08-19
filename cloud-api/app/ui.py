@@ -3993,6 +3993,19 @@ APP_SCRIPT = r"""
     return value === "" ? null : Number(value);
   }
 
+  async function requestTunnelAndWait(gatewayId) {
+    await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-request`, {
+      method: "POST",
+      body: JSON.stringify({ ttl_minutes: 15 })
+    });
+    for (let attempt = 0; attempt < 45; attempt += 1) {
+      const status = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`);
+      if (status.connected) return;
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+    throw new Error("Tunnel request sent. The gateway did not connect within 45 seconds.");
+  }
+
   function renderSiteInfo(site, directConnect, tunnelStatus) {
     setFieldValue("site-name", site.name);
     setFieldValue("site-address-street", site.address_street || site.address);
@@ -4052,6 +4065,7 @@ APP_SCRIPT = r"""
         }
         const tunnelWindow = window.open("about:blank", "_blank");
         try {
+          await requestTunnelAndWait(document.body.dataset.gatewayId);
           const session = await api(`/api/ui/gateways/${encodeURIComponent(document.body.dataset.gatewayId)}/tunnel-session`, {
             method: "POST",
             body: JSON.stringify({ ttl_minutes: 5 })
@@ -4385,7 +4399,9 @@ APP_SCRIPT = r"""
       const openTunnelButton = byId("open-tunnel-console");
       const tunnelFallback = byId("tunnel-session-link");
       const tunnelTtl = byId("tunnel-ttl-minutes");
-      openTunnelButton.disabled = !tunnelStatus.connected;
+      // A disconnected tunnel is normal: clicking requests the short lease
+      // and waits for the gateway's ordinary job poll.
+      openTunnelButton.disabled = false;
       openTunnelButton.addEventListener("click", async () => {
         openTunnelButton.disabled = true;
         tunnelFallback.hidden = true;
@@ -4393,6 +4409,7 @@ APP_SCRIPT = r"""
         const tunnelWindow = window.open("about:blank", "_blank");
         setText("status", "Creating short-lived tunnel console session...");
         try {
+          await requestTunnelAndWait(gatewayId);
           const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, {
             method: "POST",
             body: JSON.stringify({ ttl_minutes: Number(tunnelTtl?.value || 5) })
@@ -4414,7 +4431,7 @@ APP_SCRIPT = r"""
           }
           setText("status", errorMessage(error), true);
         } finally {
-          openTunnelButton.disabled = !tunnelStatus.connected;
+          openTunnelButton.disabled = false;
         }
       });
     } catch (error) {

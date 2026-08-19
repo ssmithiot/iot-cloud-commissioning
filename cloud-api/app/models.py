@@ -283,6 +283,20 @@ class EdgeJob(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class GatewayTunnelRequest(Base):
+    """A short-lived, operator-authorized request for one gateway tunnel."""
+
+    __tablename__ = "gateway_tunnel_requests"
+
+    id: Mapped[UUID] = mapped_column(CloudUUID(), primary_key=True, default=uuid4)
+    gateway_id: Mapped[str] = mapped_column(
+        String(120), ForeignKey("edge_nodes.gateway_id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    requested_by: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
 class BacnetWriteBatch(Base):
     __tablename__ = "bacnet_write_batches"
 

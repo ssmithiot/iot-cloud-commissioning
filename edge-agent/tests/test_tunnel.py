@@ -7,7 +7,7 @@ import pytest
 import requests
 
 from iot_cx_agent.config import AgentConfig
-from iot_cx_agent.tunnel import handle_tunnel_message, local_ui_base_url, run_tunnel, tunnel_url
+from iot_cx_agent.tunnel import TunnelLeaseWorker, handle_tunnel_message, local_ui_base_url, run_tunnel, run_tunnel_forever, tunnel_url
 
 
 def test_tunnel_url_uses_gateway_id() -> None:
@@ -19,6 +19,45 @@ def test_tunnel_url_uses_gateway_id() -> None:
     )
 
     assert tunnel_url(config) == "wss://cloud.example.com/api/edge/tunnels/GW%20001"
+
+
+def test_no_cloud_lease_does_not_start_a_tunnel_worker(monkeypatch, tmp_path: Path) -> None:
+    config = AgentConfig(
+        gateway_id="GW001", site_id="demo-site", cloud_url="https://cloud.example.com",
+        sqlite_path=tmp_path / "edge.db", gateway_api_token="token",
+    )
+    started: list[object] = []
+
+    class UnexpectedThread:
+        def __init__(self, *args, **kwargs):
+            started.append((args, kwargs))
+
+    monkeypatch.setattr("iot_cx_agent.tunnel.threading.Thread", UnexpectedThread)
+    worker = TunnelLeaseWorker(config)
+    worker.update(None)
+
+    assert started == []
+    assert worker.is_requested() is False
+
+
+def test_tunnel_retries_with_bounded_backoff_only_while_leased(monkeypatch, tmp_path: Path) -> None:
+    config = AgentConfig(gateway_id="GW001", site_id="demo-site", cloud_url="https://cloud.example.com", gateway_api_token="token", sqlite_path=tmp_path / "edge.db")
+    attempts: list[int] = []
+    delays: list[float] = []
+    remaining = [True, True, False]
+
+    def requested() -> bool:
+        return remaining.pop(0) if remaining else False
+
+    def fail(*args, **kwargs):
+        attempts.append(1)
+        raise RuntimeError("disconnected")
+
+    monkeypatch.setattr("iot_cx_agent.tunnel.run_tunnel", fail)
+    run_tunnel_forever(config, requested=requested, sleep=delays.append)
+
+    assert len(attempts) == 1
+    assert delays == [1.0]
 
 
 def test_handle_tunnel_message_proxies_to_local_ui(monkeypatch, caplog) -> None:

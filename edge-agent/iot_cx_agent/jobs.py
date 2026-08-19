@@ -1,4 +1,6 @@
 import logging
+from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any
 
 import requests
@@ -21,14 +23,21 @@ from iot_cx_agent.status import utc_timestamp
 logger = logging.getLogger("iot-cx-agent")
 
 
-def fetch_next_job(config: AgentConfig) -> dict[str, Any] | None:
+def fetch_next_job(config: AgentConfig) -> tuple[dict[str, Any] | None, float | None]:
     response = requests.get(
         f"{config.cloud_url}/api/edge/{config.gateway_id}/jobs/next",
         headers=auth_headers(config),
         timeout=10,
     )
     response.raise_for_status()
-    return response.json()
+    lease_expires_at = None
+    headers = getattr(response, "headers", {})
+    if headers.get("X-IOT-Tunnel-Requested", "").lower() == "true":
+        try:
+            lease_expires_at = datetime.fromisoformat(headers["X-IOT-Tunnel-Expires-At"].replace("Z", "+00:00")).astimezone(timezone.utc).timestamp()
+        except (KeyError, ValueError):
+            logger.warning("Cloud returned an invalid tunnel lease header; tunnel remains idle")
+    return response.json(), lease_expires_at
 
 
 def post_job_result(
@@ -109,12 +118,15 @@ def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str
     return "failed", None, f"Unknown job_type: {job_type}"
 
 
-def process_next_job(config: AgentConfig) -> bool:
+def process_next_job(config: AgentConfig, tunnel_lease_consumer: Callable[[float | None], None] | None = None) -> bool:
     try:
-        job = fetch_next_job(config)
+        job, lease_expires_at = fetch_next_job(config)
     except requests.RequestException as exc:
         logger.warning("Job poll failed: %s", exc)
         return False
+
+    if tunnel_lease_consumer is not None:
+        tunnel_lease_consumer(lease_expires_at)
 
     if job is None:
         return True

@@ -1,7 +1,9 @@
 import base64
 import json
 import logging
+import threading
 import time
+from collections.abc import Callable
 from urllib.parse import quote, urlparse
 
 import requests
@@ -23,16 +25,33 @@ def tunnel_url(config: AgentConfig) -> str:
     return f"{scheme}://{parsed.netloc}{base_path}/api/edge/tunnels/{gateway_id}"
 
 
-def run_tunnel_forever(config: AgentConfig) -> None:
-    while True:
+def run_tunnel_forever(
+    config: AgentConfig,
+    *,
+    requested: Callable[[], bool] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Run only while a current Cloud lease says this gateway is wanted.
+
+    The caller owns the lease signal.  In particular, this is deliberately
+    not a service-start reconnect loop.
+    """
+    retry_delay = 1.0
+    while requested is not None and requested():
         try:
-            run_tunnel(config)
+            lease_revoked = run_tunnel(config, requested=requested)
+            if lease_revoked:
+                return
+            retry_delay = 1.0
         except Exception as exc:
-            logger.warning("Gateway tunnel disconnected: %s", exc)
-        time.sleep(5)
+            if not requested():
+                break
+            logger.warning("Gateway tunnel disconnected; retrying while Cloud lease is valid: %s", exc)
+            sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 30.0)
 
 
-def run_tunnel(config: AgentConfig) -> None:
+def run_tunnel(config: AgentConfig, *, requested: Callable[[], bool] | None = None) -> bool:
     import websocket
 
     headers = []
@@ -42,16 +61,57 @@ def run_tunnel(config: AgentConfig) -> None:
     url = tunnel_url(config)
     logger.info("Opening outbound gateway tunnel to %s", url)
     connection = websocket.create_connection(url, header=headers, timeout=30)
+    timeout_errors = (TimeoutError, getattr(websocket, "WebSocketTimeoutException", TimeoutError))
     try:
+        # A short receive timeout is local-only.  It lets a revoked/expired
+        # lease close an otherwise idle WebSocket without a tunnel keepalive.
+        if requested is not None and hasattr(connection, "settimeout"):
+            connection.settimeout(1)
         while True:
-            raw_message = connection.recv()
+            if requested is not None and not requested():
+                return True
+            try:
+                raw_message = connection.recv()
+            except timeout_errors:
+                continue
             if not raw_message:
                 continue
-
-            response = handle_tunnel_message(config, json.loads(raw_message))
+            message = json.loads(raw_message)
+            if message.get("type") == "lease_revoked":
+                logger.info("Cloud tunnel lease ended for %s", config.gateway_id)
+                return True
+            response = handle_tunnel_message(config, message)
             connection.send(json.dumps(response))
     finally:
         connection.close()
+
+
+class TunnelLeaseWorker:
+    """One bounded, Cloud-lease-controlled tunnel worker per edge process."""
+
+    def __init__(self, config: AgentConfig) -> None:
+        self.config = config
+        self._lock = threading.Lock()
+        self._lease_expires_at = 0.0
+        self._thread: threading.Thread | None = None
+
+    def update(self, lease_expires_at: float | None) -> None:
+        with self._lock:
+            self._lease_expires_at = lease_expires_at or 0.0
+            active = self._is_requested_locked()
+            if active and (self._thread is None or not self._thread.is_alive()):
+                self._thread = threading.Thread(target=self._run, name="iot-tunnel-lease", daemon=True)
+                self._thread.start()
+
+    def is_requested(self) -> bool:
+        with self._lock:
+            return self._is_requested_locked()
+
+    def _is_requested_locked(self) -> bool:
+        return self.config.is_provisioned and self.config.tunnel_enabled and time.time() < self._lease_expires_at
+
+    def _run(self) -> None:
+        run_tunnel_forever(self.config, requested=self.is_requested)
 
 
 def local_ui_base_url(config: AgentConfig) -> str:

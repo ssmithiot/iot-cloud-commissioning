@@ -1,10 +1,12 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from iot_cx_agent.config import AgentConfig, load_config, resolve_bacnet_port
 from iot_cx_agent.heartbeat import auth_headers
 from iot_cx_agent.jobs import execute_job
-from iot_cx_agent.main import run_once
+from iot_cx_agent.main import run_forever, run_once, startup_stagger_seconds
 
 
 def config(tmp_path: Path) -> AgentConfig:
@@ -208,6 +210,24 @@ def test_load_config_reads_tunnel_settings(tmp_path: Path) -> None:
     assert agent_config.local_ui_url == "http://127.0.0.1:5100"
 
 
+def test_startup_stagger_is_stable_and_in_range() -> None:
+    assert startup_stagger_seconds("GW001") == startup_stagger_seconds("gw001")
+    assert 0 <= startup_stagger_seconds("GW001") <= 30
+
+
+def test_agent_start_does_not_open_tunnel_without_cloud_lease(tmp_path: Path, monkeypatch) -> None:
+    agent_config = AgentConfig(
+        gateway_id="GW001", site_id="demo-site", cloud_url="http://localhost:8000",
+        gateway_api_token="token", sqlite_path=tmp_path / "edge.db",
+    )
+    monkeypatch.setattr("iot_cx_agent.main.startup_stagger_seconds", lambda gateway_id: 0)
+    monkeypatch.setattr("iot_cx_agent.main.run_once", lambda *args: (_ for _ in ()).throw(StopIteration))
+    monkeypatch.setattr("iot_cx_agent.tunnel.run_tunnel", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected websocket")))
+
+    with pytest.raises(StopIteration):
+        run_forever(agent_config)
+
+
 def test_load_config_reads_edge_ui_data_dir(tmp_path: Path) -> None:
     edge_data = tmp_path / "edge-bacnet-ui-v2" / "data"
     config_path = tmp_path / "agent.yaml"
@@ -236,7 +256,7 @@ def test_load_config_uses_installed_edge_app_version(tmp_path: Path) -> None:
 
     agent_config = load_config(config_path)
 
-    assert agent_config.agent_version == "0.2.0"
+    assert agent_config.agent_version == "0.2.1"
     assert agent_config.ui_version == "0.1.0"
 
 

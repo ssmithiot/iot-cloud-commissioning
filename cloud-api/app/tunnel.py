@@ -134,6 +134,46 @@ class TunnelManager:
     def active_count(self) -> int:
         return len(self._tunnels)
 
+    async def end_request(self, gateway_id: str) -> None:
+        tunnel = self._tunnels.get(gateway_id)
+        if tunnel is not None:
+            await tunnel.websocket.send_json({"type": "lease_revoked"})
+
+
+class TunnelRequestManager:
+    """Cheap pre-auth gate populated by the normal authenticated job poll."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._requests: dict[str, datetime] = {}
+
+    def activate(self, gateway_id: str, expires_at: datetime) -> None:
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        else:
+            expires_at = expires_at.astimezone(timezone.utc)
+        with self._lock:
+            self._requests[gateway_id] = expires_at
+
+    def clear(self, gateway_id: str) -> None:
+        with self._lock:
+            self._requests.pop(gateway_id, None)
+
+    def is_requested(self, gateway_id: str) -> bool:
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            expires_at = self._requests.get(gateway_id)
+            if expires_at is None:
+                return False
+            if expires_at <= now:
+                self._requests.pop(gateway_id, None)
+                return False
+            return True
+
+    def reset(self) -> None:
+        with self._lock:
+            self._requests.clear()
+
 
 class TunnelSessionManager:
     def __init__(self, ttl_seconds: int = 300) -> None:
@@ -268,6 +308,7 @@ class TunnelMetrics:
 
 
 tunnel_manager = TunnelManager()
+tunnel_request_manager = TunnelRequestManager()
 tunnel_session_manager = TunnelSessionManager()
 tunnel_auth_gate = TunnelAuthGate()
 tunnel_metrics = TunnelMetrics()

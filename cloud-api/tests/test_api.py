@@ -135,6 +135,12 @@ def auth_headers(raw_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {raw_token}"}
 
 
+def activate_tunnel_request(gateway_id: str) -> None:
+    from app.tunnel import tunnel_request_manager
+
+    tunnel_request_manager.activate(gateway_id, utc_now() + timedelta(minutes=15))
+
+
 def admin_headers(token: str = "test-admin-token") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -1340,6 +1346,35 @@ def test_tunnel_status_remains_friendly_when_disconnected() -> None:
     assert response.json() == {"connected": False, "status": "not_connected"}
 
 
+def test_tunnel_request_is_delivered_on_existing_job_poll_and_gates_websocket() -> None:
+    raw_token = create_gateway_token("GW001")
+    requested = client.post(
+        "/api/ui/gateways/GW001/tunnel-request",
+        headers=admin_headers(),
+        json={"ttl_minutes": 15},
+    )
+    assert requested.status_code == 200
+    assert requested.json()["requested"] is True
+
+    poll = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
+    assert poll.status_code == 200
+    assert poll.headers["X-IOT-Tunnel-Requested"] == "true"
+    assert "X-IOT-Tunnel-Expires-At" in poll.headers
+
+    with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+        assert client.get("/api/ui/gateways/GW001/tunnel-status", headers=admin_headers()).json()["connected"] is True
+
+
+def test_unsolicited_tunnel_websocket_is_rejected_before_authentication() -> None:
+    from app.tunnel import tunnel_metrics
+
+    raw_token = create_gateway_token("GW001")
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+            pass
+    assert tunnel_metrics.snapshot(active_tunnels=0, auth_gate_in_use=0, auth_gate_limit=5)["auth_attempts_total"] == 0
+
+
 def test_gateway_tunnel_registration_requires_matching_gateway_token() -> None:
     raw_token = create_gateway_token("GW002", token_prefix="gw00201")
 
@@ -1369,6 +1404,7 @@ def test_gateway_tunnel_auth_gate_rejects_overload_before_db(monkeypatch: pytest
     monkeypatch.setattr(main_module.settings, "gateway_tunnel_auth_concurrency", 1)
     assert tunnel_auth_gate.try_acquire(1) is True
     raw_token = create_gateway_token("GW001")
+    activate_tunnel_request("GW001")
     try:
         with pytest.raises(WebSocketDisconnect) as exc:
             with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
@@ -1386,6 +1422,7 @@ def test_gateway_tunnel_auth_gate_rejects_overload_before_db(monkeypatch: pytest
 
 def test_gateway_tunnel_registration_updates_status() -> None:
     raw_token = create_gateway_token("GW001")
+    activate_tunnel_request("GW001")
 
     with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
         connected = client.get("/api/ui/gateways/GW001/tunnel-status", headers=admin_headers())
@@ -1414,6 +1451,7 @@ def test_gateway_tunnel_does_not_hold_db_session_while_connected() -> None:
     assert "db" not in inspect.signature(edge_tunnel).parameters
 
     raw_token = create_gateway_token("GW001")
+    activate_tunnel_request("GW001")
 
     # First connect performs the token-telemetry write (commit releases the
     # connection even on the old broken code); the second, inside the
@@ -1435,6 +1473,7 @@ def test_gateway_tunnel_duplicate_connection_replaces_without_stale_cleanup_corr
     from app.tunnel import tunnel_manager, tunnel_metrics
 
     raw_token = create_gateway_token("GW001")
+    activate_tunnel_request("GW001")
 
     with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
         assert tunnel_manager.is_connected("GW001") is True
@@ -1490,6 +1529,8 @@ def test_gateway_tunnel_reconnect_burst_fast_rejects_overload_and_keeps_core_rou
         return GatewayAuthContext(gateway_id=gateway_id, credential_id="burst-test", scopes=[])
 
     monkeypatch.setattr(main_module, "require_gateway_auth", slow_gateway_auth)
+    for index in range(gateway_count):
+        activate_tunnel_request(f"GW{index:03d}")
     start_event = threading.Event()
 
     def connect_gateway(index: int) -> str:

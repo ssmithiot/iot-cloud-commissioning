@@ -46,6 +46,7 @@ from app.models import (
     GatewayAlertState,
     GatewayCredential,
     GatewayGroup,
+    GatewayTunnelRequest,
     GatewayUpdateRequest,
     PointTrendConfig,
     PointTrendSample,
@@ -123,6 +124,8 @@ from app.schemas import (
     TrendConfigRepairOut,
     TunnelSessionCreateIn,
     TunnelSessionOut,
+    TunnelRequestIn,
+    TunnelRequestOut,
     TunnelStatusOut,
 )
 from app.tunnel import (
@@ -131,6 +134,7 @@ from app.tunnel import (
     TunnelUnavailable,
     tunnel_auth_gate,
     tunnel_manager,
+    tunnel_request_manager,
     tunnel_metrics,
     tunnel_session_manager,
 )
@@ -2021,6 +2025,50 @@ def ui_gateway_tunnel_status(
     return TunnelStatusOut(connected=connected, status="connected" if connected else "not_connected")
 
 
+@app.post("/api/ui/gateways/{gateway_id}/tunnel-request", response_model=TunnelRequestOut)
+def ui_request_gateway_tunnel(
+    gateway_id: str,
+    payload: TunnelRequestIn | None = Body(default=None),
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> TunnelRequestOut:
+    _require_gateway_site_access(db, auth, gateway_id)
+    now = utc_now()
+    expires_at = now + timedelta(minutes=(payload.ttl_minutes if payload is not None else 15))
+    request = db.scalar(select(GatewayTunnelRequest).where(GatewayTunnelRequest.gateway_id == gateway_id))
+    if request is None:
+        request = GatewayTunnelRequest(
+            gateway_id=gateway_id,
+            requested_by=auth.email or auth.auth_type,
+            requested_at=now,
+            expires_at=expires_at,
+        )
+        db.add(request)
+    else:
+        request.requested_by = auth.email or auth.auth_type
+        request.requested_at = now
+        request.expires_at = expires_at
+    db.commit()
+    tunnel_request_manager.activate(gateway_id, expires_at)
+    return TunnelRequestOut(requested=True, expires_at=expires_at)
+
+
+@app.delete("/api/ui/gateways/{gateway_id}/tunnel-request", status_code=204)
+async def ui_end_gateway_tunnel_request(
+    gateway_id: str,
+    auth: AdminAuthContext = Depends(require_job_operator_auth),
+    db: Session = Depends(get_db),
+) -> Response:
+    _require_gateway_site_access(db, auth, gateway_id)
+    request = db.scalar(select(GatewayTunnelRequest).where(GatewayTunnelRequest.gateway_id == gateway_id))
+    if request is not None:
+        db.delete(request)
+        db.commit()
+    tunnel_request_manager.clear(gateway_id)
+    await tunnel_manager.end_request(gateway_id)
+    return Response(status_code=204)
+
+
 @app.post("/api/ui/gateways/{gateway_id}/tunnel-session", response_model=TunnelSessionOut)
 def ui_create_gateway_tunnel_session(
     gateway_id: str,
@@ -2048,6 +2096,13 @@ async def edge_tunnel(
     if settings.gateway_tunnel_websockets_disabled:
         tunnel_metrics.record_rejected()
         await websocket.close(code=1013)
+        return
+
+    # This precedes the authentication gate and database work.  Unsolicited
+    # fleet connections are rejected at constant cost.
+    if not tunnel_request_manager.is_requested(gateway_id):
+        tunnel_metrics.record_rejected()
+        await websocket.close(code=1008)
         return
 
     tunnel_metrics.record_auth_attempt()
@@ -3692,11 +3747,25 @@ def admin_evaluate_alerts(
 @app.get("/api/edge/{gateway_id}/jobs/next", response_model=EdgeJobClaimOut | None)
 def claim_next_job(
     gateway_id: str,
+    response: Response,
     auth: GatewayAuthContext = Depends(require_gateway_auth),
     db: Session = Depends(get_db),
 ) -> EdgeJobClaimOut | None:
     if auth.gateway_id != gateway_id:
         raise HTTPException(status_code=403, detail="Gateway credential does not match requested gateway_id")
+
+    tunnel_request = db.scalar(
+        select(GatewayTunnelRequest).where(
+            GatewayTunnelRequest.gateway_id == gateway_id,
+            GatewayTunnelRequest.expires_at > utc_now(),
+        )
+    )
+    if tunnel_request is not None:
+        tunnel_request_manager.activate(gateway_id, tunnel_request.expires_at)
+        response.headers["X-IOT-Tunnel-Requested"] = "true"
+        response.headers["X-IOT-Tunnel-Expires-At"] = tunnel_request.expires_at.isoformat()
+    else:
+        tunnel_request_manager.clear(gateway_id)
 
     # Stale-claim recovery: a gateway that dies mid-job leaves the job
     # 'claimed' forever. Requeue this gateway's stale claims at poll time.

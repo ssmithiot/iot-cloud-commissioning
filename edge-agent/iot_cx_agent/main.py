@@ -1,6 +1,6 @@
 import argparse
+import hashlib
 import logging
-import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -12,7 +12,7 @@ from iot_cx_agent.db import initialize_database, record_heartbeat_attempt
 from iot_cx_agent.heartbeat import send_heartbeat
 from iot_cx_agent.jobs import process_next_job
 from iot_cx_agent.status import collect_status, utc_timestamp
-from iot_cx_agent.tunnel import run_tunnel_forever
+from iot_cx_agent.tunnel import TunnelLeaseWorker
 from iot_cx_agent.trends import (
     sample_configured_trends,
     sample_local_edge_trends,
@@ -25,7 +25,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("iot-cx-agent")
 
 
-def run_once(config: AgentConfig) -> bool:
+def startup_stagger_seconds(gateway_id: str) -> int:
+    """Stable 0–30 second offset, preventing coordinated fleet restarts."""
+    digest = hashlib.sha256(gateway_id.strip().upper().encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") % 31
+
+
+def run_once(config: AgentConfig, tunnel_worker: TunnelLeaseWorker | None = None) -> bool:
     sqlite_db_ok = True
     try:
         initialize_database(config.sqlite_path)
@@ -72,7 +78,7 @@ def run_once(config: AgentConfig) -> bool:
         run_step("Local Edge trend upload", upload_pending_local_trend_samples, config)
         run_step("Cloud trend sampling", sample_configured_trends, config)
         run_step("Cloud trend upload", upload_pending_trend_samples, config)
-        process_next_job(config)
+        process_next_job(config, tunnel_worker.update if tunnel_worker is not None else None)
     return heartbeat_success
 
 
@@ -105,14 +111,17 @@ def safe_record_heartbeat_attempt(config_path: Path, **kwargs: object) -> None:
 
 
 def run_forever(config: AgentConfig) -> None:
-    if config.is_provisioned and config.tunnel_enabled:
-        threading.Thread(target=run_tunnel_forever, args=(config,), daemon=True).start()
-        logger.info("Outbound gateway tunnel enabled for %s", config.gateway_id)
-    elif config.tunnel_enabled:
-        logger.info("Outbound gateway tunnel skipped until gateway is provisioned")
+    tunnel_worker = TunnelLeaseWorker(config)
+    if config.tunnel_enabled:
+        logger.info("Outbound gateway tunnel ready for Cloud request: %s", config.gateway_id)
+
+    stagger = startup_stagger_seconds(config.gateway_id)
+    if stagger:
+        logger.info("Applying deterministic %ss startup stagger for %s", stagger, config.gateway_id)
+        time.sleep(stagger)
 
     while True:
-        run_once(config)
+        run_once(config, tunnel_worker)
         time.sleep(config.heartbeat_interval_sec)
 
 
