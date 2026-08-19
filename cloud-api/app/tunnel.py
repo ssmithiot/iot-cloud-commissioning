@@ -205,6 +205,11 @@ class TunnelManager:
         tunnel.fail_pending()
         try:
             await tunnel.websocket.send_json({"type": "lease_ended"})
+        except (AttributeError, RuntimeError):
+            # Test adapters and already-disconnected sockets may not support
+            # a final control frame; the close still revokes the tunnel.
+            pass
+        try:
             await tunnel.websocket.close(code=code)
         except RuntimeError:
             pass
