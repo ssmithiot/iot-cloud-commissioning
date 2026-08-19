@@ -204,6 +204,7 @@ class TunnelManager:
             return False
         tunnel.fail_pending()
         try:
+            await tunnel.websocket.send_json({"type": "lease_ended"})
             await tunnel.websocket.close(code=code)
         except RuntimeError:
             pass
