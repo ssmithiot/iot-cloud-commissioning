@@ -22,6 +22,7 @@ from iot_cx_agent.db import (
     trend_last_sample_at,
 )
 from iot_cx_agent.heartbeat import auth_headers
+from iot_cx_agent.network_traffic import record_http
 
 
 logger = logging.getLogger("iot-cx-agent")
@@ -477,6 +478,7 @@ def upload_pending_local_trend_samples(config: AgentConfig) -> int:
             )
             response.raise_for_status()
         except requests.RequestException as exc:
+            record_http(config.sqlite_path, "trend_upload", tx_body=payload, success=False)
             prior_attempts = max((int(row["attempt_count"] or 0) for row in rows), default=0)
             retry_seconds = min(
                 config.trend_upload_retry_max_sec,
@@ -493,6 +495,8 @@ def upload_pending_local_trend_samples(config: AgentConfig) -> int:
             )
             conn.commit()
             raise
+
+        record_http(config.sqlite_path, "trend_upload", response, tx_body=payload)
 
         conn.executemany(
             """
@@ -523,6 +527,7 @@ def upload_pending_trend_samples(config: AgentConfig) -> int:
         )
         response.raise_for_status()
     except requests.RequestException as exc:
+        record_http(config.sqlite_path, "trend_upload", tx_body=[sample for _, sample in queued], success=False)
         retry_seconds = min(
             config.trend_upload_retry_max_sec,
             config.trend_upload_retry_base_sec * (2 ** min(6, max(0, prior_attempts))),
@@ -535,10 +540,16 @@ def upload_pending_trend_samples(config: AgentConfig) -> int:
             updated_at=now.isoformat(),
         )
         raise
+    record_http(config.sqlite_path, "trend_upload", response, tx_body=[sample for _, sample in queued])
     mark_trend_samples_uploaded(config.sqlite_path, ids, now.isoformat())
     return len(queued)
 def sample_configured_trends(config: AgentConfig) -> int:
-    response = requests.get(f"{config.cloud_url}/api/edge/{config.gateway_id}/trend-configs", headers=auth_headers(config), timeout=20)
+    try:
+        response = requests.get(f"{config.cloud_url}/api/edge/{config.gateway_id}/trend-configs", headers=auth_headers(config), timeout=20)
+    except requests.RequestException:
+        record_http(config.sqlite_path, "trend_poll", success=False)
+        raise
+    record_http(config.sqlite_path, "trend_poll", response)
     response.raise_for_status()
     now = _now()
     due = [trend for trend in response.json() if isinstance(trend, dict) and _due(config, trend, now)]
