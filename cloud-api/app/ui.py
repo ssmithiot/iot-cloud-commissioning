@@ -4133,6 +4133,45 @@ APP_SCRIPT = r"""
     return value === "" ? null : Number(value);
   }
 
+  function renderWorkspaceTunnelState(status, message = "") {
+    const establish = byId("remote-tunnel-link");
+    const connect = byId("workspace-tunnel-connect");
+    const close = byId("workspace-tunnel-close");
+    const spinner = byId("workspace-tunnel-spinner");
+    const actionStatus = byId("tunnel-action-status");
+    const connected = Boolean(status && status.connected);
+    const opening = Boolean(status && status.status === "opening");
+    const remaining = status && status.remaining_seconds != null ? ` — ${Math.ceil(status.remaining_seconds / 60)}m remaining` : "";
+    if (byId("tunnel-status")) byId("tunnel-status").textContent = connected ? `connected${remaining}` : (opening ? "opening" : "not connected");
+    if (establish) {
+      establish.hidden = connected || currentUser?.role === "viewer";
+      establish.textContent = "Establish Tunnel";
+      establish.dataset.busy = opening ? "true" : "false";
+      if (opening) establish.setAttribute("aria-disabled", "true"); else establish.removeAttribute("aria-disabled");
+    }
+    if (connect) connect.hidden = !connected || currentUser?.role === "viewer";
+    if (close) close.hidden = !connected || currentUser?.role === "viewer";
+    if (spinner) spinner.hidden = !opening;
+    if (actionStatus) actionStatus.textContent = message || (connected ? `connected${remaining}` : (opening ? "Establishing tunnel..." : "Ready"));
+  }
+
+  async function establishWorkspaceTunnel(gatewayId, ttl) {
+    await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel/open`, { method: "POST", body: JSON.stringify({ duration_minutes: ttl }) });
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      const status = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-status`);
+      renderWorkspaceTunnelState(status);
+      if (status.connected) return status;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    throw new Error("Tunnel is still connecting. Please try again shortly.");
+  }
+
+  async function connectWorkspaceTunnel(gatewayId, ttl) {
+    const session = await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`, { method: "POST", body: JSON.stringify({ ttl_minutes: ttl }) });
+    window.open(session.url, "_blank", "noopener,noreferrer");
+  }
+
   async function openRemoteTunnel(gatewayId, ttl) {
     let popup = null;
     try {
@@ -4175,8 +4214,7 @@ APP_SCRIPT = r"""
     setFieldValue("store-hours-sat", site.store_hours_saturday || site.store_hours_sat);
     setFieldValue("store-hours-sun", site.store_hours_sunday || site.store_hours_sun);
     setFieldValue("network-status-notes", site.network_status_notes);
-    const tunnelRemaining = tunnelStatus.remaining_seconds == null ? "" : ` — ${Math.ceil(tunnelStatus.remaining_seconds / 60)}m remaining`;
-    byId("tunnel-status").textContent = tunnelStatus.connected ? `connected${tunnelRemaining}` : (tunnelStatus.status === "opening" ? "connecting tunnel..." : "not connected");
+    renderWorkspaceTunnelState(tunnelStatus);
 
     const summaryName = byId("site-summary-name");
     const summaryAddress = byId("site-summary-address");
@@ -4205,28 +4243,46 @@ APP_SCRIPT = r"""
     const directLink = byId("direct-connect-link");
     const directStatus = byId("direct-connect-status");
     const remoteTunnelLink = byId("remote-tunnel-link");
+    const connectTunnelLink = byId("workspace-tunnel-connect");
+    const closeTunnelLink = byId("workspace-tunnel-close");
     const tunnelActionStatus = byId("tunnel-action-status");
     if (tunnelActionStatus && !tunnelActionStatus.textContent.trim()) {
       tunnelActionStatus.textContent = "Ready";
     }
     if (remoteTunnelLink) {
-      remoteTunnelLink.hidden = currentUser?.role === "viewer";
       remoteTunnelLink.onclick = async (event) => {
         event.preventDefault();
         if (remoteTunnelLink.dataset.busy === "true") return;
-        remoteTunnelLink.dataset.busy = "true";
-        remoteTunnelLink.setAttribute("aria-disabled", "true");
         const gatewayId = document.body.dataset.gatewayId;
         const ttl = Number(byId("workspace-tunnel-ttl")?.value || 5);
-        if (tunnelActionStatus) tunnelActionStatus.textContent = "Opening tunnel...";
+        renderWorkspaceTunnelState({ connected: false, status: "opening" });
         try {
-          await openRemoteTunnel(gatewayId, ttl);
-          if (tunnelActionStatus) tunnelActionStatus.textContent = "Connected";
+          await establishWorkspaceTunnel(gatewayId, ttl);
+        } catch (error) {
+          renderWorkspaceTunnelState({ connected: false, status: "closed" }, errorMessage(error));
+        }
+      };
+    }
+    if (connectTunnelLink) {
+      connectTunnelLink.onclick = async () => {
+        const gatewayId = document.body.dataset.gatewayId;
+        const ttl = Number(byId("workspace-tunnel-ttl")?.value || 5);
+        connectTunnelLink.disabled = true;
+        try { await connectWorkspaceTunnel(gatewayId, ttl); }
+        catch (error) { if (tunnelActionStatus) tunnelActionStatus.textContent = errorMessage(error); }
+        finally { connectTunnelLink.disabled = false; }
+      };
+    }
+    if (closeTunnelLink) {
+      closeTunnelLink.onclick = async () => {
+        const gatewayId = document.body.dataset.gatewayId;
+        closeTunnelLink.disabled = true;
+        try {
+          await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel/close`, { method: "POST" });
+          renderWorkspaceTunnelState({ connected: false, status: "closed" });
         } catch (error) {
           if (tunnelActionStatus) tunnelActionStatus.textContent = errorMessage(error);
-        } finally {
-          remoteTunnelLink.dataset.busy = "false";
-          remoteTunnelLink.removeAttribute("aria-disabled");
+          closeTunnelLink.disabled = false;
         }
       };
     }
@@ -7764,7 +7820,7 @@ def gateway_workspace_html(gateway_id: str) -> str:
           <div class="grid">
             <div class="span-4"><label>Tunnel Status</label><pre id="tunnel-status">Loading...</pre></div>
             <div class="span-4"><label>Direct Connect</label><pre id="direct-connect-status">Loading...</pre></div>
-            <div class="span-12"><label>Action</label><div class="gateway-access-actions"><label for="workspace-tunnel-ttl">Tunnel duration</label><select id="workspace-tunnel-ttl" aria-label="Tunnel duration"><option value="5" selected>5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select><a id="remote-tunnel-link" class="button secondary" href="/gateways/{escaped_gateway_id}/tunnel/">Remote Tunnel</a><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div><span id="tunnel-action-status" class="gateway-action-status">Ready</span></div>
+            <div class="span-12"><label>Action</label><div class="gateway-access-actions"><label for="workspace-tunnel-ttl">Tunnel duration</label><select id="workspace-tunnel-ttl" aria-label="Tunnel duration"><option value="5" selected>5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select><a id="remote-tunnel-link" class="button secondary" href="#">Establish Tunnel</a><button id="workspace-tunnel-connect" class="button secondary" type="button" hidden>Connect</button><button id="workspace-tunnel-close" class="button danger" type="button" hidden>Close Tunnel</button><a id="direct-connect-link" class="button" href="#" hidden>Direct Connect</a></div><span id="workspace-tunnel-spinner" class="gateway-action-status" role="status" aria-live="polite" hidden>&#8987; Establishing tunnel...</span><span id="tunnel-action-status" class="gateway-action-status">Ready</span></div>
           </div>
         </article>
         <article class="workspace-tile site-summary">

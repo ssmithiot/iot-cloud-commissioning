@@ -546,7 +546,10 @@ def test_gateway_workspace_restores_remote_tunnel_action_next_to_direct_connect(
     assert 'id="remote-tunnel-link"' in response.text
     assert 'id="workspace-tunnel-ttl"' in response.text
     assert '<option value="5" selected>5 minutes</option>' in response.text
-    assert 'Remote Tunnel</a><a id="direct-connect-link"' in response.text
+    assert 'id="remote-tunnel-link" class="button secondary" href="#">Establish Tunnel</a>' in response.text
+    assert 'id="workspace-tunnel-connect"' in response.text
+    assert 'id="workspace-tunnel-close"' in response.text
+    assert 'id="workspace-tunnel-spinner"' in response.text
     assert 'id="direct-connect-link"' in response.text
     assert ".gateway-access-actions" in response.text
     assert "display: flex;" in response.text
@@ -558,24 +561,27 @@ def test_gateway_workspace_restores_remote_tunnel_action_next_to_direct_connect(
     assert 'id="tunnel-action-status" class="gateway-action-status">Ready</span>' in response.text
     assert '/tunnel/open' in response.text
     assert 'duration_minutes: ttl' in response.text
-    assert 'Opening tunnel...' in response.text
-    assert 'Connecting tunnel...' in response.text
+    assert 'Establishing tunnel...' in response.text
     assert '/tunnel-session' in response.text
     assert 'id="tunnel-status"' in response.text
 
 
-def test_remote_tunnel_polling_only_waits_for_connection_then_uses_historical_session() -> None:
+def test_workspace_tunnel_flow_stays_in_workspace_until_operator_connects() -> None:
     response = client.get("/gateways/GW777")
 
     assert response.status_code == 200
-    assert "async function openRemoteTunnel(gatewayId, ttl)" in response.text
-    assert "while (Date.now() < deadline)" in response.text
-    assert "if (status.connected)" in response.text
-    assert "await api(`/api/ui/gateways/${encodeURIComponent(gatewayId)}/tunnel-session`" in response.text
-    assert "popup.location.assign(session.url);" in response.text
-    # The function returns as soon as the session is created; the wait loop
-    # exists only before a gateway connection is available.
-    assert "return;\n        }\n        await new Promise((resolve) => setTimeout(resolve, 1000));" in response.text
+    start = response.text.index("async function establishWorkspaceTunnel(gatewayId, ttl)")
+    end = response.text.index("async function connectWorkspaceTunnel(gatewayId, ttl)")
+    establish = response.text[start:end]
+    assert "/tunnel/open" in establish
+    assert "/tunnel-status" in establish
+    assert "while (Date.now() < deadline)" in establish
+    assert "/tunnel/connecting" not in establish
+    assert "window.open" not in establish
+    assert "tunnel-session" not in establish
+    assert "async function connectWorkspaceTunnel(gatewayId, ttl)" in response.text
+    assert "/tunnel-session" in response.text
+    assert "/tunnel/close" in response.text
 
 
 def test_gateway_workspace_contains_discovery_progress_ui() -> None:
@@ -604,7 +610,7 @@ def test_gateway_workspace_contains_discovery_progress_ui() -> None:
     assert 'id="direct-connect-link"' in response.text
     assert 'id="remote-tunnel-link"' in response.text
     assert '<div class="span-12"><label>Action</label><div class="gateway-access-actions"><label for="workspace-tunnel-ttl">Tunnel duration</label><select id="workspace-tunnel-ttl"' in response.text
-    assert 'Remote Tunnel</a><a id="direct-connect-link"' in response.text
+    assert 'Establish Tunnel</a><button id="workspace-tunnel-connect"' in response.text
     assert 'id="tunnel-action-status" class="gateway-action-status">Ready</span>' in response.text
     assert 'id="tunnel-status"' in response.text
     assert "Direct Connect" in response.text
