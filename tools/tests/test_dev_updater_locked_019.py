@@ -7,6 +7,7 @@ import os
 import socket
 import subprocess
 import tarfile
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -148,6 +149,110 @@ def test_two_distinct_local_listeners_can_run_together():
     finally:
         legacy.close(); development.close()
 
+
+def run_full_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tar_script: str, *, timeout_seconds: int = 5) -> subprocess.CompletedProcess[str]:
+    root = tmp_path / "swadmin"
+    (root / "edge-bacnet-ui-v2" / "data").mkdir(parents=True)
+    (root / "edge-bacnet-ui-v2" / "data" / "history.sqlite").write_bytes(b"live data")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    tar = fake_bin / "tar"
+    tar.write_text("#!/bin/sh\n" + textwrap.dedent(tar_script), encoding="utf-8")
+    tar.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    return subprocess.run(
+        ["/bin/sh", "-c", dev.full_backup_command(str(root), timeout_seconds=timeout_seconds, heartbeat_seconds=1)],
+        text=True,
+        capture_output=True,
+        env=os.environ.copy(),
+    )
+
+
+REAL_TAR = 'exec /usr/bin/tar "$@"\n'
+
+
+def test_full_backup_accepts_a_clean_tar_and_valid_archive(tmp_path, monkeypatch):
+    result = run_full_backup(tmp_path, monkeypatch, REAL_TAR)
+    assert result.returncode == 0
+    assert "BACKUP_TAR_RESULT=clean" in result.stdout
+    assert "BACKUP_ARCHIVE_VALID=Passed" in result.stdout
+
+
+def test_full_backup_accepts_only_live_file_change_warning_after_validation(tmp_path, monkeypatch):
+    result = run_full_backup(tmp_path, monkeypatch, '''
+        if [ "$1" = "-czf" ]; then
+          /usr/bin/tar "$@" || exit $?
+          echo "tar: edge-bacnet-ui-v2/data/history.sqlite: file changed as we read it" >&2
+          exit 1
+        fi
+        exec /usr/bin/tar "$@"
+    ''')
+    assert result.returncode == 0
+    assert "file changed as we read it" in result.stdout
+    assert "BACKUP_TAR_RESULT=live-file-change-warning" in result.stdout
+    assert "BACKUP_ARCHIVE_VALID=Passed" in result.stdout
+
+
+def test_full_backup_rejects_live_warning_when_archive_is_invalid(tmp_path, monkeypatch):
+    result = run_full_backup(tmp_path, monkeypatch, '''
+        if [ "$1" = "-czf" ]; then
+          printf invalid > "$2"
+          echo "tar: edge-bacnet-ui-v2/data/history.sqlite: file changed as we read it" >&2
+          exit 1
+        fi
+        exec /usr/bin/tar "$@"
+    ''')
+    assert result.returncode != 0
+    assert "BACKUP_ARCHIVE_INVALID=gzip" in result.stderr
+
+
+def test_full_backup_rejects_non_warning_tar_failure(tmp_path, monkeypatch):
+    result = run_full_backup(tmp_path, monkeypatch, '''
+        if [ "$1" = "-czf" ]; then echo "tar: fatal error" >&2; exit 2; fi
+        exec /usr/bin/tar "$@"
+    ''')
+    assert result.returncode == 2
+    assert "BACKUP_TAR_RESULT=failed exit=2" in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["zero", "missing"])
+def test_full_backup_rejects_missing_or_zero_byte_archive(tmp_path, monkeypatch, mode):
+    action = ': > "$2"' if mode == "zero" else 'rm -f "$2"'
+    result = run_full_backup(tmp_path, monkeypatch, f'''
+        if [ "$1" = "-czf" ]; then {action}; exit 0; fi
+        exec /usr/bin/tar "$@"
+    ''')
+    assert result.returncode != 0
+    assert "BACKUP_ARCHIVE_INVALID=missing-or-zero-byte" in result.stderr
+
+
+def test_full_backup_rejects_gzip_integrity_failure(tmp_path, monkeypatch):
+    result = run_full_backup(tmp_path, monkeypatch, '''
+        if [ "$1" = "-czf" ]; then printf invalid > "$2"; exit 0; fi
+        exec /usr/bin/tar "$@"
+    ''')
+    assert result.returncode != 0
+    assert "BACKUP_ARCHIVE_INVALID=gzip" in result.stderr
+
+
+def test_full_backup_rejects_tar_listing_failure(tmp_path, monkeypatch):
+    result = run_full_backup(tmp_path, monkeypatch, '''
+        if [ "$1" = "-tzf" ]; then echo "listing failed" >&2; exit 1; fi
+        exec /usr/bin/tar "$@"
+    ''')
+    assert result.returncode != 0
+    assert "BACKUP_ARCHIVE_INVALID=listing" in result.stderr
+
+
+def test_full_backup_timeout_is_reported_clearly(tmp_path, monkeypatch):
+    result = run_full_backup(tmp_path, monkeypatch, '''
+        if [ "$1" = "-czf" ]; then sleep 3; fi
+        exec /usr/bin/tar "$@"
+    ''', timeout_seconds=1)
+    assert result.returncode == 124
+    assert "BACKUP_TAR_RESULT=failed exit=124" in result.stderr
+    assert "BACKUP_PROGRESS_HEARTBEAT=" in result.stdout
+
 def ui_checkout(root: Path, *, include_required: bool = True) -> tuple[Path, str]:
     root.mkdir(); subprocess.run(["git", "init", "-q", str(root)], check=True)
     subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.test"], check=True)
@@ -205,3 +310,18 @@ def test_ui_only_materializes_the_resolved_ui_artifact_and_agent_only_does_not(m
     calls.clear()
     agent_request = dev.parse_upgrade_request(base + b"&selected_phases=7")
     assert calls == [] and agent_request.ui_artifact_path == ""
+
+
+def test_manual_update_selected_phase_selection_is_unchanged(monkeypatch):
+    resolved = type("Resolved", (), {"full_sha": "a" * 40})()
+    artifact = type("Artifact", (), {"path": Path("/tmp/ui.tar.gz"), "sha256": "b" * 64})()
+    monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields: (resolved, resolved))
+    monkeypatch.setattr(dev, "materialize_ui_artifact", lambda *_args, **_kwargs: artifact)
+    body = (
+        b"gateway_id=GW006&cloud_url=https%3A%2F%2Fexample.test&admin_api_token=x"
+        b"&cradlepoint_host=10.0.0.1&cradlepoint_password=x&gateway_password=x&ui_password=x"
+        b"&selected_phases=1"
+    )
+    request = dev.parse_upgrade_request(body)
+    assert request.gateway_id == "GW006"
+    assert request.selected_phases == (1,)

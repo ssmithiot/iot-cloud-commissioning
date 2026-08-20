@@ -1241,11 +1241,57 @@ def inspect_commands() -> list[tuple[str, str, bool]]:
     ]
 
 
+def full_backup_command(
+    backup_root: str = "/home/swadmin",
+    *,
+    timeout_seconds: int = 600,
+    heartbeat_seconds: int = 15,
+) -> str:
+    """Create and validate a live Edge UI backup without excluding its data."""
+    root = shell_quote(backup_root)
+    return f'''cd {root}
+archive="edge-bacnet-ui-v2.backup.$(date +%Y%m%d-%H%M%S).tar.gz"
+stderr_file="${{archive}}.tar.stderr"
+rm -f "$stderr_file"
+echo "BACKUP_ARCHIVE=$archive"
+timeout -k 10s {timeout_seconds}s tar -czf "$archive" edge-bacnet-ui-v2 2>"$stderr_file" &
+backup_pid=$!
+heartbeat_remaining=0
+while kill -0 "$backup_pid" 2>/dev/null; do
+  if [ "$heartbeat_remaining" -le 0 ]; then
+    echo "BACKUP_PROGRESS_HEARTBEAT=creating $archive"
+    heartbeat_remaining={heartbeat_seconds}
+  fi
+  sleep 1
+  heartbeat_remaining=$((heartbeat_remaining - 1))
+done
+wait "$backup_pid"
+tar_status=$?
+cat "$stderr_file"
+if [ "$tar_status" -eq 0 ]; then
+  echo "BACKUP_TAR_RESULT=clean"
+elif [ "$tar_status" -eq 1 ] && [ -s "$stderr_file" ] && ! grep -Ev '^tar: .*: file changed as we read it$' "$stderr_file" >/dev/null; then
+  echo "BACKUP_TAR_RESULT=live-file-change-warning"
+else
+  echo "BACKUP_TAR_RESULT=failed exit=$tar_status" >&2
+  exit "$tar_status"
+fi
+if [ ! -s "$archive" ]; then
+  echo "BACKUP_ARCHIVE_INVALID=missing-or-zero-byte" >&2
+  exit 1
+fi
+gzip -t "$archive" || {{ echo "BACKUP_ARCHIVE_INVALID=gzip" >&2; exit 1; }}
+tar -tzf "$archive" >/dev/null || {{ echo "BACKUP_ARCHIVE_INVALID=listing" >&2; exit 1; }}
+rm -f "$stderr_file"
+echo "BACKUP_ARCHIVE_VALID=Passed"
+'''
+
+
 def backup_commands(edge_release: str = DEFAULT_EDGE_RELEASE) -> list[tuple[str, str, bool]]:
     commands = [
         ("edge UI enabled", "systemctl is-enabled edge-bacnet-ui.service 2>/dev/null || true", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service 2>/dev/null || true", False),
-        ("create UI backup", 'cd /home/swadmin && tar -czf "edge-bacnet-ui-v2.backup.$(date +%Y%m%d-%H%M%S).tar.gz" edge-bacnet-ui-v2', False),
+        ("create and validate full UI backup", full_backup_command(), False),
         ("list UI backups", "cd /home/swadmin && ls -lh edge-bacnet-ui-v2.backup.*.tar.gz", False),
     ]
     commands.extend((f"code-only checkpoint {index + 1}", command, False) for index, command in enumerate(checkpoint_commands(edge_release)))
