@@ -375,6 +375,7 @@ def test_development_agent_override_is_the_only_agent_authority(monkeypatch):
     assert pilot in repo_text and pilot in final_text
     assert dev.load_release_definition().agent_source_commit not in repo_text
     assert "--network-traffic" in final_text
+    assert "tunnel_request_timeout_sec" not in final_text
 
 
 def test_candidate_version_is_read_from_immutable_source():
