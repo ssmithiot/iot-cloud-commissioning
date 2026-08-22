@@ -12,7 +12,12 @@ from iot_cx_agent.config import AgentConfig, load_config
 from iot_cx_agent.db import initialize_database, pending_trend_samples, queue_trend_sample, trend_upload_attempt_count
 import iot_cx_agent.main as agent_main
 from iot_cx_agent.main import run_once
-from iot_cx_agent.trends import sample_configured_trends, sample_local_edge_trends, upload_pending_trend_samples
+from iot_cx_agent.trends import (
+    sample_configured_trends,
+    sample_local_edge_trends,
+    trend_cloud_upload_enabled,
+    upload_pending_trend_samples,
+)
 
 
 def config(tmp_path: Path, **overrides: object) -> AgentConfig:
@@ -211,7 +216,7 @@ def latest_started_at(db_path: Path, group_id: int) -> str:
     return str(row[0])
 
 
-def test_upload_pending_trend_samples_uses_bounded_batch_and_marks_success(tmp_path: Path, monkeypatch) -> None:
+def test_legacy_upload_is_hard_suspended_and_pending_rows_are_preserved(tmp_path: Path, monkeypatch) -> None:
     agent_config = config(tmp_path)
     initialize_database(agent_config.sqlite_path)
     for index in range(3):
@@ -220,21 +225,13 @@ def test_upload_pending_trend_samples_uses_bounded_batch_and_marks_success(tmp_p
             {"point_id": f"point-{index}", "sampled_at": f"2026-07-12T12:00:0{index}+00:00", "value": str(index)},
             f"2026-07-12T12:00:0{index}+00:00",
         )
-    sent: list[object] = []
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: pytest.fail("legacy trend upload request ran"))
 
-    def fake_post(url: str, **kwargs: object) -> Response:
-        sent.append(kwargs["json"])
-        return Response()
-
-    monkeypatch.setattr(requests, "post", fake_post)
-
-    assert upload_pending_trend_samples(agent_config) == 2
-    assert len(sent) == 1
-    assert len(sent[0]) == 2
-    assert len(pending_trend_samples(agent_config.sqlite_path)) == 1
+    assert upload_pending_trend_samples(agent_config) == 0
+    assert len(pending_trend_samples(agent_config.sqlite_path)) == 3
 
 
-def test_failed_trend_upload_records_attempt_and_defers_retry(tmp_path: Path, monkeypatch) -> None:
+def test_suspended_legacy_upload_does_not_create_a_retry_attempt(tmp_path: Path, monkeypatch) -> None:
     agent_config = config(tmp_path)
     initialize_database(agent_config.sqlite_path)
     queue_trend_sample(
@@ -243,19 +240,12 @@ def test_failed_trend_upload_records_attempt_and_defers_retry(tmp_path: Path, mo
         "2026-07-12T12:00:00+00:00",
     )
 
-    def failing_post(*args: object, **kwargs: object) -> Response:
-        raise requests.ConnectionError("offline")
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: pytest.fail("legacy trend retry request ran"))
 
-    monkeypatch.setattr(requests, "post", failing_post)
-
-    with pytest.raises(requests.ConnectionError, match="offline"):
-        upload_pending_trend_samples(agent_config)
-
-    queued = pending_trend_samples(agent_config.sqlite_path, now="2026-07-12T00:00:00+00:00")
-    assert queued == []
+    assert upload_pending_trend_samples(agent_config) == 0
     all_rows = pending_trend_samples(agent_config.sqlite_path)
     assert len(all_rows) == 1
-    assert trend_upload_attempt_count(agent_config.sqlite_path, [all_rows[0][0]]) == 1
+    assert trend_upload_attempt_count(agent_config.sqlite_path, [all_rows[0][0]]) == 0
 
 
 def test_sampling_queues_only_successful_due_points_within_backlog_limit(tmp_path: Path, monkeypatch) -> None:
@@ -490,9 +480,7 @@ def test_local_sampling_does_not_depend_on_cloud_trend_configs(tmp_path: Path, m
 
     assert run_once(agent_config) is True
     assert len(fetch_rows(db_path, "trend_samples")) == 1
-    # Sampling uses only the gateway's own trend database. A normal mirror is
-    # deliberately not due on every 30-second control-loop cycle.
-    assert all(url.endswith("/local-trend-samples") for url in posted)
+    assert posted == []
 
 
 def test_edge_local_mode_never_runs_legacy_pipeline(tmp_path: Path, monkeypatch) -> None:
@@ -514,17 +502,36 @@ def test_edge_local_sync_default_is_two_hours_and_cloud_override_wins(tmp_path: 
     assert agent_main._cloud_sync_interval(Response({"trend_sync_interval_sec": 3_600}), agent_config.trend_sync_interval_sec) == 3_600
 
 
-def test_legacy_mode_runs_legacy_pipeline(tmp_path: Path, monkeypatch) -> None:
+def test_legacy_mode_samples_but_never_uploads(tmp_path: Path, monkeypatch) -> None:
     agent_config = config(tmp_path, trend_transport_mode="legacy_cloud_configured")
     initialize_database(agent_config.sqlite_path)
     called: list[str] = []
     monkeypatch.setattr("iot_cx_agent.main.send_heartbeat", lambda *args, **kwargs: Response())
     monkeypatch.setattr("iot_cx_agent.main.sample_local_edge_trends", lambda *args, **kwargs: 0)
     monkeypatch.setattr("iot_cx_agent.main.sample_configured_trends", lambda *args, **kwargs: called.append("sample"))
-    monkeypatch.setattr("iot_cx_agent.main.upload_pending_trend_samples", lambda *args, **kwargs: called.append("upload"))
+    monkeypatch.setattr("iot_cx_agent.main.upload_pending_trend_samples", lambda *args, **kwargs: pytest.fail("legacy uploader ran"))
     monkeypatch.setattr("iot_cx_agent.main.process_next_job", lambda *args, **kwargs: None)
     assert run_once(agent_config) is True
-    assert called == ["sample", "upload"]
+    assert called == ["sample"]
+
+
+def test_due_and_retry_flags_cannot_escape_transport_suspension(tmp_path: Path, monkeypatch) -> None:
+    agent_config = config(tmp_path, trend_transport_mode="edge_local")
+    initialize_database(agent_config.sqlite_path)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "iot_cx_agent.main.send_heartbeat",
+        lambda *args, **kwargs: calls.append("heartbeat") or Response({"trend_sync_interval_sec": 7_200}),
+    )
+    monkeypatch.setattr("iot_cx_agent.main.sample_local_edge_trends", lambda *args, **kwargs: calls.append("sample"))
+    monkeypatch.setattr("iot_cx_agent.main.local_trend_sync_due", lambda *args, **kwargs: True)
+    monkeypatch.setattr("iot_cx_agent.main.local_trend_retry_due", lambda *args, **kwargs: True)
+    monkeypatch.setattr("iot_cx_agent.main.upload_pending_local_trend_samples", lambda *args, **kwargs: pytest.fail("local uploader ran"))
+    monkeypatch.setattr("iot_cx_agent.main.process_next_job", lambda *args, **kwargs: calls.append("jobs"))
+
+    assert trend_cloud_upload_enabled() is False
+    assert run_once(agent_config) is True
+    assert calls == ["heartbeat", "sample", "jobs"]
 
 
 def test_local_sampler_runs_when_flag_is_absent_from_config(tmp_path: Path, monkeypatch) -> None:

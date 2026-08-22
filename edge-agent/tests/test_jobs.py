@@ -256,8 +256,26 @@ def test_load_config_uses_installed_edge_app_version(tmp_path: Path) -> None:
 
     agent_config = load_config(config_path)
 
-    assert agent_config.agent_version == "0.2.2"
+    assert agent_config.agent_version == "0.2.3"
     assert agent_config.ui_version == "0.1.0"
+
+
+def test_trend_transport_jobs_complete_suspended_without_upload_or_backfill(tmp_path: Path, monkeypatch) -> None:
+    agent_config = config(tmp_path)
+    monkeypatch.setattr("iot_cx_agent.jobs.upload_pending_local_trend_samples", lambda *args, **kwargs: pytest.fail("trend upload ran"))
+    monkeypatch.setattr("iot_cx_agent.jobs.queue_local_trend_backfill", lambda *args, **kwargs: pytest.fail("backfill mutated pending rows"))
+
+    for job in (
+        {"job_id": "sync", "job_type": "trend_sync_now", "request": {"max_batches": 5}},
+        {"job_id": "backfill", "job_type": "trend_backfill", "request": {"since": "bad", "until": "bad"}},
+    ):
+        status, result, error = execute_job(agent_config, job)
+        assert status == "completed"
+        assert error is None
+        assert result is not None
+        assert result["status"] == "suspended"
+        assert result["message"] == "trend Cloud transport is suspended"
+        assert result["uploaded_samples"] == 0
 
 
 def test_unprovisioned_agent_skips_cloud_calls(tmp_path: Path, monkeypatch) -> None:

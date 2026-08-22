@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -11,6 +12,7 @@ from iot_cx_agent.config import DEFAULT_CONFIG_PATH, AgentConfig, load_config
 from iot_cx_agent.db import initialize_database, record_heartbeat_attempt
 from iot_cx_agent.heartbeat import send_heartbeat
 from iot_cx_agent.jobs import process_next_job
+from iot_cx_agent.network_traffic import report as network_traffic_report
 from iot_cx_agent.status import collect_status, utc_timestamp
 from iot_cx_agent.tunnel import TunnelLeaseWorker
 from iot_cx_agent.trends import (
@@ -19,6 +21,7 @@ from iot_cx_agent.trends import (
     schedule_next_local_trend_sync,
     sample_configured_trends,
     sample_local_edge_trends,
+    trend_cloud_upload_enabled,
     upload_pending_local_trend_samples,
     upload_pending_trend_samples,
 )
@@ -89,19 +92,21 @@ def run_once(config: AgentConfig, tunnel_worker: TunnelLeaseWorker | None = None
         # keep running when the cloud is unreachable, so a failed upload can
         # never stop sampling, and neither can stop job processing.
         run_step("Local Edge trend sampling", maybe_sample_local_edge_trends, config)
-        if config.trend_transport_mode == "edge_local":
-            due = local_trend_sync_due(config, sync_interval)
-            retry_due = local_trend_retry_due(config)
-            if due or retry_due:
-                if retry_due and not due:
-                    run_step("Local Edge trend retry", lambda item: upload_pending_local_trend_samples(item, retry_only=True), config)
-                else:
-                    run_step("Local Edge trend upload", upload_pending_local_trend_samples, config)
-                if due:
-                    schedule_next_local_trend_sync(config, sync_interval)
-        else:
+        if config.trend_transport_mode == "legacy_cloud_configured":
             run_step("Cloud trend sampling", sample_configured_trends, config)
-            run_step("Cloud trend upload", upload_pending_trend_samples, config)
+        if trend_cloud_upload_enabled():
+            if config.trend_transport_mode == "edge_local":
+                due = local_trend_sync_due(config, sync_interval)
+                retry_due = local_trend_retry_due(config)
+                if due or retry_due:
+                    if retry_due and not due:
+                        run_step("Local Edge trend retry", lambda item: upload_pending_local_trend_samples(item, retry_only=True), config)
+                    else:
+                        run_step("Local Edge trend upload", upload_pending_local_trend_samples, config)
+                    if due:
+                        schedule_next_local_trend_sync(config, sync_interval)
+            else:
+                run_step("Cloud trend upload", upload_pending_trend_samples, config)
         process_next_job(config, tunnel_worker.update if tunnel_worker is not None else None)
     return heartbeat_success
 
@@ -153,9 +158,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the IOT Cx edge heartbeat agent.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--once", action="store_true", help="Send one heartbeat and exit.")
+    parser.add_argument("--network-traffic", action="store_true", help="Print local agent network traffic history and exit.")
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.network_traffic:
+        print(json.dumps(network_traffic_report(config.sqlite_path), indent=2, sort_keys=True))
+        return
     if args.once:
         raise SystemExit(0 if run_once(config) else 1)
     run_forever(config)

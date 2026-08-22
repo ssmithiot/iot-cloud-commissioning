@@ -9,6 +9,7 @@ from urllib.parse import quote, urlparse
 import requests
 
 from iot_cx_agent.config import AgentConfig
+from iot_cx_agent.network_traffic import record
 
 
 logger = logging.getLogger("iot-cx-agent.tunnel")
@@ -60,7 +61,24 @@ def run_tunnel(config: AgentConfig, *, requested: Callable[[], bool] | None = No
 
     url = tunnel_url(config)
     logger.info("Opening outbound gateway tunnel to %s", url)
-    connection = websocket.create_connection(url, header=headers, timeout=30)
+    try:
+        connection = websocket.create_connection(url, header=headers, timeout=30)
+    except Exception:
+        record(
+            config.sqlite_path,
+            "tunnel_handshake",
+            tx_bytes=len(url.encode()) + sum(len(header.encode()) for header in headers),
+            success=False,
+            tunnel_attempt=True,
+        )
+        raise
+    record(
+        config.sqlite_path,
+        "tunnel_handshake",
+        tx_bytes=len(url.encode()) + sum(len(header.encode()) for header in headers),
+        success=True,
+        tunnel_attempt=True,
+    )
     timeout_errors = (TimeoutError, getattr(websocket, "WebSocketTimeoutException", TimeoutError))
     try:
         # A short receive timeout is local-only.  It lets a revoked/expired
@@ -81,7 +99,15 @@ def run_tunnel(config: AgentConfig, *, requested: Callable[[], bool] | None = No
                 logger.info("Cloud tunnel lease ended for %s", config.gateway_id)
                 return True
             response = handle_tunnel_message(config, message)
-            connection.send(json.dumps(response))
+            encoded = json.dumps(response)
+            record(
+                config.sqlite_path,
+                "tunnel_payload",
+                tx_bytes=len(encoded.encode()),
+                rx_bytes=len(raw_message.encode()),
+                success=True,
+            )
+            connection.send(encoded)
     finally:
         connection.close()
 

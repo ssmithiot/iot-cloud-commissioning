@@ -32,6 +32,18 @@ from iot_cx_agent.heartbeat import auth_headers
 logger = logging.getLogger("iot-cx-agent")
 EDGE_TRENDS_DB_NAME = "edge-trends.db"
 LOCAL_SYNC_STATE_KEY = "edge-local-trend-next-sync-at"
+TREND_CLOUD_UPLOAD_ENABLED = False
+TREND_CLOUD_TRANSPORT_SUSPENDED = "trend Cloud transport is suspended"
+
+
+def trend_cloud_upload_enabled() -> bool:
+    """Single release authority for all trend sample transport to Cloud.
+
+    This corrective Agent deliberately has no configuration or heartbeat path
+    capable of changing the value. Local sampling and all pending data remain
+    active and preserved while transport is suspended.
+    """
+    return TREND_CLOUD_UPLOAD_ENABLED
 
 
 def _safe_error(error: object) -> str:
@@ -549,13 +561,13 @@ def sample_local_edge_trends(config: AgentConfig) -> int:
 
 
 def upload_pending_local_trend_samples(config: AgentConfig, *, force: bool = False, retry_only: bool = False) -> int:
-    """Send locally collected trend samples to the cloud mirror.
+    """Cloud mirror implementation retained behind the corrective hard gate.
 
     The Edge remains authoritative: this only copies samples upward. Samples
     stay in the gateway's outbox until the cloud acknowledges them, so a cloud
     outage delays replication without losing or duplicating a reading.
     """
-    if not config.local_edge_trends_enabled:
+    if not trend_cloud_upload_enabled() or not config.local_edge_trends_enabled:
         return 0
     db_path = _edge_trends_db(config)
     if db_path is None or not db_path.exists():
@@ -649,6 +661,8 @@ def local_trend_sync_due(config: AgentConfig, interval_sec: int, *, now: datetim
     gateway-specific offset, preventing a fleet restart from causing a burst.
     Retry scheduling remains in the outbox and is deliberately separate.
     """
+    if not trend_cloud_upload_enabled():
+        return False
     current = now or _now()
     stored = get_agent_state(config.sqlite_path, LOCAL_SYNC_STATE_KEY)
     if stored:
@@ -666,6 +680,8 @@ def local_trend_sync_due(config: AgentConfig, interval_sec: int, *, now: datetim
 
 
 def schedule_next_local_trend_sync(config: AgentConfig, interval_sec: int, *, now: datetime | None = None) -> None:
+    if not trend_cloud_upload_enabled():
+        return
     current = now or _now()
     offset = _gateway_sync_offset_seconds(config.gateway_id, interval_sec)
     epoch = int(current.timestamp())
@@ -677,6 +693,8 @@ def schedule_next_local_trend_sync(config: AgentConfig, interval_sec: int, *, no
 
 def local_trend_retry_due(config: AgentConfig, *, now: datetime | None = None) -> bool:
     """Retries may run before the next normal sync, but new rows may not."""
+    if not trend_cloud_upload_enabled():
+        return False
     db_path = _edge_trends_db(config)
     if db_path is None or not db_path.exists():
         return False
@@ -703,6 +721,8 @@ def queue_local_trend_backfill(config: AgentConfig, since: str, until: str, *, l
     Existing Cloud rows are acknowledged as duplicates; rows pruned by Cloud
     retention are inserted again. Quarantined rows are deliberately excluded.
     """
+    if not trend_cloud_upload_enabled():
+        return 0
     db_path = _edge_trends_db(config)
     if db_path is None or not db_path.exists():
         return 0
@@ -731,6 +751,8 @@ def queue_local_trend_backfill(config: AgentConfig, since: str, until: str, *, l
 
 
 def upload_pending_trend_samples(config: AgentConfig) -> int:
+    if not trend_cloud_upload_enabled():
+        return 0
     now = _now()
     queued = pending_trend_samples(config.sqlite_path, limit=config.trend_upload_batch_size, now=now.isoformat())
     if not queued:

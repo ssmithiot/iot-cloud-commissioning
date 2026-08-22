@@ -17,22 +17,41 @@ from iot_cx_agent.config import AgentConfig
 from iot_cx_agent.db import record_claimed_job, record_job_result
 from iot_cx_agent.heartbeat import auth_headers
 from iot_cx_agent.local_write import dispatch_bacnet_write_batch
+from iot_cx_agent.network_traffic import record as record_network
+from iot_cx_agent.network_traffic import record_http
 from iot_cx_agent.status import utc_timestamp
-from iot_cx_agent.trends import queue_local_trend_backfill, upload_pending_local_trend_samples
+from iot_cx_agent.trends import (
+    TREND_CLOUD_TRANSPORT_SUSPENDED,
+    queue_local_trend_backfill,
+    trend_cloud_upload_enabled,
+    upload_pending_local_trend_samples,
+)
 
 
 logger = logging.getLogger("iot-cx-agent")
 
 
 def fetch_next_job(config: AgentConfig) -> tuple[dict[str, Any] | None, float | None]:
-    response = requests.get(
-        f"{config.cloud_url}/api/edge/{config.gateway_id}/jobs/next",
-        headers=auth_headers(config),
-        timeout=10,
-    )
+    try:
+        response = requests.get(
+            f"{config.cloud_url}/api/edge/{config.gateway_id}/jobs/next",
+            headers=auth_headers(config),
+            timeout=10,
+        )
+    except requests.RequestException:
+        record_http(config.sqlite_path, "jobs_poll", success=False)
+        raise
+    record_http(config.sqlite_path, "jobs_poll", response)
     response.raise_for_status()
     lease_expires_at = None
     headers = getattr(response, "headers", {})
+    lease_bytes = sum(
+        len(str(value).encode())
+        for key, value in headers.items()
+        if str(key).lower().startswith("x-iot-tunnel-")
+    )
+    if lease_bytes:
+        record_network(config.sqlite_path, "tunnel_lease", rx_bytes=lease_bytes, success=True)
     if headers.get("X-IOT-Tunnel-Requested", "").lower() == "true":
         try:
             lease_expires_at = datetime.fromisoformat(headers["X-IOT-Tunnel-Expires-At"].replace("Z", "+00:00")).astimezone(timezone.utc).timestamp()
@@ -48,12 +67,19 @@ def post_job_result(
     result: dict[str, object] | None = None,
     error_message: str | None = None,
 ) -> requests.Response:
-    return requests.post(
-        f"{config.cloud_url}/api/edge/jobs/{job_id}/result",
-        headers=auth_headers(config),
-        json={"status": status, "result": result, "error_message": error_message},
-        timeout=10,
-    )
+    payload = {"status": status, "result": result, "error_message": error_message}
+    try:
+        response = requests.post(
+            f"{config.cloud_url}/api/edge/jobs/{job_id}/result",
+            headers=auth_headers(config),
+            json=payload,
+            timeout=10,
+        )
+    except requests.RequestException:
+        record_http(config.sqlite_path, "job_result", tx_body=payload, success=False)
+        raise
+    record_http(config.sqlite_path, "job_result", response, tx_body=payload)
+    return response
 
 
 def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str, object] | None, str | None]:
@@ -117,6 +143,8 @@ def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str
         return "completed", result, None
 
     if job_type == "trend_sync_now":
+        if not trend_cloud_upload_enabled():
+            return "completed", {"status": "suspended", "message": TREND_CLOUD_TRANSPORT_SUSPENDED, "uploaded_samples": 0}, None
         request = request if isinstance(request, dict) else {}
         try:
             max_batches = max(1, min(5, int(request.get("max_batches", 1))))
@@ -131,6 +159,8 @@ def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str
         return "completed", {"uploaded_samples": uploaded, "max_batches": max_batches}, None
 
     if job_type == "trend_backfill":
+        if not trend_cloud_upload_enabled():
+            return "completed", {"status": "suspended", "message": TREND_CLOUD_TRANSPORT_SUSPENDED, "queued_samples": 0, "uploaded_samples": 0}, None
         request = request if isinstance(request, dict) else {}
         since = str(request.get("since") or "")
         until = str(request.get("until") or "")
