@@ -38,16 +38,20 @@ from scripts.create_gateway_credential import DEFAULT_SCOPES, create_gateway_cre
 
 @pytest.fixture(autouse=True)
 def reset_database() -> None:
-    from app.tunnel import tunnel_auth_gate, tunnel_manager, tunnel_metrics
+    from app.tunnel import tunnel_auth_gate, tunnel_manager, tunnel_metrics, tunnel_request_manager
 
     engine.dispose()
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     tunnel_manager._tunnels.clear()
+    with tunnel_request_manager._lock:
+        tunnel_request_manager._requests.clear()
     tunnel_auth_gate.reset()
     tunnel_metrics.reset()
     yield
     tunnel_manager._tunnels.clear()
+    with tunnel_request_manager._lock:
+        tunnel_request_manager._requests.clear()
     tunnel_auth_gate.reset()
     tunnel_metrics.reset()
     engine.dispose()
@@ -1063,14 +1067,14 @@ def test_gateway_update_uses_existing_release_target_schema_for_full_non_provisi
         assert stored.target_ui_version == "0.1.9"
 
 
-def test_cloud_release_change_adds_no_migration_after_existing_0023_head() -> None:
+def test_cloud_release_lineage_includes_tunnel_request_migration() -> None:
     migration_dir = Path(__file__).resolve().parents[1] / "alembic" / "versions"
     revision_files = {path.name for path in migration_dir.glob("*.py")}
 
     assert "0022_edge_local_trend_samples.py" in revision_files
     assert "0023_edge_release_targets.py" in revision_files
     assert "0022_gateway_full_non_provisioning_updates.py" not in revision_files
-    assert not any(name.startswith("0024_") for name in revision_files)
+    assert "0024_gateway_tunnel_requests.py" in revision_files
     assert hasattr(GatewayUpdateRequest, "target_agent_version")
     assert GatewayUpdateRequest.__table__.c.update_scope.type.length == 20
 

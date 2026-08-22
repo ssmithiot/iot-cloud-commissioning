@@ -37,6 +37,12 @@ from app.models import Base, CloudUUID  # noqa: E402
 CLOUD_API_DIR = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = CLOUD_API_DIR / "alembic" / "versions" / "0019_uuid_schema_alignment.py"
 
+# Models added after migration 0019 are governed by their own migration rather
+# than retroactively changing that historical conversion migration.
+LATER_MIGRATION_UUID_COLUMNS: dict[str, set[str]] = {
+    "gateway_tunnel_requests": {"id"},
+}
+
 
 def _load_migration_module():
     spec = importlib.util.spec_from_file_location("migration_0019", MIGRATION_PATH)
@@ -62,6 +68,8 @@ def _model_uuid_columns() -> dict[str, set[str]]:
 def test_target_uuid_columns_match_models() -> None:
     migration = _load_migration_module()
     declared = {table: set(columns) for table, columns in migration.TARGET_UUID_COLUMNS.items()}
+    for table, columns in LATER_MIGRATION_UUID_COLUMNS.items():
+        declared.setdefault(table, set()).update(columns)
     expected = _model_uuid_columns()
     assert declared == expected, (
         "TARGET_UUID_COLUMNS in 0019_uuid_schema_alignment is out of sync with "
