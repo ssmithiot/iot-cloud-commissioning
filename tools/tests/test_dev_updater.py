@@ -498,7 +498,7 @@ def test_13f_this_product_ships_its_own_artifact_not_jims():
 
 def test_16_the_product_has_its_own_identity():
     assert identity.PRODUCT_NAME == "IOT Edge Development Updater"
-    assert identity.APP_VERSION == "0.1.0"
+    assert identity.APP_VERSION == "0.1.1"
     assert identity.WINDOWS_INSTALL_DIR == r"C:\Program Files\IOT Edge Development Updater"
     assert identity.WINDOWS_DATA_DIR.endswith(r"IOT\EdgeDevUpdater")
     assert identity.pid_path().name == "IOTEdgeDevUpdater.pid"

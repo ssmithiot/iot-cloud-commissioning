@@ -31,14 +31,7 @@ PRODUCT_NAME = "IOT Edge Development Updater"
 APP_NAME = "IOTEdgeDevUpdater"
 SHORTCUT_NAME = "IOT Edge Development Updater"
 MANUFACTURER = "The Internet of Team, LLC"
-APP_VERSION = "0.1.0"
-
-# The only visible difference from the updater this was copied from. Deliberately
-# a plain subtitle rather than a warning treatment: the interface should read as
-# the same familiar tool so muscle memory carries over, with just enough on the
-# page to tell the two apart.
-BANNER = "IOT Edge Development Updater"
-BANNER_SUBTITLE = "Manual Development Use"
+APP_VERSION = "0.1.1"
 
 # Stable for the lifetime of the product. Windows recognises an upgrade by this
 # code; regenerating it would install a second copy side by side with itself.
