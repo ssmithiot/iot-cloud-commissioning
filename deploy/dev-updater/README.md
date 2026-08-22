@@ -35,7 +35,7 @@ marked `DEV-UPDATER:` in `tools/dev_updater/updater_webapp.py`:
 | `.env` | inside the checkout | `C:\ProgramData\IOT\EdgeDevUpdater\.env` |
 | Python environment | `.gateway-update-venv` in the checkout | `C:\ProgramData\IOT\EdgeDevUpdater\venv` |
 | Start Menu / Desktop entry | none | *IOT Edge Development Updater* |
-| MSI UpgradeCode | none — not an installed product | `90FF1484-46DC-4848-890C-432F735E079D` |
+| MSI UpgradeCode | none — not an installed product | `AECCDF45-A1D2-43A5-9142-32E6A984A66E` |
 | Cloud job claiming | on | **off** unless explicitly enabled |
 
 Nothing in the right-hand column is shared with the left. They install, run and

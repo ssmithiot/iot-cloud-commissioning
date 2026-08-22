@@ -40,7 +40,7 @@ MSI_PRODUCT_VERSION = "0.2.3"
 # code; regenerating it would install a second copy side by side with itself.
 # It shares no digits with anything the Legacy Updater uses because the Legacy
 # Updater is not an MSI at all - it is a .cmd launcher run from a Git checkout.
-UPGRADE_CODE = "90FF1484-46DC-4848-890C-432F735E079D"
+UPGRADE_CODE = "AECCDF45-A1D2-43A5-9142-32E6A984A66E"
 DATA_DIR_COMPONENT_GUID = "409F9F49-6E32-4809-985E-60AA275E235C"
 SHORTCUT_COMPONENT_GUID = "57F462A5-4939-4DD8-8867-D95E89CB89D9"
 

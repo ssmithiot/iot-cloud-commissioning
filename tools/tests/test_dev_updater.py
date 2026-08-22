@@ -500,6 +500,7 @@ def test_16_the_product_has_its_own_identity():
     assert identity.PRODUCT_NAME == "IOT Edge Development Updater"
     assert identity.APP_VERSION == "0.2.0-dev.3"
     assert identity.MSI_PRODUCT_VERSION == "0.2.3"
+    assert identity.UPGRADE_CODE == "AECCDF45-A1D2-43A5-9142-32E6A984A66E"
     assert identity.WINDOWS_INSTALL_DIR == r"C:\Program Files\IOT Edge Development Updater"
     assert identity.WINDOWS_DATA_DIR.endswith(r"IOT\EdgeDevUpdater")
     assert identity.pid_path().name == "IOTEdgeDevUpdater.pid"
