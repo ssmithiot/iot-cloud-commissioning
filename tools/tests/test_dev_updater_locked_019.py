@@ -359,23 +359,28 @@ def test_no_development_agent_override_retains_manifest_authority(monkeypatch):
 
 
 def test_development_agent_override_is_the_only_agent_authority(monkeypatch):
-    pilot = "8fecbe6b1d6834626dbc5d3cecdd2401b10aec58"
+    pilot = "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
     resolved_ui = type("Resolved", (), {"full_sha": "2adae3adeb339806330db0e481cba3179fff2ff1"})()
     resolved_agent = type("Resolved", (), {"full_sha": pilot})()
     monkeypatch.setenv("IOT_EDGE_DEV_AGENT_COMMIT", pilot)
     monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields: (resolved_ui, resolved_agent))
-    monkeypatch.setattr(dev, "read_agent_version_from_source", lambda commit, **_kwargs: "0.2.1" if commit == pilot else "wrong")
+    monkeypatch.setattr(dev, "read_agent_version_from_source", lambda commit, **_kwargs: "0.2.3" if commit == pilot else "wrong")
     request = dev.parse_upgrade_request(agent_only_request_body())
     assert request.edge_agent_commit == pilot
     assert request.git_ref == pilot
-    assert request.expected_agent_version == "0.2.1"
+    assert request.expected_agent_version == "0.2.3"
     assert request.agent_source == "Development override"
     repo_text = "\n".join(command for _label, command, _sudo in dev.repo_commands(request))
     final_text = "\n".join(command for _label, command, _sudo in dev.final_commands(request, pre_restart_timestamp="100"))
     assert pilot in repo_text and pilot in final_text
-    assert dev.load_release_definition().agent_source_commit not in repo_text
+    manifest_agent = dev.load_release_definition().agent_source_commit
+    assert manifest_agent != pilot
+    assert manifest_agent not in repo_text
+    assert manifest_agent not in final_text
     assert "--network-traffic" in final_text
     assert "tunnel_request_timeout_sec" not in final_text
+    assert 'test "$trend" != true' not in final_text
+    assert "echo LOCAL_EDGE_TRENDS_ENABLED=$trend" in final_text
 
 
 def test_candidate_version_is_read_from_immutable_source():
@@ -386,27 +391,69 @@ def test_candidate_version_is_read_from_immutable_source():
     assert dev.read_agent_version_from_source("8fecbe6b1d6834626dbc5d3cecdd2401b10aec58", opener=lambda *_args, **_kwargs: SourceResponse()) == "0.2.1"
 
 
-def test_actual_agent_runtime_validation_rejects_each_mismatch():
+def gw006_override_request() -> dev.UpgradeRequest:
+    target = "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
+    return dev.UpgradeRequest(
+        gateway_id="GW006", site_id="GW006", cloud_url="https://example.test", admin_api_token="x",
+        cradlepoint_host="x", cradlepoint_user="x", cradlepoint_password="x", gateway_host="x",
+        gateway_user="x", gateway_password="x", git_ref=target, remote_repo="/repo",
+        ui_source_folder="x", ui_username="x", ui_password="x", edge_agent_commit=target,
+        expected_agent_version="0.2.3", agent_source="Development override", development_agent_override=True,
+    )
+
+
+def gw006_runtime_output(request: dev.UpgradeRequest) -> str:
+    return "\n".join((
+        f"AGENT_RELEASE_COMMIT={request.edge_agent_commit}", "AGENT_PACKAGE_VERSION=0.2.3",
+        "AGENT_MODULE_VERSION=0.2.3", "AGENT_SERVICE_STATE=active", "AGENT_SERVICE_START=200",
+        "AGENT_NETWORK_TRAFFIC_CLI=Passed", "LOCAL_EDGE_TRENDS_ENABLED=true",
+    ))
+
+
+def test_final_verification_passes_for_the_resolved_gw006_development_override():
+    request = gw006_override_request()
+    assert dev.load_release_definition().agent_source_commit != request.edge_agent_commit
+    dev.validate_agent_runtime_output(gw006_runtime_output(request), request, "100")
+
+
+@pytest.mark.parametrize(
+    "bad_output",
+    (
+        lambda good, request: good.replace(request.edge_agent_commit, "4" * 40),
+        lambda good, _request: good.replace("AGENT_PACKAGE_VERSION=0.2.3", "AGENT_PACKAGE_VERSION=0.2.2"),
+        lambda good, _request: good.replace("AGENT_MODULE_VERSION=0.2.3", "AGENT_MODULE_VERSION=0.2.2"),
+        lambda good, _request: good.replace("AGENT_SERVICE_STATE=active", "AGENT_SERVICE_STATE=inactive"),
+        lambda good, _request: good.replace("AGENT_SERVICE_START=200", "AGENT_SERVICE_START=100"),
+        lambda good, _request: good.replace("AGENT_NETWORK_TRAFFIC_CLI=Passed", "AGENT_NETWORK_TRAFFIC_CLI="),
+    ),
+    ids=("wrong-head", "wrong-package-version", "wrong-module-version", "inactive-service", "service-not-restarted", "missing-network-traffic-cli"),
+)
+def test_actual_agent_runtime_validation_rejects_wrong_install(bad_output):
+    request = gw006_override_request()
+    good = gw006_runtime_output(request)
+    with pytest.raises(RuntimeError, match="Actual Agent runtime validation failed"):
+        dev.validate_agent_runtime_output(bad_output(good, request), request, "100")
+
+
+def test_final_verification_retains_bacnet_and_ui_validation():
+    commands = {label: command for label, command, _sudo in dev.final_commands(gw006_override_request())}
+    bacnet = commands["verify BACnet config preservation"]
+    assert 'test "$post" = "$pre"' in bacnet
+    assert "BACNET_CONFIG_PRESERVATION=Passed" in bacnet
+    assert commands["edge UI active"] == "systemctl is-active edge-bacnet-ui.service"
+    assert commands["local UI HTTP auth check"] == "curl -I http://127.0.0.1:5000/"
+
+
+def test_ui_restart_validation_still_rejects_failed_or_unauthenticated_ui():
     request = dev.UpgradeRequest(
         gateway_id="GW006", site_id="GW006", cloud_url="https://example.test", admin_api_token="x",
         cradlepoint_host="x", cradlepoint_user="x", cradlepoint_password="x", gateway_host="x",
-        gateway_user="x", gateway_password="x", git_ref="8" * 40, remote_repo="/repo",
-        ui_source_folder="x", ui_username="x", ui_password="x", edge_agent_commit="8" * 40,
-        expected_agent_version="0.2.1",
+        gateway_user="x", gateway_password="x", git_ref="8" * 40, remote_repo="/repo", dry_run=False,
+        ui_source_folder="x", ui_username="x", ui_password="x",
     )
-    good = "\n".join((
-        f"AGENT_RELEASE_COMMIT={request.edge_agent_commit}", "AGENT_PACKAGE_VERSION=0.2.1",
-        "AGENT_MODULE_VERSION=0.2.1", "AGENT_SERVICE_STATE=active", "AGENT_SERVICE_START=200",
-        "AGENT_NETWORK_TRAFFIC_CLI=Passed",
-    ))
-    dev.validate_agent_runtime_output(good, request, "100")
-    for bad in (
-        good.replace(request.edge_agent_commit, "4" * 40),
-        good.replace("AGENT_PACKAGE_VERSION=0.2.1", "AGENT_PACKAGE_VERSION=0.2.0"),
-        good.replace("AGENT_MODULE_VERSION=0.2.1", "AGENT_MODULE_VERSION=0.2.0"),
-        good.replace("AGENT_SERVICE_STATE=active", "AGENT_SERVICE_STATE=inactive"),
-        good.replace("AGENT_SERVICE_START=200", "AGENT_SERVICE_START=100"),
-        good.replace("AGENT_NETWORK_TRAFFIC_CLI=Passed", "AGENT_NETWORK_TRAFFIC_CLI="),
-    ):
-        with pytest.raises(RuntimeError, match="Actual Agent runtime validation failed"):
-            dev.validate_agent_runtime_output(bad, request, "100")
+    runner = type("Runner", (), {"request": request, "run_commands": lambda *_args, **_kwargs: "journal"})()
+    dev.LegacyUpgradeRunner.validate_ui_restart(runner, "active\nHTTP/1.1 302 Found\nLocation: /login")
+    with pytest.raises(RuntimeError, match="did not become active"):
+        dev.LegacyUpgradeRunner.validate_ui_restart(runner, "failed\nHTTP/1.1 302 Found\nLocation: /login")
+    with pytest.raises(RuntimeError, match="Auth verification failed"):
+        dev.LegacyUpgradeRunner.validate_ui_restart(runner, "active\nHTTP/1.1 200 OK")
