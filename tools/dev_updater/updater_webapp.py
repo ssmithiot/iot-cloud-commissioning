@@ -456,6 +456,32 @@ def release_package_status(manifest_path: str) -> str:
     return f"OK: {manifest.edge_release} artifact {artifact.name} SHA-256 {manifest.sha256}; agent {manifest.agent_source_commit}"
 
 
+def claimed_release_commit(claimed: dict[str, object], field: str) -> str:
+    """Return one immutable Cloud-issued component target or fail closed."""
+    commit = str(claimed.get(field) or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError(f"Claimed Cloud job is missing a valid {field}; refusing local or embedded fallback")
+    return commit
+
+
+def claimed_release_version(claimed: dict[str, object], field: str) -> str:
+    version = str(claimed.get(field) or "").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError(f"Claimed Cloud job is missing a valid {field}; refusing local or embedded fallback")
+    return version
+
+
+def claimed_update_phases(claimed: dict[str, object]) -> tuple[int, ...]:
+    scope = str(claimed.get("update_scope") or "").strip()
+    if scope == "ui_only":
+        return UI_ONLY_PHASES
+    if scope == "agent":
+        return TARGETED_AGENT_ONLY_PHASES
+    if scope in {"edge_release", "full_non_provisioning"}:
+        return UPDATE_AGENT_PHASES
+    raise ValueError(f"Claimed Cloud job has unsupported update_scope {scope!r}; refusing execution")
+
+
 def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str]) -> str | None:
     """Process one queued update. Returns 'completed', 'failed', or None when
     the request could not be claimed (not a gateway outcome)."""
@@ -474,6 +500,34 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
 
     if not isinstance(claimed, dict):
         return None
+    try:
+        selected_phases = claimed_update_phases(claimed)
+        ui_commit = DEFAULT_EDGE_UI_INPUT
+        artifact_path = ""
+        artifact_sha256 = ""
+        if ui_phases_selected(selected_phases):
+            ui_commit = claimed_release_commit(claimed, "target_ui_commit")
+            artifact = materialize_ui_artifact(ui_commit, token=defaults["GITHUB_TOKEN"])
+            artifact_path, artifact_sha256 = str(artifact.path), artifact.sha256
+
+        agent_selected = selected_phases in (TARGETED_AGENT_ONLY_PHASES, UPDATE_AGENT_PHASES)
+        agent_commit = claimed_release_commit(claimed, "target_agent_commit") if agent_selected else DEFAULT_EDGE_UPDATE_REF
+        expected_agent_version = (
+            claimed_release_version(claimed, "target_agent_version") if agent_selected else DEFAULT_EDGE_RELEASE
+        )
+        edge_release = claimed_release_version(
+            claimed,
+            "target_ui_version" if ui_phases_selected(selected_phases) else "target_agent_version",
+        )
+    except (ValueError, UIArtifactError) as exc:
+        cloud_json_request(
+            cloud_url,
+            admin_api_token,
+            f"/api/admin/gateway-updates/{request_id}/complete",
+            method="POST",
+            body={"status": "failed", "error_message": str(exc)[:1000]},
+        )
+        return "failed"
     request = UpgradeRequest(
         gateway_id=str(claimed["gateway_id"]),
         site_id=str(claimed["site_id"]),
@@ -485,7 +539,7 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
         gateway_host=str(claimed.get("gateway_host") or "192.168.1.200"),
         gateway_user=os.environ.get("GATEWAY_USER", "swadmin"),
         gateway_password=defaults["GATEWAY_PASSWORD"],
-        git_ref=os.environ.get("IOT_EDGE_UPDATE_REF", DEFAULT_EDGE_UPDATE_REF),
+        git_ref=agent_commit,
         remote_repo=DEFAULT_REPO_PATH,
         ui_source_folder=DEFAULT_UI_SOURCE,
         ui_username=os.environ.get("EDGE_UI_USERNAME", "admin"),
@@ -493,7 +547,15 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
         cloud_portal_verified=True,
         # UI-only release jobs never provision a gateway or change the agent,
         # gateway/site metadata, address, IP, credentials, or cloud token.
-        selected_phases=UI_ONLY_PHASES if claimed.get("update_scope") == "ui_only" else UPDATE_AGENT_PHASES,
+        selected_phases=selected_phases,
+        edge_release=edge_release,
+        edge_ui_commit=ui_commit,
+        edge_agent_commit=agent_commit,
+        expected_agent_version=expected_agent_version,
+        agent_source="Cloud claimed target",
+        development_agent_override=agent_selected,
+        ui_artifact_path=artifact_path,
+        ui_artifact_sha256=artifact_sha256,
     )
     if not request.cradlepoint_host:
         cloud_json_request(
@@ -933,7 +995,9 @@ def read_agent_version_from_source(commit: str, *, token: str = "", opener=urlli
 
 
 def ui_phases_selected(selected_phases: tuple[int, ...]) -> bool:
-    return bool(set(selected_phases) & set(UI_ONLY_PHASES))
+    # Phase 0 (gateway inspection) is shared with agent-only updates and does
+    # not consume a UI artifact. Require one of the actual UI update phases.
+    return bool(set(selected_phases) & (set(UI_ONLY_PHASES) - {0}))
 
 
 def parse_upgrade_request(body: bytes) -> UpgradeRequest:

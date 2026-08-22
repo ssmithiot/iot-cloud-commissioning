@@ -9,6 +9,7 @@ import subprocess
 import tarfile
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -130,6 +131,130 @@ def test_final_execution_requires_reviewed_resolved_commits(monkeypatch):
 def test_cloud_claiming_is_off_unless_the_explicit_switch_is_set(monkeypatch):
     monkeypatch.delenv("IOT_EDGE_DEV_UPDATER_CLAIM_CLOUD_JOBS", raising=False)
     assert "CLAIM_CLOUD_JOBS" in DEV.read_text()
+
+
+def cloud_queue_defaults() -> dict[str, str]:
+    return {
+        "IOT_ADMIN_API_TOKEN": "admin-token",
+        "CRADLEPOINT_PASSWORD": "cradlepoint-password",
+        "GATEWAY_PASSWORD": "gateway-password",
+        "EDGE_UI_PASSWORD": "ui-password",
+        "GITHUB_TOKEN": "github-token",
+    }
+
+
+def claimed_cloud_update(scope: str = "full_non_provisioning") -> dict[str, object]:
+    return {
+        "request_id": "request-1",
+        "gateway_id": "GW004",
+        "site_id": "GW004",
+        "cradlepoint_host": "10.1.8.131",
+        "gateway_host": "192.168.1.200",
+        "update_scope": scope,
+        "target_ui_version": "0.2.3",
+        "target_agent_version": "0.2.3",
+        "target_ui_commit": "2adae3adeb339806330db0e481cba3179fff2ff1",
+        "target_agent_commit": "f77c42b88c5307009c35a2d94e5afbbdb3e4db98",
+    }
+
+
+def test_cloud_full_rollout_materializes_exact_ui_before_starting_shared_engine(monkeypatch, tmp_path):
+    claimed = claimed_cloud_update()
+    artifact = SimpleNamespace(path=tmp_path / "edge-ui-2adae3a.tar.gz", sha256="c" * 64)
+    captured: dict[str, object] = {}
+
+    def fake_cloud(_url, _token, path, **_kwargs):
+        return claimed if path.endswith("/claim") else {"ok": True}
+
+    def fake_materialize(commit, *, token):
+        assert commit == claimed["target_ui_commit"]
+        assert token == "github-token"
+        return artifact
+
+    def fake_start(request):
+        captured["request"] = request
+        with dev.JOBS_LOCK:
+            dev.JOBS["cloud-full-test"] = SimpleNamespace(status="complete", error="")
+        return "cloud-full-test"
+
+    monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
+    monkeypatch.setattr(dev, "materialize_ui_artifact", fake_materialize)
+    monkeypatch.setattr(dev, "start_job", fake_start)
+    monkeypatch.setattr(dev, "health_gate_enabled", lambda: False)
+    try:
+        assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "completed"
+    finally:
+        with dev.JOBS_LOCK:
+            dev.JOBS.pop("cloud-full-test", None)
+
+    request = captured["request"]
+    assert request.selected_phases == dev.UPDATE_AGENT_PHASES
+    assert request.edge_ui_commit == claimed["target_ui_commit"]
+    assert request.ui_artifact_path == str(artifact.path)
+    assert request.ui_artifact_sha256 == artifact.sha256
+    assert request.edge_agent_commit == request.git_ref == claimed["target_agent_commit"]
+    assert request.expected_agent_version == "0.2.3"
+
+
+@pytest.mark.parametrize("failure", ("missing-commit", "materialization-failed"))
+def test_cloud_full_rollout_fails_safely_without_valid_ui_artifact(monkeypatch, failure):
+    claimed = claimed_cloud_update()
+    completions: list[dict[str, object]] = []
+    if failure == "missing-commit":
+        claimed.pop("target_ui_commit")
+
+    def fake_cloud(_url, _token, path, **kwargs):
+        if path.endswith("/claim"):
+            return claimed
+        completions.append(kwargs["body"])
+        return {"ok": True}
+
+    def fake_materialize(*_args, **_kwargs):
+        if failure == "missing-commit":
+            pytest.fail("missing commit must fail before materialization")
+        raise dev.UIArtifactError("artifact checkout failed")
+
+    monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
+    monkeypatch.setattr(dev, "materialize_ui_artifact", fake_materialize)
+    monkeypatch.setattr(dev, "start_job", lambda _request: pytest.fail("gateway execution must not start"))
+
+    assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "failed"
+    assert completions[-1]["status"] == "failed"
+    assert "fallback" in str(completions[-1]["error_message"]) or "artifact checkout failed" in str(completions[-1]["error_message"])
+
+
+def test_cloud_agent_only_rollout_does_not_require_or_materialize_ui(monkeypatch):
+    claimed = claimed_cloud_update("agent")
+    claimed.pop("target_ui_commit")
+    claimed.pop("target_ui_version")
+    captured: dict[str, object] = {}
+
+    def fake_cloud(_url, _token, path, **_kwargs):
+        return claimed if path.endswith("/claim") else {"ok": True}
+
+    def fake_start(request):
+        captured["request"] = request
+        with dev.JOBS_LOCK:
+            dev.JOBS["cloud-agent-test"] = SimpleNamespace(status="complete", error="")
+        return "cloud-agent-test"
+
+    monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
+    monkeypatch.setattr(dev, "materialize_ui_artifact", lambda *_args, **_kwargs: pytest.fail("agent-only must not materialize UI"))
+    monkeypatch.setattr(dev, "start_job", fake_start)
+    monkeypatch.setattr(dev, "health_gate_enabled", lambda: False)
+    try:
+        assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "completed"
+    finally:
+        with dev.JOBS_LOCK:
+            dev.JOBS.pop("cloud-agent-test", None)
+
+    request = captured["request"]
+    assert request.selected_phases == dev.TARGETED_AGENT_ONLY_PHASES
+    assert request.ui_artifact_path == ""
+    assert request.ui_artifact_sha256 == ""
+    assert request.edge_agent_commit == claimed["target_agent_commit"]
+    assert request.expected_agent_version == "0.2.3"
+
 
 def test_development_audit_log_is_separate_and_redacted(tmp_path, monkeypatch):
     monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
