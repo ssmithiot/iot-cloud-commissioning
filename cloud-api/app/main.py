@@ -3358,6 +3358,7 @@ def receive_heartbeat(
         gateway_id=edge_node.gateway_id,
         status=edge_node.latest_status,
         latest_heartbeat_at=edge_node.latest_heartbeat_at,
+        trend_sync_interval_sec=settings.trend_sync_interval_sec,
     )
 
 

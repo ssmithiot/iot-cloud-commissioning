@@ -19,7 +19,10 @@ import pytest
 import requests
 
 from iot_cx_agent.config import AgentConfig
+from iot_cx_agent.db import initialize_database
 from iot_cx_agent.trends import (
+    local_trend_sync_due,
+    schedule_next_local_trend_sync,
     _trend_read_config,
     sample_local_edge_trends,
     upload_pending_local_trend_samples,
@@ -309,6 +312,37 @@ def test_cloud_outage_keeps_the_sample_and_schedules_a_retry(tmp_path: Path, mon
     assert outbox["next_attempt_at"]
     assert "cloud offline" in outbox["last_error"]
     assert len(fetch_rows(db_path, "trend_samples")) == 1
+
+
+def test_validation_failure_isolates_bad_row_and_keeps_good_rows_draining(tmp_path: Path, monkeypatch) -> None:
+    db_path = edge_trends_db(tmp_path)
+    add_local_group(db_path, enabled=True, points=[(1103, "analog-value", 7), (1103, "analog-value", 8)])
+    agent_config = collect_one(tmp_path, db_path, monkeypatch)
+
+    def reject_only_second(url, *args, **kwargs):
+        payload = kwargs["json"]
+        if len(payload) > 1 or payload[0]["object_instance"] == 8:
+            return Response(status_code=422)
+        return Response()
+
+    monkeypatch.setattr(requests, "post", reject_only_second)
+    assert upload_pending_local_trend_samples(agent_config) == 1
+    with sqlite3.connect(db_path) as conn:
+        states = conn.execute("SELECT state FROM trend_upload_outbox ORDER BY id").fetchall()
+        quarantined = conn.execute("SELECT http_status FROM trend_upload_quarantine").fetchall()
+    assert states[0][0] == "uploaded"
+    assert states[1][0] == "pending"
+    assert quarantined == [(422,)]
+
+
+def test_sync_schedule_is_stable_and_not_due_each_control_cycle(tmp_path: Path) -> None:
+    db_path = edge_trends_db(tmp_path)
+    agent_config = enabled_config(tmp_path, db_path)
+    initialize_database(agent_config.sqlite_path)
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
+    assert local_trend_sync_due(agent_config, 43_200, now=now) is False
+    assert local_trend_sync_due(agent_config, 43_200, now=now + timedelta(seconds=30)) is False
+    schedule_next_local_trend_sync(agent_config, 43_200, now=now)
 
 
 def test_collection_continues_while_the_cloud_is_unreachable(tmp_path: Path, monkeypatch) -> None:

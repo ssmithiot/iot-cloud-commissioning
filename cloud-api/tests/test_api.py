@@ -828,6 +828,7 @@ def test_heartbeat_creates_gateway_and_history() -> None:
     assert heartbeat.status_code == 200
     assert heartbeat.json()["gateway_id"] == "GW001"
     assert heartbeat.json()["status"] == "online"
+    assert heartbeat.json()["trend_sync_interval_sec"] == 43_200
     assert gateways.status_code == 200
     assert gateways.json()[0]["gateway_id"] == "GW001"
     assert gateways.json()[0]["site_id"] == "demo-site"

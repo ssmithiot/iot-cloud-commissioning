@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     gateway_stale_after_seconds: int = Field(default=300, validation_alias="GATEWAY_STALE_AFTER_SECONDS")
     gateway_offline_after_seconds: int = Field(default=1800, validation_alias="GATEWAY_OFFLINE_AFTER_SECONDS")
     trend_retention_days: int = Field(default=90, ge=1, le=3650, validation_alias="TREND_RETENTION_DAYS")
+    # Delivered in the heartbeat response. Changing this Cloud setting alters
+    # fleet sync cadence without requiring an Edge-agent release.
+    trend_sync_interval_sec: int = Field(default=43_200, ge=300, le=604_800, validation_alias="TREND_SYNC_INTERVAL_SEC")
     heartbeat_retention_days: int = Field(default=30, ge=1, le=3650, validation_alias="HEARTBEAT_RETENTION_DAYS")
     # Database connection pool controls. Applied only to non-SQLite URLs.
     # Defaults match SQLAlchemy's QueuePool defaults except pool_recycle,

@@ -165,6 +165,7 @@ class HeartbeatAccepted(BaseModel):
     gateway_id: str
     status: str
     latest_heartbeat_at: datetime
+    trend_sync_interval_sec: int = Field(ge=300, le=604_800)
 
 
 class SiteOut(BaseModel):

@@ -14,6 +14,9 @@ from iot_cx_agent.jobs import process_next_job
 from iot_cx_agent.status import collect_status, utc_timestamp
 from iot_cx_agent.tunnel import TunnelLeaseWorker
 from iot_cx_agent.trends import (
+    local_trend_retry_due,
+    local_trend_sync_due,
+    schedule_next_local_trend_sync,
     sample_configured_trends,
     sample_local_edge_trends,
     upload_pending_local_trend_samples,
@@ -29,6 +32,14 @@ def startup_stagger_seconds(gateway_id: str) -> int:
     """Stable 0–30 second offset, preventing coordinated fleet restarts."""
     digest = hashlib.sha256(gateway_id.strip().upper().encode("utf-8")).digest()
     return int.from_bytes(digest[:4], "big") % 31
+
+
+def _cloud_sync_interval(response: object, fallback: int) -> int:
+    try:
+        value = int(response.json().get("trend_sync_interval_sec", fallback))  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError):
+        return fallback
+    return max(300, min(604_800, value))
 
 
 def run_once(config: AgentConfig, tunnel_worker: TunnelLeaseWorker | None = None) -> bool:
@@ -52,9 +63,12 @@ def run_once(config: AgentConfig, tunnel_worker: TunnelLeaseWorker | None = None
         return False
 
     heartbeat_success = False
+    sync_interval = config.trend_sync_interval_sec
     try:
         response = send_heartbeat(config, payload)
         heartbeat_success = 200 <= response.status_code < 300
+        if heartbeat_success:
+            sync_interval = _cloud_sync_interval(response, sync_interval)
         safe_record_heartbeat_attempt(
             config.sqlite_path,
             attempted_at=attempted_at,
@@ -75,9 +89,19 @@ def run_once(config: AgentConfig, tunnel_worker: TunnelLeaseWorker | None = None
         # keep running when the cloud is unreachable, so a failed upload can
         # never stop sampling, and neither can stop job processing.
         run_step("Local Edge trend sampling", maybe_sample_local_edge_trends, config)
-        run_step("Local Edge trend upload", upload_pending_local_trend_samples, config)
-        run_step("Cloud trend sampling", sample_configured_trends, config)
-        run_step("Cloud trend upload", upload_pending_trend_samples, config)
+        if config.trend_transport_mode == "edge_local":
+            due = local_trend_sync_due(config, sync_interval)
+            retry_due = local_trend_retry_due(config)
+            if due or retry_due:
+                if retry_due and not due:
+                    run_step("Local Edge trend retry", lambda item: upload_pending_local_trend_samples(item, retry_only=True), config)
+                else:
+                    run_step("Local Edge trend upload", upload_pending_local_trend_samples, config)
+                if due:
+                    schedule_next_local_trend_sync(config, sync_interval)
+        else:
+            run_step("Cloud trend sampling", sample_configured_trends, config)
+            run_step("Cloud trend upload", upload_pending_trend_samples, config)
         process_next_job(config, tunnel_worker.update if tunnel_worker is not None else None)
     return heartbeat_success
 

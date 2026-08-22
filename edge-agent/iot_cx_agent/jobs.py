@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections.abc import Callable
 from typing import Any
 
@@ -18,6 +18,7 @@ from iot_cx_agent.db import record_claimed_job, record_job_result
 from iot_cx_agent.heartbeat import auth_headers
 from iot_cx_agent.local_write import dispatch_bacnet_write_batch
 from iot_cx_agent.status import utc_timestamp
+from iot_cx_agent.trends import queue_local_trend_backfill, upload_pending_local_trend_samples
 
 
 logger = logging.getLogger("iot-cx-agent")
@@ -114,6 +115,36 @@ def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str
         if error_message is not None:
             return "failed", result, error_message
         return "completed", result, None
+
+    if job_type == "trend_sync_now":
+        request = request if isinstance(request, dict) else {}
+        try:
+            max_batches = max(1, min(5, int(request.get("max_batches", 1))))
+        except (TypeError, ValueError):
+            return "failed", None, "max_batches must be an integer between 1 and 5"
+        uploaded = 0
+        for _ in range(max_batches):
+            count = upload_pending_local_trend_samples(config, force=True)
+            uploaded += count
+            if count < config.trend_local_upload_batch_size:
+                break
+        return "completed", {"uploaded_samples": uploaded, "max_batches": max_batches}, None
+
+    if job_type == "trend_backfill":
+        request = request if isinstance(request, dict) else {}
+        since = str(request.get("since") or "")
+        until = str(request.get("until") or "")
+        try:
+            start = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            end = datetime.fromisoformat(until.replace("Z", "+00:00"))
+            max_samples = max(1, min(1000, int(request.get("max_samples", 500))))
+        except (TypeError, ValueError):
+            return "failed", None, "since, until and max_samples must be valid bounded values"
+        if start > end or end - start > timedelta(days=31):
+            return "failed", None, "backfill range must be ordered and no longer than 31 days"
+        queued = queue_local_trend_backfill(config, start.isoformat(), end.isoformat(), limit=max_samples)
+        uploaded = upload_pending_local_trend_samples(config, force=True) if queued else 0
+        return "completed", {"queued_samples": queued, "uploaded_samples": uploaded, "max_samples": max_samples}, None
 
     return "failed", None, f"Unknown job_type: {job_type}"
 

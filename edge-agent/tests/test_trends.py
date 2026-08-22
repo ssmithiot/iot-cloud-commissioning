@@ -41,7 +41,9 @@ class Response:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            raise requests.HTTPError(f"status {self.status_code}")
+            error = requests.HTTPError(f"status {self.status_code}")
+            error.response = self
+            raise error
 
 
 EDGE_TREND_SCHEMA = """
@@ -488,9 +490,35 @@ def test_local_sampling_does_not_depend_on_cloud_trend_configs(tmp_path: Path, m
 
     assert run_once(agent_config) is True
     assert len(fetch_rows(db_path, "trend_samples")) == 1
-    # Sampling used only the gateway's own trend database; the only cloud call
-    # is the upward mirror of what was already collected locally.
+    # Sampling uses only the gateway's own trend database. A normal mirror is
+    # deliberately not due on every 30-second control-loop cycle.
     assert all(url.endswith("/local-trend-samples") for url in posted)
+
+
+def test_edge_local_mode_never_runs_legacy_pipeline(tmp_path: Path, monkeypatch) -> None:
+    agent_config = config(tmp_path, trend_transport_mode="edge_local")
+    initialize_database(agent_config.sqlite_path)
+    monkeypatch.setattr("iot_cx_agent.main.send_heartbeat", lambda *args, **kwargs: Response())
+    monkeypatch.setattr("iot_cx_agent.main.sample_local_edge_trends", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("iot_cx_agent.main.local_trend_sync_due", lambda *args, **kwargs: False)
+    monkeypatch.setattr("iot_cx_agent.main.local_trend_retry_due", lambda *args, **kwargs: False)
+    monkeypatch.setattr("iot_cx_agent.main.sample_configured_trends", lambda *args, **kwargs: pytest.fail("legacy sampler ran"))
+    monkeypatch.setattr("iot_cx_agent.main.upload_pending_trend_samples", lambda *args, **kwargs: pytest.fail("legacy uploader ran"))
+    monkeypatch.setattr("iot_cx_agent.main.process_next_job", lambda *args, **kwargs: None)
+    assert run_once(agent_config) is True
+
+
+def test_legacy_mode_runs_legacy_pipeline(tmp_path: Path, monkeypatch) -> None:
+    agent_config = config(tmp_path, trend_transport_mode="legacy_cloud_configured")
+    initialize_database(agent_config.sqlite_path)
+    called: list[str] = []
+    monkeypatch.setattr("iot_cx_agent.main.send_heartbeat", lambda *args, **kwargs: Response())
+    monkeypatch.setattr("iot_cx_agent.main.sample_local_edge_trends", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("iot_cx_agent.main.sample_configured_trends", lambda *args, **kwargs: called.append("sample"))
+    monkeypatch.setattr("iot_cx_agent.main.upload_pending_trend_samples", lambda *args, **kwargs: called.append("upload"))
+    monkeypatch.setattr("iot_cx_agent.main.process_next_job", lambda *args, **kwargs: None)
+    assert run_once(agent_config) is True
+    assert called == ["sample", "upload"]
 
 
 def test_local_sampler_runs_when_flag_is_absent_from_config(tmp_path: Path, monkeypatch) -> None:

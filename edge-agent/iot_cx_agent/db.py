@@ -74,6 +74,22 @@ CREATE TABLE IF NOT EXISTS jobs (
     completed_at TEXT,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS trend_transport_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recorded_at TEXT NOT NULL,
+    transport TEXT NOT NULL,
+    success INTEGER NOT NULL,
+    http_status INTEGER,
+    sample_count INTEGER NOT NULL,
+    tx_bytes INTEGER NOT NULL,
+    rx_bytes INTEGER NOT NULL,
+    attempt_min INTEGER NOT NULL,
+    attempt_max INTEGER NOT NULL,
+    batch_fingerprint TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_trend_transport_events_recorded_at
+    ON trend_transport_events(recorded_at);
 """
 
 JOB_COLUMNS = {
@@ -88,6 +104,50 @@ SYNC_QUEUE_COLUMNS = {
     "last_error": "TEXT",
     "next_attempt_at": "TEXT",
 }
+
+
+def get_agent_state(path: Path, key: str) -> str | None:
+    with connect(path) as conn:
+        row = conn.execute("SELECT value FROM agent_state WHERE key = ?", (key,)).fetchone()
+    return None if row is None else str(row["value"])
+
+
+def set_agent_state(path: Path, key: str, value: str, updated_at: str) -> None:
+    with connect(path) as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_state (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (key, value, updated_at),
+        )
+        conn.commit()
+
+
+def record_trend_transport_event(
+    path: Path, *, recorded_at: str, transport: str, success: bool, http_status: int | None,
+    sample_count: int, tx_bytes: int, rx_bytes: int, attempt_min: int, attempt_max: int,
+    batch_fingerprint: str,
+) -> None:
+    """Thirty-day, payload-free diagnostics for the two trend transports."""
+    from datetime import datetime, timedelta, timezone
+
+    if transport not in {"local_trend_upload", "legacy_trend_upload"}:
+        raise ValueError("unknown trend transport")
+    with connect(path) as conn:
+        conn.execute(
+            """
+            INSERT INTO trend_transport_events
+            (recorded_at, transport, success, http_status, sample_count, tx_bytes, rx_bytes,
+             attempt_min, attempt_max, batch_fingerprint)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (recorded_at, transport, int(success), http_status, sample_count, max(0, tx_bytes),
+             max(0, rx_bytes), attempt_min, attempt_max, batch_fingerprint),
+        )
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        conn.execute("DELETE FROM trend_transport_events WHERE recorded_at < ?", (cutoff,))
+        conn.commit()
 
 
 def initialize_database(path: Path) -> None:

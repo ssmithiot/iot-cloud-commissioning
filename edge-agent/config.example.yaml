@@ -29,6 +29,8 @@ heartbeat_interval_sec: 30
 # an offline gateway from consuming unlimited disk while preserving the oldest
 # pending sample for a later retry.
 trend_upload_batch_size: 100
+trend_transport_mode: edge_local
+trend_sync_interval_sec: 43200
 trend_queue_max_pending_samples: 10000
 trend_upload_retry_base_sec: 30
 trend_upload_retry_max_sec: 900

@@ -50,6 +50,10 @@ class AgentConfig:
     # Local Edge trends ship enabled in 0.2.0. The Edge UI gate
     # (EDGE_TRENDS_UI_ENABLED) must be set to match; both are required.
     local_edge_trends_enabled: bool = True
+    # Edge 0.2.2 is Edge-authoritative by default.  Older gateways can retain
+    # their cloud-configured collector explicitly while they are migrated.
+    trend_transport_mode: str = "edge_local"
+    trend_sync_interval_sec: int = 43_200
     # Trend reads must never make an operator's read or write wait. A trend
     # batch gives up on the BACnet runtime lock almost immediately and retries
     # on the next agent cycle, rather than queueing behind live work for the
@@ -150,6 +154,13 @@ def _bool_flag(raw_value: object, source: str) -> bool:
     raise ValueError(f"{source} must be true or false")
 
 
+def _trend_transport_mode(raw_value: object) -> str:
+    value = str(raw_value or "edge_local").strip().lower()
+    if value not in {"edge_local", "legacy_cloud_configured"}:
+        raise ValueError("trend_transport_mode must be edge_local or legacy_cloud_configured")
+    return value
+
+
 def normalize_bacnet_router_profile(raw_profile: object | None) -> str:
     profile = str(raw_profile or "contemporary").strip().lower()
     profile = profile.replace("_", "-")
@@ -222,6 +233,8 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         heartbeat_interval_sec=int(raw.get("heartbeat_interval_sec", 30)),
         edge_ui_data_dir=Path(raw["edge_ui_data_dir"]) if raw.get("edge_ui_data_dir") else None,
         local_edge_trends_enabled=_bool_flag(raw.get("local_edge_trends_enabled", True), "local_edge_trends_enabled"),
+        trend_transport_mode=_trend_transport_mode(raw.get("trend_transport_mode", "edge_local")),
+        trend_sync_interval_sec=_positive_int(raw.get("trend_sync_interval_sec", 43_200), "trend_sync_interval_sec", minimum=300),
         trend_lock_timeout_sec=_positive_float(raw.get("trend_lock_timeout_sec", 2.0), "trend_lock_timeout_sec"),
         trend_read_batch_size=_positive_int(raw.get("trend_read_batch_size", 8), "trend_read_batch_size"),
         trend_max_points_per_cycle=_positive_int(raw.get("trend_max_points_per_cycle", 200), "trend_max_points_per_cycle"),
