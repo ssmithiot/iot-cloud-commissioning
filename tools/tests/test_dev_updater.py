@@ -27,6 +27,7 @@ import pytest
 
 from tools.dev_updater import identity, runtime
 from tools.dev_updater import updater_webapp as dev
+from tools.dev_updater.commit_resolution import CommitResolutionError
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -304,6 +305,7 @@ def test_8b_the_audit_log_writes_no_secret_and_lives_in_its_own_directory(tmp_pa
 
     assert "hunter2" not in written
     assert json.loads(written.splitlines()[0])["application"] == identity.APP_NAME
+    assert json.loads(written.splitlines()[0])["updater_version"] == identity.APP_VERSION
     assert tmp_path in log.path.parents
 
 
@@ -506,8 +508,71 @@ def test_16b_the_title_states_what_this_is(tmp_path, monkeypatch):
     monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
     page = dev.form_page().decode()
     assert "<h1>IOT Edge Development Updater</h1>" in page
-    assert "Manual Development Use" in page
+    assert f"Version {identity.APP_VERSION}" in page
     assert "<h1>Legacy Edge Upgrade</h1>" not in page
+
+
+def test_16bb_preflight_summary_names_this_updater_and_version():
+    source = DEV_MODULE.read_text(encoding="utf-8")
+    assert '"Updater": f"{identity.PRODUCT_NAME} {identity.APP_VERSION}"' in source
+
+
+def _agent_only_request_body(agent_commit: str = "") -> bytes:
+    suffix = f"&edge_agent_commit={agent_commit}".encode()
+    return (
+        b"gateway_id=GW006&cloud_url=https%3A%2F%2Fexample.test&admin_api_token=x"
+        b"&cradlepoint_host=10.0.0.1&cradlepoint_password=x&gateway_password=x&ui_password=x"
+        b"&selected_phases=7" + suffix
+    )
+
+
+def test_agent_commit_blank_retains_manifest_authority():
+    request = dev.parse_upgrade_request(_agent_only_request_body())
+    manifest_commit = dev.load_release_definition().agent_source_commit
+    assert request.effective_agent_commit == manifest_commit
+    assert request.git_ref == manifest_commit
+    assert request.agent_source == "Validated release manifest"
+
+
+def test_explicit_agent_commit_is_the_single_authority(monkeypatch):
+    pilot = "218c0f63c818f1406582a7db0e3ce5fb9995743a"
+    resolved = type("Resolved", (), {"full_sha": pilot})()
+    monkeypatch.setattr(dev, "resolve_commit", lambda *_args, **_kwargs: resolved)
+    monkeypatch.setattr(dev, "read_agent_version_from_source", lambda *_args, **_kwargs: "0.2.2")
+
+    request = dev.parse_upgrade_request(_agent_only_request_body(pilot))
+    commands = "\n".join(command for _label, command, _sudo in dev.repo_commands(request))
+    final = "\n".join(command for _label, command, _sudo in dev.final_commands(request, pre_restart_timestamp="100"))
+
+    assert request.effective_agent_commit == pilot
+    assert request.expected_agent_version == "0.2.2"
+    assert request.agent_source == "Explicit operator override"
+    assert pilot in commands and pilot in final
+    assert dev.load_release_definition().agent_source_commit not in commands
+
+
+def test_invalid_agent_commit_stops_before_any_gateway_work(monkeypatch):
+    monkeypatch.setattr(dev, "resolve_commit", lambda *_args, **_kwargs: (_ for _ in ()).throw(CommitResolutionError("bad commit")))
+
+    with pytest.raises(ValueError, match="bad commit"):
+        dev.parse_upgrade_request(_agent_only_request_body("not-a-commit"))
+
+
+def test_actual_agent_runtime_validation_requires_commit_version_and_restart():
+    request = dev.UpgradeRequest(
+        gateway_id="GW006", site_id="GW006", cloud_url="https://example.test", admin_api_token="x",
+        cradlepoint_host="x", cradlepoint_user="x", cradlepoint_password="x", gateway_host="x",
+        gateway_user="x", gateway_password="x", git_ref="a" * 40, remote_repo="/repo",
+        ui_source_folder="x", ui_username="x", ui_password="x", effective_agent_commit="a" * 40,
+        expected_agent_version="0.2.2",
+    )
+    valid = "\n".join((
+        f"AGENT_RELEASE_COMMIT={request.effective_agent_commit}", "AGENT_PACKAGE_VERSION=0.2.2",
+        "AGENT_MODULE_VERSION=0.2.2", "AGENT_SERVICE_STATE=active", "AGENT_SERVICE_START=200",
+    ))
+    dev.validate_agent_runtime_output(valid, request, "100")
+    with pytest.raises(RuntimeError, match="Actual Agent runtime validation failed"):
+        dev.validate_agent_runtime_output(valid.replace("AGENT_MODULE_VERSION=0.2.2", "AGENT_MODULE_VERSION=0.2.0"), request, "100")
 
 
 @pytest.mark.skipif(not MSI.exists(), reason="MSI not built")

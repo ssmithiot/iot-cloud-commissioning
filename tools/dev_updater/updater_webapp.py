@@ -56,6 +56,7 @@ from tools.gateway_recovery import checkpoint_commands, checkpoint_inventory_com
 from tools.release_preflight import validate_edge_source
 from tools.release_manifest import load_manifest, verify_manifest_artifact
 from tools.dev_updater import identity, runtime
+from tools.dev_updater.commit_resolution import EDGE_AGENT_REPOSITORY, CommitResolutionError, resolve_commit
 
 try:
     import paramiko
@@ -174,6 +175,9 @@ class UpgradeRequest:
     edge_agent_write_token: str = ""
     edge_release: str = DEFAULT_EDGE_RELEASE
     release_manifest_path: str = DEFAULT_RELEASE_MANIFEST
+    effective_agent_commit: str = DEFAULT_EDGE_UPDATE_REF
+    expected_agent_version: str = DEFAULT_EDGE_RELEASE
+    agent_source: str = "Validated release manifest"
 
 
 @dataclass
@@ -197,6 +201,7 @@ class UpgradeJob:
     summary: dict[str, str] = field(default_factory=dict)
     runner: "LegacyUpgradeRunner | None" = None
     pre_upgrade_agent_default_port: str = "47814"
+    pre_restart_agent_timestamp: str = ""
 
 
 class Redactor:
@@ -732,7 +737,7 @@ def form_page(message: str = "") -> bytes:
         identity.PRODUCT_NAME,
         f"""
 <h1>{escape(identity.PRODUCT_NAME)}</h1>
-<p>{escape(identity.BANNER_SUBTITLE)}</p>
+<p>Version {escape(identity.APP_VERSION)}</p>
 <p>Upgrade older edge-only gateways through the Cradlepoint jump host. This is separate from IOTGWCFG and starts in preflight mode.</p>
 <p class="small">Edge UI <code>{escape(DEFAULT_EDGE_UI_COMMIT_SHORT)}</code> ({escape(DEFAULT_EDGE_UI_BRANCH)}) &middot;
 Edge Agent <code>{escape(DEFAULT_EDGE_UPDATE_REF_SHORT)}</code> ({escape(DEFAULT_EDGE_AGENT_BRANCH)}) &middot;
@@ -782,8 +787,9 @@ port {DEFAULT_PORT}</p>
   <label>Gateway password
     <input type="password" name="gateway_password" value="{gw_password}" autocomplete="off" required>
   </label>
-  <label>Git ref
-    <input name="git_ref" value="{DEFAULT_EDGE_UPDATE_REF}" required>
+  <label>Edge Agent Git commit
+    <input name="edge_agent_commit" placeholder="Optional: full SHA or unambiguous 7+ character prefix; manifest default when blank">
+    <span class="hint">A resolved explicit commit is authoritative for this run; otherwise the selected manifest remains authoritative.</span>
   </label>
   <label>Edge Release
     <input name="edge_release" value="{DEFAULT_EDGE_RELEASE}" pattern="[0-9]+\\.[0-9]+\\.[0-9]+" required>
@@ -981,6 +987,23 @@ def parse_bool(fields: dict[str, list[str]], key: str) -> bool:
     return value(fields, key) in {"1", "true", "on", "yes"}
 
 
+def read_agent_version_from_source(commit: str, *, token: str = "", opener=urllib_request.urlopen) -> str:
+    """Read the immutable candidate's declared package/module version."""
+    url = f"https://raw.githubusercontent.com/{EDGE_AGENT_REPOSITORY}/{commit}/edge-agent/iot_cx_agent/__init__.py"
+    headers = {"Accept": "text/plain"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        with opener(urllib_request.Request(url, headers=headers), timeout=15) as response:
+            source = response.read().decode("utf-8")
+    except (urllib_error.HTTPError, urllib_error.URLError, TimeoutError, ValueError) as exc:
+        raise ValueError(f"Could not read Edge Agent version from resolved source {commit}.") from exc
+    match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']\s*$', source, re.MULTILINE)
+    if not match:
+        raise ValueError(f"Resolved Edge Agent source {commit} has no valid __version__ declaration.")
+    return match.group(1)
+
+
 def parse_upgrade_request(body: bytes) -> UpgradeRequest:
     fields = parse_qs(body.decode("utf-8"), keep_blank_values=True)
     selected_raw = fields.get("selected_phases")
@@ -996,6 +1019,23 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         if invalid_targeted_phases:
             allowed_names = ", ".join(PHASES[index] for index in TARGETED_REAL_RUN_PHASES)
             raise ValueError(f"Targeted real-run phase selection may include only: {allowed_names}.")
+    manifest_path = value(fields, "release_manifest_path") or DEFAULT_RELEASE_MANIFEST
+    manifest = load_manifest(Path(manifest_path))
+    # git_ref is a compatibility alias for clients of the older form.
+    entered_agent_commit = value(fields, "edge_agent_commit") or value(fields, "git_ref")
+    override_requested = bool(entered_agent_commit and entered_agent_commit != manifest.agent_source_commit)
+    if override_requested:
+        try:
+            resolved_override = resolve_commit(EDGE_AGENT_REPOSITORY, entered_agent_commit, token=os.environ.get("GITHUB_TOKEN", ""))
+        except CommitResolutionError as exc:
+            raise ValueError(str(exc)) from exc
+        effective_agent_commit = resolved_override.full_sha
+        expected_agent_version = read_agent_version_from_source(effective_agent_commit, token=os.environ.get("GITHUB_TOKEN", ""))
+        agent_source = "Explicit operator override"
+    else:
+        effective_agent_commit = manifest.agent_source_commit
+        expected_agent_version = manifest.edge_release
+        agent_source = "Validated release manifest"
     request = UpgradeRequest(
         gateway_id=gateway_id,
         site_id=value(fields, "site_id") or gateway_id,
@@ -1007,7 +1047,7 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         gateway_host=value(fields, "gateway_host") or "192.168.1.200",
         gateway_user=value(fields, "gateway_user") or "swadmin",
         gateway_password=value(fields, "gateway_password"),
-        git_ref=value(fields, "git_ref") or DEFAULT_EDGE_UPDATE_REF,
+        git_ref=effective_agent_commit,
         remote_repo=value(fields, "remote_repo") or DEFAULT_REPO_PATH,
         ui_source_folder=value(fields, "ui_source_folder") or DEFAULT_UI_SOURCE,
         ui_username=value(fields, "ui_username") or "admin",
@@ -1019,7 +1059,10 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         final_update_confirmed=final_update_confirmed,
         selected_phases=selected_phases,
         edge_release=release_name(value(fields, "edge_release") or DEFAULT_EDGE_RELEASE),
-        release_manifest_path=value(fields, "release_manifest_path") or DEFAULT_RELEASE_MANIFEST,
+        release_manifest_path=manifest_path,
+        effective_agent_commit=effective_agent_commit,
+        expected_agent_version=expected_agent_version,
+        agent_source=agent_source,
     )
     required = [
         ("Gateway number", request.gateway_id),
@@ -1033,7 +1076,6 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
     missing = [name for name, field_value in required if not field_value]
     if missing:
         raise ValueError(f"Missing required field(s): {', '.join(missing)}")
-    manifest = load_manifest(Path(request.release_manifest_path))
     if request.edge_release != manifest.edge_release:
         raise ValueError(f"Edge Release {request.edge_release} does not match manifest Edge Release {manifest.edge_release}")
     return request
@@ -1415,9 +1457,8 @@ print("REPO_RELEASE_VALIDATION=Passed")
 
 
 def repo_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
-    release = load_release_definition(request.release_manifest_path)
     repo = shell_quote(request.remote_repo)
-    ref = shell_quote(release.agent_source_commit)
+    ref = shell_quote(request.effective_agent_commit)
     prerequisite_script = (
         "rm -rf /tmp/iot-cx-venv-check; "
         "if command -v git >/dev/null 2>&1 "
@@ -1435,10 +1476,10 @@ def repo_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         ("verify/install prerequisites", prerequisite_script, True),
         (
             "clone or update cloud repo",
-            f"""cd /home/swadmin && if [ -d {repo}/.git ]; then cd {repo} && git remote set-url origin {shell_quote(REMOTE_REPO_URL)} && git fetch origin --tags; else git clone {shell_quote(REMOTE_REPO_URL)} {repo}; cd {repo}; git fetch origin --tags; fi && git checkout {ref} && (git pull --ff-only origin {ref} 2>/dev/null || true)""",
+            f"""cd /home/swadmin && if [ -d {repo}/.git ]; then cd {repo} && git remote set-url origin {shell_quote(REMOTE_REPO_URL)} && git fetch origin --tags; else git clone {shell_quote(REMOTE_REPO_URL)} {repo}; cd {repo}; git fetch origin --tags; fi && git checkout --detach {ref}""",
             False,
         ),
-        ("repo release validation", repo_release_validation_command(request.remote_repo, release.agent_source_commit), False),
+        ("repo release validation", repo_release_validation_command(request.remote_repo, request.effective_agent_commit), False),
     ]
 
 
@@ -1586,6 +1627,7 @@ def install_agent_commands(request: UpgradeRequest) -> list[tuple[str, str, bool
 def service_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     repo = shell_quote(request.remote_repo)
     return [
+        ("capture pre-restart agent timestamp", "echo AGENT_SERVICE_START_BEFORE=$(systemctl show iot-cx-agent.service -p ActiveEnterTimestampMonotonic --value 2>/dev/null || true)", False),
         ("install iot-cx-agent service", f"sudo -S -p '' install -m 0644 {repo}/deploy/iot-cx-agent.service /etc/systemd/system/iot-cx-agent.service", True),
         ("systemd daemon reload", "sudo -S -p '' systemctl daemon-reload", True),
         ("show agent service", "systemctl cat iot-cx-agent.service --no-pager", False),
@@ -1596,10 +1638,12 @@ def service_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     ]
 
 
-def final_commands(expected_bacnet_default_port: str = "47814", release_manifest_path: str = DEFAULT_RELEASE_MANIFEST) -> list[tuple[str, str, bool]]:
-    release = load_release_definition(release_manifest_path)
+def final_commands(request: UpgradeRequest, expected_bacnet_default_port: str = "47814", pre_restart_timestamp: str = "") -> list[tuple[str, str, bool]]:
     expected_port = shell_quote(expected_bacnet_default_port if expected_bacnet_default_port.isdigit() else "47814")
-    expected_agent = shell_quote(release.agent_source_commit)
+    expected_agent = shell_quote(request.effective_agent_commit)
+    expected_version = shell_quote(request.expected_agent_version)
+    expected_before = shell_quote(pre_restart_timestamp)
+    repo = shell_quote(request.remote_repo)
     return [
         ("hostname", "hostname", False),
         ("agent active", "systemctl is-active iot-cx-agent.service", False),
@@ -1610,11 +1654,21 @@ def final_commands(expected_bacnet_default_port: str = "47814", release_manifest
         ("verify tunnel relay timeout", "grep -E '^tunnel_request_timeout_sec:' /etc/iot-cx-agent/agent.yaml; test \"$(awk '/^tunnel_request_timeout_sec:/{print $2; exit}' /etc/iot-cx-agent/agent.yaml)\" = 900", False),
         (
             "verify release components",
-            f"cd /home/swadmin/iot-cloud-commissioning && head=$(git rev-parse HEAD) && trend=$(awk '/^local_edge_trends_enabled:/{{print tolower($2); found=1; exit}} END{{if (!found) print \"false\"}}' /etc/iot-cx-agent/agent.yaml) && echo UI_RELEASE_VALIDATION=Passed && echo AGENT_RELEASE_COMMIT=$head && test \"$head\" = {expected_agent} && echo AGENT_RELEASE_VALIDATION=Passed && test \"$trend\" != true && echo LOCAL_EDGE_TRENDS_ENABLED=false && echo BACKGROUND_BACNET_ACTIVITY_ADDED=No && echo MSTP_READ_BASELINE_TARGET=approximately_3_seconds && echo BACNET_IP_READ_BASELINE_TARGET=under_1_second && echo RULE_1_VALIDATION=Passed && echo RELEASE_0_1_9_VALIDATION=Passed",
+            f"cd {repo} && head=$(git rev-parse HEAD) && package=$({repo}/edge-agent/.venv/bin/python -c 'from importlib.metadata import version; print(version(\"iot-cx-agent\"))') && module=$({repo}/edge-agent/.venv/bin/python -c 'import iot_cx_agent; print(iot_cx_agent.__version__)') && active=$(systemctl is-active iot-cx-agent.service) && restarted=$(systemctl show iot-cx-agent.service -p ActiveEnterTimestampMonotonic --value) && trend=$(awk '/^local_edge_trends_enabled:/{{print tolower($2); found=1; exit}} END{{if (!found) print \"false\"}}' /etc/iot-cx-agent/agent.yaml) && echo AGENT_RELEASE_COMMIT=$head && echo AGENT_PACKAGE_VERSION=$package && echo AGENT_MODULE_VERSION=$module && echo AGENT_SERVICE_STATE=$active && echo AGENT_SERVICE_START=$restarted && test \"$head\" = {expected_agent} && test \"$package\" = {expected_version} && test \"$module\" = {expected_version} && test \"$active\" = active && test -n \"$restarted\" && test \"$restarted\" != 0 && test \"$restarted\" != {expected_before} && test \"$trend\" != true && echo AGENT_RELEASE_VALIDATION=Passed && echo UI_RELEASE_VALIDATION=Passed && echo LOCAL_EDGE_TRENDS_ENABLED=false && echo BACKGROUND_BACNET_ACTIVITY_ADDED=No && echo MSTP_READ_BASELINE_TARGET=approximately_3_seconds && echo BACNET_IP_READ_BASELINE_TARGET=under_1_second && echo RULE_1_VALIDATION=Passed && echo RELEASE_0_1_9_VALIDATION=Passed",
             False,
         ),
         ("agent final logs", "journalctl -u iot-cx-agent -n 60 --no-pager -l || true", False),
     ]
+
+
+def validate_agent_runtime_output(output: str, request: UpgradeRequest, pre_restart_timestamp: str) -> None:
+    values = {key: next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith(key + "=")), "") for key in ("AGENT_RELEASE_COMMIT", "AGENT_PACKAGE_VERSION", "AGENT_MODULE_VERSION", "AGENT_SERVICE_STATE", "AGENT_SERVICE_START")}
+    expected = {"AGENT_RELEASE_COMMIT": request.effective_agent_commit, "AGENT_PACKAGE_VERSION": request.expected_agent_version, "AGENT_MODULE_VERSION": request.expected_agent_version, "AGENT_SERVICE_STATE": "active"}
+    mismatches = [f"{key}={values[key]!r}, expected {expected_value!r}" for key, expected_value in expected.items() if values[key] != expected_value]
+    if not values["AGENT_SERVICE_START"] or values["AGENT_SERVICE_START"] in {"0", pre_restart_timestamp}:
+        mismatches.append("AGENT_SERVICE_START is missing or unchanged from before restart")
+    if mismatches:
+        raise RuntimeError("Actual Agent runtime validation failed: " + "; ".join(mismatches))
 
 
 def rollback_commands(backup: str) -> list[tuple[str, str, bool]]:
@@ -1943,10 +1997,15 @@ class LegacyUpgradeRunner:
                     self.log.append("Warning: pip output did not include 'Successfully installed'; verify package install above.\n")
             elif index == 10:
                 output = self.run_commands(service_commands(self.request))
+                previous_start = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("AGENT_SERVICE_START_BEFORE=")), "")
+                with JOBS_LOCK:
+                    JOBS[self.job_id].pre_restart_agent_timestamp = previous_start
                 if not self.request.dry_run and "Heartbeat accepted" not in output:
                     self.log.append("Warning: heartbeat acceptance was not seen in the recent service log.\n")
             elif index == 11:
-                output = self.run_commands(final_commands(JOBS[self.job_id].pre_upgrade_agent_default_port, self.request.release_manifest_path), stop_on_failure=False)
+                output = self.run_commands(final_commands(self.request, JOBS[self.job_id].pre_upgrade_agent_default_port, JOBS[self.job_id].pre_restart_agent_timestamp), stop_on_failure=False)
+                if not self.request.dry_run:
+                    validate_agent_runtime_output(output, self.request, JOBS[self.job_id].pre_restart_agent_timestamp)
                 self.write_summary(output)
             with JOBS_LOCK:
                 job = JOBS[self.job_id]
@@ -1987,6 +2046,7 @@ class LegacyUpgradeRunner:
         sudo_state = "yes" if "SUDO_AVAILABLE=yes" in output else "not confirmed"
         backup_path = "/home/swadmin" if "BACKUP_PATH_WRITABLE=/home/swadmin" in output else "not confirmed"
         source_summary = embedded_ui_artifact_summary(self.request.release_manifest_path)
+        source_summary["Agent source commit"] = self.request.effective_agent_commit
         if not self.request.dry_run and source_summary["UI artifact validation"] != "Passed":
             raise RuntimeError(f"UI artifact validation failed: {source_summary['UI artifact validation']}")
         release = load_release_definition(self.request.release_manifest_path)
@@ -1995,19 +2055,22 @@ class LegacyUpgradeRunner:
             job.pre_upgrade_agent_default_port = pre_port if pre_port.isdigit() else "47814"
             job.summary.update(
                 {
+                    "Updater": f"{identity.PRODUCT_NAME} {identity.APP_VERSION}",
                     "Selected target gateway": self.request.gateway_id,
                     "SSH route and host": f"{self.request.cradlepoint_user}@{self.request.cradlepoint_host} -> {self.request.gateway_user}@{self.request.gateway_host}",
                     "Detected current Edge UI version": "see live log",
                     "Detected current agent version": agent_version,
                     "Target UI version": DEFAULT_EDGE_RELEASE,
-                    "Target agent version": DEFAULT_EDGE_RELEASE,
+                    "Target agent version": self.request.expected_agent_version,
+                    "Agent source": self.request.agent_source,
                     **source_summary,
                     "RELEASE_VERSION": release.edge_release,
                     "UI_DEPLOYMENT_SOURCE": source_summary["UI deployment source"],
                     "UI_SOURCE_COMMIT": source_summary["UI source commit"],
                     "UI_ARTIFACT_SHA256": source_summary["UI artifact SHA-256"],
                     "UI_ARTIFACT_VALIDATION": source_summary["UI artifact validation"],
-                    "AGENT_SOURCE_COMMIT": release.agent_source_commit,
+                    "AGENT_SOURCE_COMMIT": self.request.effective_agent_commit,
+                    "AGENT_SOURCE": self.request.agent_source,
                     "LOCAL_EDGE_TRENDS_DEFAULT_ENABLED": "true" if release.local_edge_trends_default_enabled else "false",
                     "BACKGROUND_BACNET_ACTIVITY_ADDED": "No",
                     "RELEASE_COMPONENT_VALIDATION": source_summary["Release component validation"],
@@ -2035,6 +2098,7 @@ class LegacyUpgradeRunner:
             "UI_ARTIFACT_SHA256",
             "UI_ARTIFACT_VALIDATION",
             "AGENT_SOURCE_COMMIT",
+            "AGENT_SOURCE",
             "LOCAL_EDGE_TRENDS_DEFAULT_ENABLED",
             "BACKGROUND_BACNET_ACTIVITY_ADDED",
             "RELEASE_COMPONENT_VALIDATION",
@@ -2058,7 +2122,8 @@ class LegacyUpgradeRunner:
         self.log.append(f"UI_SOURCE_COMMIT={artifact_summary['UI source commit']}\n")
         self.log.append(f"UI_ARTIFACT_SHA256={artifact_summary['UI artifact SHA-256']}\n")
         self.log.append("UI_ARTIFACT_VALIDATION=Passed\n")
-        self.log.append(f"AGENT_SOURCE_COMMIT={release.agent_source_commit}\n")
+        self.log.append(f"AGENT_SOURCE_COMMIT={self.request.effective_agent_commit}\n")
+        self.log.append(f"AGENT_SOURCE={self.request.agent_source}\n")
         self.log.append(f"LOCAL_EDGE_TRENDS_DEFAULT_ENABLED={'true' if release.local_edge_trends_default_enabled else 'false'}\n")
         self.log.append("BACKGROUND_BACNET_ACTIVITY_ADDED=No\n")
         self.log.append("RELEASE_COMPONENT_VALIDATION=Passed\n")
