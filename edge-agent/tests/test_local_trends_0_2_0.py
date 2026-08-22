@@ -340,9 +340,9 @@ def test_sync_schedule_is_stable_and_not_due_each_control_cycle(tmp_path: Path) 
     agent_config = enabled_config(tmp_path, db_path)
     initialize_database(agent_config.sqlite_path)
     now = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
-    assert local_trend_sync_due(agent_config, 43_200, now=now) is False
-    assert local_trend_sync_due(agent_config, 43_200, now=now + timedelta(seconds=30)) is False
-    schedule_next_local_trend_sync(agent_config, 43_200, now=now)
+    assert local_trend_sync_due(agent_config, 7_200, now=now) is False
+    assert local_trend_sync_due(agent_config, 7_200, now=now + timedelta(seconds=30)) is False
+    schedule_next_local_trend_sync(agent_config, 7_200, now=now)
 
 
 def test_collection_continues_while_the_cloud_is_unreachable(tmp_path: Path, monkeypatch) -> None:

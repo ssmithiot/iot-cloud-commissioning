@@ -508,6 +508,12 @@ def test_edge_local_mode_never_runs_legacy_pipeline(tmp_path: Path, monkeypatch)
     assert run_once(agent_config) is True
 
 
+def test_edge_local_sync_default_is_two_hours_and_cloud_override_wins(tmp_path: Path) -> None:
+    agent_config = config(tmp_path)
+    assert agent_config.trend_sync_interval_sec == 7_200
+    assert agent_main._cloud_sync_interval(Response({"trend_sync_interval_sec": 3_600}), agent_config.trend_sync_interval_sec) == 3_600
+
+
 def test_legacy_mode_runs_legacy_pipeline(tmp_path: Path, monkeypatch) -> None:
     agent_config = config(tmp_path, trend_transport_mode="legacy_cloud_configured")
     initialize_database(agent_config.sqlite_path)
