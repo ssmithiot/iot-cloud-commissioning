@@ -19,7 +19,8 @@ OUT_DIR="${1:-$REPO/dist}"
 
 PRODUCT="IOT Edge Development Updater"
 APP="IOTEdgeDevUpdater"
-VERSION="$(python3 -c "import re,pathlib; print(re.search(r'APP_VERSION = \"([^\"]+)\"', pathlib.Path('$REPO/tools/dev_updater/identity.py').read_text()).group(1))")"
+DISPLAY_VERSION="$(python3 -c "import re,pathlib; print(re.search(r'APP_VERSION = \"([^\"]+)\"', pathlib.Path('$REPO/tools/dev_updater/identity.py').read_text()).group(1))")"
+VERSION="$(python3 -c "import re,pathlib; print(re.search(r'MSI_PRODUCT_VERSION = \"([^\"]+)\"', pathlib.Path('$REPO/tools/dev_updater/identity.py').read_text()).group(1))")"
 MANUFACTURER="The Internet of Team, LLC"
 MSI="$OUT_DIR/IOTEdgeDevUpdater-$VERSION-x64.msi"
 
@@ -39,7 +40,7 @@ trap 'rm -rf "$WORK"' EXIT
 STAGE="$WORK/stage"
 mkdir -p "$STAGE/tools/dev_updater" "$OUT_DIR"
 
-echo "==> Staging $PRODUCT $VERSION"
+echo "==> Staging $PRODUCT $DISPLAY_VERSION (MSI $VERSION)"
 
 # The application itself: updater_webapp.py is the copy of the working updater,
 # plus the identity/runtime helpers that keep it separate from Jim's.
@@ -94,7 +95,8 @@ AGENT_SHA="$(python3 -c "import json;print(json.load(open('$DEV_MANIFEST'))['age
 ARTIFACT_SHA="$(python3 -c "import json;print(json.load(open('$DEV_MANIFEST'))['sha256'])")"
 
 printf '%s\n' \
-  "$PRODUCT $VERSION" \
+  "$PRODUCT $DISPLAY_VERSION" \
+  "MSI ProductVersion: $VERSION" \
   "Built from commit: $(git -C "$REPO" rev-parse HEAD)" \
   "Branch: $(git -C "$REPO" rev-parse --abbrev-ref HEAD)" \
   "Edge UI commit:    $UI_SHA (${UI_SHA:0:7}) on release/edge-ui-0.2.0" \
@@ -211,7 +213,7 @@ echo "==> Writing $MSI"
 wixl -v --arch x64 -D SourceDir="$STAGE" -o "$MSI" "$WORK/product.wxs" "$WORK/files.wxs"
 
 echo
-echo "$PRODUCT $VERSION"
+echo "$PRODUCT $DISPLAY_VERSION (MSI $VERSION)"
 echo "  MSI    : $MSI"
 echo "  size   : $(stat -c%s "$MSI") bytes"
 echo "  sha256 : $(sha256sum "$MSI" | cut -d' ' -f1)"

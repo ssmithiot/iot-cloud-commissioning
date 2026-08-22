@@ -41,7 +41,7 @@ DEV_MANIFEST = REPO_ROOT / "tools" / "dev_updater" / "releases" / "manifests" / 
 BUILD_SCRIPT = REPO_ROOT / "deploy" / "dev-updater" / "build-msi.sh"
 ENV_EXAMPLE = REPO_ROOT / "deploy" / "dev-updater" / ".env.example"
 LAUNCHER = REPO_ROOT / "deploy" / "dev-updater" / "IOTEdgeDevUpdater.cmd"
-MSI = REPO_ROOT / "dist" / f"IOTEdgeDevUpdater-{identity.APP_VERSION}-x64.msi"
+MSI = REPO_ROOT / "dist" / f"IOTEdgeDevUpdater-{identity.MSI_PRODUCT_VERSION}-x64.msi"
 
 # Jim's files as they stood before any Development Updater work existed
 # (commit 3979be2). Pinned rather than diffed against HEAD: a hash cannot be
@@ -498,7 +498,8 @@ def test_13f_this_product_ships_its_own_artifact_not_jims():
 
 def test_16_the_product_has_its_own_identity():
     assert identity.PRODUCT_NAME == "IOT Edge Development Updater"
-    assert identity.APP_VERSION == "0.1.1"
+    assert identity.APP_VERSION == "0.2.0-dev.3"
+    assert identity.MSI_PRODUCT_VERSION == "0.2.3"
     assert identity.WINDOWS_INSTALL_DIR == r"C:\Program Files\IOT Edge Development Updater"
     assert identity.WINDOWS_DATA_DIR.endswith(r"IOT\EdgeDevUpdater")
     assert identity.pid_path().name == "IOTEdgeDevUpdater.pid"

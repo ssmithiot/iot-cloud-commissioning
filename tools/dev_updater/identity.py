@@ -31,7 +31,10 @@ PRODUCT_NAME = "IOT Edge Development Updater"
 APP_NAME = "IOTEdgeDevUpdater"
 SHORTCUT_NAME = "IOT Edge Development Updater"
 MANUFACTURER = "The Internet of Team, LLC"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.2.0-dev.3"
+# Windows Installer accepts numeric versions only. Keep this greater than the
+# installed 0.2.2 package so the stable UpgradeCode performs an in-place update.
+MSI_PRODUCT_VERSION = "0.2.3"
 
 # Stable for the lifetime of the product. Windows recognises an upgrade by this
 # code; regenerating it would install a second copy side by side with itself.
