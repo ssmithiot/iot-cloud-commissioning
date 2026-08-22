@@ -27,9 +27,9 @@ os.environ["AUTO_CREATE_TABLES"] = "true"
 os.environ["GATEWAY_AUTH_PEPPER"] = "test-pepper"
 os.environ["IOT_ADMIN_API_TOKEN"] = "test-admin-token"
 os.environ["SUPABASE_JWT_SECRET"] = "test-supabase-jwt-secret"
-os.environ["EDGE_RELEASE_VERSION"] = "0.2.0"
+os.environ["EDGE_RELEASE_VERSION"] = "0.2.3"
 os.environ["EDGE_UI_RELEASE_COMMIT"] = "2adae3adeb339806330db0e481cba3179fff2ff1"
-os.environ["EDGE_AGENT_RELEASE_COMMIT"] = "40133f2a81390db92a01b33a9c02c48a07363a7e"
+os.environ["EDGE_AGENT_RELEASE_COMMIT"] = "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
 
 from app import main as main_module
 from app.auth import GatewayAuthContext, hash_gateway_token
@@ -251,9 +251,9 @@ def test_health() -> None:
         "status": "ok",
         "environment": "development",
         "version": app.version,
-        "approved_edge_release": "0.2.0",
+        "approved_edge_release": "0.2.3",
         "approved_edge_ui_commit": "2adae3adeb339806330db0e481cba3179fff2ff1",
-        "approved_edge_agent_commit": "40133f2a81390db92a01b33a9c02c48a07363a7e",
+        "approved_edge_agent_commit": "f77c42b88c5307009c35a2d94e5afbbdb3e4db98",
     }
 
 
@@ -460,8 +460,8 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert 'data-select-update="${escapeHtml(gateway.gateway_id)}"' in response.text
     assert "queueGatewayUpdates" in response.text
     assert 'const edgeResourceHealthMinimumVersion = "0.1.6";' in response.text
-    assert 'const edgeAgentReleaseVersion = "0.1.9";' in response.text
-    assert 'const edgeUiReleaseVersion = "0.1.9";' in response.text
+    assert 'const edgeAgentReleaseVersion = "0.2.3";' in response.text
+    assert 'const edgeUiReleaseVersion = "0.2.3";' in response.text
     assert 'const edgeReleaseUpdateScope = "full_non_provisioning";' in response.text
     assert 'if (value.toLowerCase() === "current") return { current: true, known: true };' in response.text
     assert "gatewayReleaseStatus(gateway).updateRequired" in response.text
@@ -514,6 +514,19 @@ def test_dashboard_edge_app_cell_uses_short_release_labels_and_preserves_update_
     assert "Mode: Full non-provisioning update" not in response.text
     assert '<button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>' in response.text
     assert "queueGatewayUpdates([button.dataset.requestUpdate]);" in response.text
+
+
+def test_dashboard_gateway_updates_require_explicit_operator_actions() -> None:
+    response = client.get("/app")
+
+    assert response.status_code == 200
+    assert "let selectedGatewayUpdateIds = new Set();" in response.text
+    assert 'updateButton.addEventListener("click", () => queueGatewayUpdates([...selectedGatewayUpdateIds]));' in response.text
+    assert 'selectAll.addEventListener("change", () => {' in response.text
+    assert 'checkbox.addEventListener("change", () => {' in response.text
+    assert 'button.addEventListener("click", (event) => {' in response.text
+    assert "queueGatewayUpdates([button.dataset.requestUpdate]);" in response.text
+    assert "queueGatewayUpdates(sortedDashboardGateways" not in response.text
 
 
 def test_dashboard_registry_sort_restores_from_session_storage() -> None:
@@ -998,9 +1011,9 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     assert request["gateway_id"] == "GW001"
     assert request["status"] == "queued"
     assert request["update_scope"] == "full_non_provisioning"
-    assert request["target_agent_version"] == "0.2.0"
-    assert request["target_ui_version"] == "0.2.0"
-    assert request["target_agent_commit"] == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+    assert request["target_agent_version"] == "0.2.3"
+    assert request["target_ui_version"] == "0.2.3"
+    assert request["target_agent_commit"] == "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
     assert request["target_ui_commit"] == "2adae3adeb339806330db0e481cba3179fff2ff1"
     assert request["provisioning"] is False
     assert request["token_writing"] is False
@@ -1010,16 +1023,16 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     assert listed.status_code == 200
     assert listed.json()[0]["request_id"] == request["request_id"]
     assert listed.json()[0]["update_scope"] == "full_non_provisioning"
-    assert listed.json()[0]["target_agent_version"] == "0.2.0"
-    assert listed.json()[0]["target_ui_version"] == "0.2.0"
+    assert listed.json()[0]["target_agent_version"] == "0.2.3"
+    assert listed.json()[0]["target_ui_version"] == "0.2.3"
 
     claimed = client.post(f"/api/admin/gateway-updates/{request['request_id']}/claim", headers=admin_headers())
     assert claimed.status_code == 200
     assert claimed.json()["status"] == "running"
     assert claimed.json()["update_scope"] == "full_non_provisioning"
-    assert claimed.json()["target_agent_version"] == "0.2.0"
-    assert claimed.json()["target_ui_version"] == "0.2.0"
-    assert claimed.json()["target_agent_commit"] == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+    assert claimed.json()["target_agent_version"] == "0.2.3"
+    assert claimed.json()["target_ui_version"] == "0.2.3"
+    assert claimed.json()["target_agent_commit"] == "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
     assert claimed.json()["target_ui_commit"] == "2adae3adeb339806330db0e481cba3179fff2ff1"
     assert claimed.json()["provisioning"] is False
     assert claimed.json()["token_writing"] is False
@@ -1035,8 +1048,8 @@ def test_gateway_update_request_queue_claim_and_completion() -> None:
     with SessionLocal() as db:
         edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
         assert edge_node is not None
-        assert edge_node.ui_version == "0.2.0"
-        assert edge_node.agent_version == "0.2.0"
+        assert edge_node.ui_version == "0.2.3"
+        assert edge_node.agent_version == "0.2.3"
         assert edge_node.site_id == "demo-site"
 
 
@@ -1053,7 +1066,7 @@ def test_gateway_update_explicit_ui_only_recovery_remains_available() -> None:
     request = queued.json()[0]
     assert request["update_scope"] == "ui_only"
     assert request["target_agent_version"] is None
-    assert request["target_ui_version"] == "0.2.0"
+    assert request["target_ui_version"] == "0.2.3"
     assert request["target_ui_commit"] == "2adae3adeb339806330db0e481cba3179fff2ff1"
     assert request["provisioning"] is False
     assert request["token_writing"] is False
@@ -1069,21 +1082,23 @@ def test_gateway_update_explicit_ui_only_recovery_remains_available() -> None:
     with SessionLocal() as db:
         edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
         assert edge_node is not None
-        assert edge_node.ui_version == "0.2.0"
+        assert edge_node.ui_version == "0.2.3"
         assert edge_node.agent_version == "0.1.0"
 
 
 @pytest.mark.parametrize(
     ("agent_version", "ui_version", "expected_status", "update_required"),
     [
-        ("0.2.0", "0.2.0", "0.2.0", False),
-        ("0.2.0", "current", "0.2.0", False),
-        ("0.2.0", "0.1.9", "Update Needed", True),
-        ("0.1.9", "0.2.0", "Update Needed", True),
+        ("0.2.3", "0.2.3", "0.2.3", False),
+        ("0.2.3", "current", "0.2.3", False),
+        ("0.2.3", "0.2.2", "Update Needed", True),
+        ("0.2.2", "current", "Update Needed", True),
+        ("0.2.1", "current", "Update Needed", True),
+        ("0.2.0", "0.2.3", "Update Needed", True),
         ("0.1.9", "0.1.9", "Update Needed", True),
         ("0.1.7", "0.1.7", "Update Needed", True),
-        ("", "0.2.0", "Update Needed", True),
-        ("0.2.0", "", "Update Needed", True),
+        ("", "0.2.3", "Update Needed", True),
+        ("0.2.3", "", "Update Needed", True),
     ],
 )
 def test_gateway_release_status_is_consistent_on_dashboard_refresh(
@@ -1109,20 +1124,35 @@ def test_gateway_release_status_is_consistent_on_dashboard_refresh(
         gateway = response.json()[0]
         assert gateway["agent_version"] == agent_version
         assert gateway["ui_version"] == ui_version
-        assert gateway["required_agent_version"] == "0.2.0"
-        assert gateway["required_ui_version"] == "0.2.0"
+        assert gateway["required_agent_version"] == "0.2.3"
+        assert gateway["required_ui_version"] == "0.2.3"
         assert gateway["gateway_release_status"] == expected_status
         assert gateway["gateway_release_reason"] == expected_status
         assert gateway["gateway_update_required"] is update_required
 
 
+def test_outdated_gateway_status_checks_do_not_queue_an_update() -> None:
+    create_gateway_token("GW001")
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
+        assert edge_node is not None
+        edge_node.agent_version = "0.2.2"
+        edge_node.ui_version = "current"
+        db.commit()
+
+    response = client.get("/api/ui/gateways", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json()[0]["gateway_release_status"] == "Update Needed"
+    with SessionLocal() as db:
+        assert db.scalars(select(GatewayUpdateRequest)).all() == []
+
+
 @pytest.mark.parametrize(
     ("agent_version", "ui_version"),
     [
-        ("0.1.8", "0.1.8"),
-        ("0.1.9", "0.1.8"),
-        ("0.1.8", "0.1.9"),
-        ("0.1.7", "0.1.7"),
+        ("0.2.2", "current"),
+        ("0.2.1", "current"),
     ],
 )
 def test_gateway_update_default_full_non_provisioning_for_rollout_versions(agent_version: str, ui_version: str) -> None:
@@ -1143,9 +1173,9 @@ def test_gateway_update_default_full_non_provisioning_for_rollout_versions(agent
     assert queued.status_code == 200
     request = queued.json()[0]
     assert request["update_scope"] == "full_non_provisioning"
-    assert request["target_agent_version"] == "0.2.0"
-    assert request["target_ui_version"] == "0.2.0"
-    assert request["target_agent_commit"] == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+    assert request["target_agent_version"] == "0.2.3"
+    assert request["target_ui_version"] == "0.2.3"
+    assert request["target_agent_commit"] == "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
     assert request["target_ui_commit"] == "2adae3adeb339806330db0e481cba3179fff2ff1"
     assert request["provisioning"] is False
     assert request["token_writing"] is False
@@ -1154,9 +1184,9 @@ def test_gateway_update_default_full_non_provisioning_for_rollout_versions(agent
         stored = db.scalar(select(GatewayUpdateRequest).where(GatewayUpdateRequest.gateway_id == "GW001"))
         assert stored is not None
         assert stored.update_scope == "edge_release"
-        assert stored.target_agent_version == "0.2.0"
-        assert stored.target_ui_version == "0.2.0"
-        assert stored.target_agent_commit == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+        assert stored.target_agent_version == "0.2.3"
+        assert stored.target_ui_version == "0.2.3"
+        assert stored.target_agent_commit == "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
         assert stored.target_ui_commit == "2adae3adeb339806330db0e481cba3179fff2ff1"
 
 
@@ -1171,17 +1201,17 @@ def test_gateway_update_uses_existing_release_target_schema_for_full_non_provisi
     request = queued.json()[0]
 
     assert request["update_scope"] == "full_non_provisioning"
-    assert request["target_agent_version"] == "0.2.0"
-    assert request["target_ui_version"] == "0.2.0"
-    assert request["target_agent_commit"] == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+    assert request["target_agent_version"] == "0.2.3"
+    assert request["target_ui_version"] == "0.2.3"
+    assert request["target_agent_commit"] == "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
     assert request["target_ui_commit"] == "2adae3adeb339806330db0e481cba3179fff2ff1"
     with SessionLocal() as db:
         stored = db.scalar(select(GatewayUpdateRequest).where(GatewayUpdateRequest.gateway_id == "GW001"))
         assert stored is not None
         assert stored.update_scope == "edge_release"
-        assert stored.target_agent_version == "0.2.0"
-        assert stored.target_ui_version == "0.2.0"
-        assert stored.target_agent_commit == "40133f2a81390db92a01b33a9c02c48a07363a7e"
+        assert stored.target_agent_version == "0.2.3"
+        assert stored.target_ui_version == "0.2.3"
+        assert stored.target_agent_commit == "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
         assert stored.target_ui_commit == "2adae3adeb339806330db0e481cba3179fff2ff1"
 
 
