@@ -582,6 +582,7 @@ def test_workspace_tunnel_flow_stays_in_workspace_until_operator_connects() -> N
     assert "async function connectWorkspaceTunnel(gatewayId, ttl)" in response.text
     assert "/tunnel-session" in response.text
     assert "/tunnel/close" in response.text
+    assert "if (connect) connect.hidden = !connected" in response.text
 
 
 def test_gateway_workspace_contains_discovery_progress_ui() -> None:
@@ -1474,6 +1475,56 @@ def test_tunnel_status_remains_friendly_when_disconnected() -> None:
     assert response.json()["status"] == "closed"
 
 
+def test_workspace_open_delivers_agent_0_2_3_tunnel_instruction_on_normal_job_poll() -> None:
+    from app.tunnel import tunnel_allowlist, tunnel_manager
+
+    raw_token = create_gateway_token("GW001")
+    idle_poll = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
+    assert idle_poll.status_code == 200
+    assert idle_poll.json() is None
+    assert idle_poll.headers["X-IOT-Tunnel-Lease"] == "none"
+    assert "X-IOT-Tunnel-Requested" not in idle_poll.headers
+
+    opened = client.post(
+        "/api/ui/gateways/GW001/tunnel/open",
+        headers=admin_headers(),
+        json={"duration_minutes": 5},
+    )
+    assert opened.status_code == 200
+    assert opened.json()["connected"] is False
+    assert opened.json()["status"] == "opening"
+    assert tunnel_allowlist.allows("GW001") is True
+
+    poll = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
+    assert poll.status_code == 200
+    assert poll.json() is None
+    assert poll.headers["X-IOT-Tunnel-Requested"] == "true"
+    expected_expiry = datetime.fromisoformat(opened.json()["expires_at"].replace("Z", "+00:00"))
+    assert datetime.fromisoformat(poll.headers["X-IOT-Tunnel-Expires-At"]) == expected_expiry
+    assert poll.headers["X-IOT-Tunnel-Lease"] == "active"
+    assert datetime.fromisoformat(poll.headers["X-IOT-Tunnel-Lease-Expires-At"]) == expected_expiry
+
+    not_connected = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+    assert not_connected.status_code == 503
+    with client.websocket_connect("/api/edge/tunnels/GW001", headers=auth_headers(raw_token)):
+        connected = client.get("/api/ui/gateways/GW001/tunnel-status", headers=admin_headers())
+        assert connected.json()["connected"] is True
+        assert connected.json()["status"] == "connected"
+        session = client.post("/api/ui/gateways/GW001/tunnel-session", headers=admin_headers())
+        assert session.status_code == 200
+
+        closed = client.post("/api/ui/gateways/GW001/tunnel/close", headers=admin_headers())
+        assert closed.status_code == 200
+        assert closed.json()["connected"] is False
+        assert closed.json()["status"] == "closed"
+
+    assert tunnel_manager.is_connected("GW001") is False
+    assert tunnel_allowlist.allows("GW001") is False
+    idle_again = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
+    assert idle_again.headers["X-IOT-Tunnel-Lease"] == "none"
+    assert "X-IOT-Tunnel-Requested" not in idle_again.headers
+
+
 def create_open_tunnel_request(gateway_id: str) -> None:
     from app.tunnel import tunnel_allowlist
 
@@ -1580,7 +1631,7 @@ def test_expired_in_memory_lease_rejects_gateway_websocket() -> None:
 def test_tunnel_expiry_closes_active_registry_entry() -> None:
     from app.tunnel import tunnel_allowlist, tunnel_manager
 
-    create_gateway_token("GW001")
+    raw_token = create_gateway_token("GW001")
     now = utc_now()
     expires_at = now - timedelta(seconds=1)
     tunnel_allowlist.allow("GW001", expires_at)
@@ -1597,6 +1648,12 @@ def test_tunnel_expiry_closes_active_registry_entry() -> None:
     asyncio.run(main_module._expire_active_tunnel("GW001", expires_at))
     assert socket.closed is True
     assert tunnel_manager.is_connected("GW001") is False
+    status = client.get("/api/ui/gateways/GW001/tunnel-status", headers=admin_headers())
+    assert status.json()["connected"] is False
+    assert status.json()["status"] == "closed"
+    poll = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
+    assert poll.headers["X-IOT-Tunnel-Lease"] == "none"
+    assert "X-IOT-Tunnel-Requested" not in poll.headers
 
 
 def test_gateway_tunnel_websocket_diagnostic_disable_rejects_before_db(monkeypatch: pytest.MonkeyPatch) -> None:

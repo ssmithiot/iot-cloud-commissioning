@@ -4339,6 +4339,8 @@ def claim_next_job(
     else:
         response.headers["X-IOT-Tunnel-Lease"] = "active"
         response.headers["X-IOT-Tunnel-Lease-Expires-At"] = expires_at.isoformat()
+        response.headers["X-IOT-Tunnel-Requested"] = "true"
+        response.headers["X-IOT-Tunnel-Expires-At"] = expires_at.isoformat()
 
     # Stale-claim recovery: a gateway that dies mid-job leaves the job
     # 'claimed' forever. Requeue this gateway's stale claims at poll time.
