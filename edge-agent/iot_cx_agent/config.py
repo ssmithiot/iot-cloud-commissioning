@@ -45,7 +45,12 @@ class AgentConfig:
     bacnet_lock_path: Path | None = None
     bacnet_lock_timeout_sec: float = 30.0
     bacnet_lock_stale_sec: float = 120.0
-    heartbeat_interval_sec: int = 30
+    # Heartbeats are liveness signals, not a command transport. Commands use
+    # the separate bounded long-poll below.
+    heartbeat_interval_sec: int = 7_200
+    command_wait_timeout_sec: int = 600
+    command_failure_backoff_initial_sec: int = 5
+    command_failure_backoff_max_sec: int = 300
     edge_ui_data_dir: Path | None = None
     # Local Edge trends ship enabled in 0.2.0. The Edge UI gate
     # (EDGE_TRENDS_UI_ENABLED) must be set to match; both are required.
@@ -230,7 +235,10 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         bacnet_lock_path=lock_path,
         bacnet_lock_timeout_sec=float(bacnet.get("lock_timeout_sec", 30)),
         bacnet_lock_stale_sec=float(bacnet.get("lock_stale_sec", 120)),
-        heartbeat_interval_sec=int(raw.get("heartbeat_interval_sec", 30)),
+        heartbeat_interval_sec=_positive_int(raw.get("heartbeat_interval_sec", 7_200), "heartbeat_interval_sec"),
+        command_wait_timeout_sec=_positive_int(raw.get("command_wait_timeout_sec", 600), "command_wait_timeout_sec", minimum=300),
+        command_failure_backoff_initial_sec=_positive_int(raw.get("command_failure_backoff_initial_sec", 5), "command_failure_backoff_initial_sec"),
+        command_failure_backoff_max_sec=_positive_int(raw.get("command_failure_backoff_max_sec", 300), "command_failure_backoff_max_sec"),
         edge_ui_data_dir=Path(raw["edge_ui_data_dir"]) if raw.get("edge_ui_data_dir") else None,
         local_edge_trends_enabled=_bool_flag(raw.get("local_edge_trends_enabled", True), "local_edge_trends_enabled"),
         trend_transport_mode=_trend_transport_mode(raw.get("trend_transport_mode", "edge_local")),

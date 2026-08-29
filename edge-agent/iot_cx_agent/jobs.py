@@ -31,12 +31,14 @@ from iot_cx_agent.trends import (
 logger = logging.getLogger("iot-cx-agent")
 
 
-def fetch_next_job(config: AgentConfig) -> tuple[dict[str, Any] | None, float | None]:
+def fetch_next_job(config: AgentConfig, http_client: Any = requests) -> tuple[dict[str, Any] | None, float | None]:
     try:
-        response = requests.get(
+        response = http_client.get(
             f"{config.cloud_url}/api/edge/{config.gateway_id}/jobs/next",
             headers=auth_headers(config),
-            timeout=10,
+            params={"wait_seconds": config.command_wait_timeout_sec},
+            # Allow margin for the Cloud response to traverse the network.
+            timeout=config.command_wait_timeout_sec + 30,
         )
     except requests.RequestException:
         record_http(config.sqlite_path, "jobs_poll", success=False)
@@ -179,9 +181,13 @@ def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str
     return "failed", None, f"Unknown job_type: {job_type}"
 
 
-def process_next_job(config: AgentConfig, tunnel_lease_consumer: Callable[[float | None], None] | None = None) -> bool:
+def process_next_job(
+    config: AgentConfig,
+    tunnel_lease_consumer: Callable[[float | None], None] | None = None,
+    http_client: Any = requests,
+) -> bool:
     try:
-        job, lease_expires_at = fetch_next_job(config)
+        job, lease_expires_at = fetch_next_job(config, http_client)
     except requests.RequestException as exc:
         logger.warning("Job poll failed: %s", exc)
         return False

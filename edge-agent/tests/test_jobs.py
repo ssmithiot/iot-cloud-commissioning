@@ -5,7 +5,7 @@ import pytest
 
 from iot_cx_agent.config import AgentConfig, load_config, resolve_bacnet_port
 from iot_cx_agent.heartbeat import auth_headers
-from iot_cx_agent.jobs import execute_job
+from iot_cx_agent.jobs import execute_job, fetch_next_job
 from iot_cx_agent.main import run_forever, run_once, startup_stagger_seconds
 
 
@@ -153,6 +153,42 @@ def test_agent_config_keeps_jobs_on_cloud_api_and_local_sqlite(tmp_path: Path) -
     assert agent_config.cloud_url == "http://localhost:8000"
     assert agent_config.sqlite_path == tmp_path / "edge.db"
     assert not hasattr(agent_config, "database_url")
+
+
+def test_default_idle_traffic_intervals_are_low_bandwidth(tmp_path: Path) -> None:
+    agent_config = config(tmp_path)
+
+    assert agent_config.heartbeat_interval_sec == 7_200
+    assert agent_config.command_wait_timeout_sec == 600
+    assert agent_config.command_failure_backoff_initial_sec == 5
+    assert agent_config.command_failure_backoff_max_sec == 300
+
+
+def test_command_poll_uses_one_bounded_long_request(tmp_path: Path) -> None:
+    class Response:
+        status_code = 200
+        headers: dict[str, str] = {}
+        content = b"null"
+        request = type("Request", (), {"body": None})()
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return None
+
+    class Client:
+        kwargs = None
+
+        def get(self, *args, **kwargs):
+            self.kwargs = kwargs
+            return Response()
+
+    client = Client()
+    fetch_next_job(config(tmp_path), client)
+
+    assert client.kwargs["params"] == {"wait_seconds": 600}
+    assert client.kwargs["timeout"] == 630
 
 
 def test_auth_headers_use_gateway_api_token(tmp_path: Path) -> None:

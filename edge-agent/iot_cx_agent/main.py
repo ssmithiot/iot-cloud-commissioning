@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import logging
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -45,7 +46,11 @@ def _cloud_sync_interval(response: object, fallback: int) -> int:
     return max(300, min(604_800, value))
 
 
-def run_once(config: AgentConfig, tunnel_worker: TunnelLeaseWorker | None = None) -> bool:
+def run_once(
+    config: AgentConfig,
+    tunnel_worker: TunnelLeaseWorker | None = None,
+    run_periodic_steps: bool = True,
+) -> bool:
     sqlite_db_ok = True
     try:
         initialize_database(config.sqlite_path)
@@ -87,7 +92,7 @@ def run_once(config: AgentConfig, tunnel_worker: TunnelLeaseWorker | None = None
         safe_record_heartbeat_attempt(config.sqlite_path, attempted_at=attempted_at, success=False, error=str(exc))
         logger.warning("Heartbeat upload failed: %s", exc)
 
-    if sqlite_db_ok:
+    if sqlite_db_ok and run_periodic_steps:
         # Each trend step is isolated. Local collection is Edge-owned and must
         # keep running when the cloud is unreachable, so a failed upload can
         # never stop sampling, and neither can stop job processing.
@@ -109,6 +114,46 @@ def run_once(config: AgentConfig, tunnel_worker: TunnelLeaseWorker | None = None
                 run_step("Cloud trend upload", upload_pending_trend_samples, config)
         process_next_job(config, tunnel_worker.update if tunnel_worker is not None else None)
     return heartbeat_success
+
+
+def run_local_maintenance(config: AgentConfig) -> None:
+    """Keep the pre-existing local trend cadence independent of heartbeats."""
+    try:
+        initialize_database(config.sqlite_path)
+    except OSError:
+        logger.exception("Failed to initialize SQLite database")
+        return
+    run_step("Local Edge trend sampling", maybe_sample_local_edge_trends, config)
+    if config.trend_transport_mode == "legacy_cloud_configured":
+        run_step("Cloud trend sampling", sample_configured_trends, config)
+    # Cloud trend transport is gated off in the authority baseline. Retain the
+    # existing guarded code path without introducing any new trend traffic.
+    if trend_cloud_upload_enabled():
+        run_step("Cloud trend upload", upload_pending_trend_samples, config)
+
+
+def command_loop(config: AgentConfig, tunnel_worker: TunnelLeaseWorker, stop: threading.Event) -> None:
+    """Renew one bounded long-poll; only failures use a capped backoff."""
+    delay = config.command_failure_backoff_initial_sec
+    with requests.Session() as http_client:
+        while not stop.is_set():
+            if not config.is_provisioned:
+                stop.wait(delay)
+                delay = min(config.command_failure_backoff_max_sec, delay * 2)
+                continue
+            success = process_next_job(config, tunnel_worker.update, http_client)
+            if success:
+                delay = config.command_failure_backoff_initial_sec
+                continue
+            record_network_traffic_failure(config, delay)
+            stop.wait(delay)
+            delay = min(config.command_failure_backoff_max_sec, delay * 2)
+
+
+def record_network_traffic_failure(config: AgentConfig, delay: int) -> None:
+    # The failed HTTP attempt is already recorded as jobs_poll. Do not add a
+    # local database category: historical traffic databases remain unchanged.
+    logger.warning("Command long-poll retrying in %ss", delay)
 
 
 def run_step(description: str, step: Callable[[AgentConfig], object], config: AgentConfig) -> None:
@@ -149,9 +194,22 @@ def run_forever(config: AgentConfig) -> None:
         logger.info("Applying deterministic %ss startup stagger for %s", stagger, config.gateway_id)
         time.sleep(stagger)
 
-    while True:
-        run_once(config, tunnel_worker)
-        time.sleep(config.heartbeat_interval_sec)
+    stop = threading.Event()
+    worker = threading.Thread(target=command_loop, args=(config, tunnel_worker, stop), name="edge-command-wait", daemon=True)
+    worker.start()
+    next_heartbeat = 0.0
+    try:
+        while True:
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                # run_once remains the one-shot-compatible full cycle. In the
+                # resident service, only heartbeat work is due at this cadence.
+                run_once(config, tunnel_worker, False)
+                next_heartbeat = time.monotonic() + config.heartbeat_interval_sec
+            run_local_maintenance(config)
+            time.sleep(30)
+    finally:
+        stop.set()
 
 
 def main() -> None:
