@@ -21,11 +21,14 @@ from iot_cx_agent.status import utc_timestamp
 logger = logging.getLogger("iot-cx-agent")
 
 
-def fetch_next_job(config: AgentConfig) -> dict[str, Any] | None:
-    response = requests.get(
+def fetch_next_job(config: AgentConfig, http_client: Any = requests) -> dict[str, Any] | None:
+    """Wait for one Cloud command using the bounded low-bandwidth poll."""
+    response = http_client.get(
         f"{config.cloud_url}/api/edge/{config.gateway_id}/jobs/next",
         headers=auth_headers(config),
-        timeout=10,
+        params={"wait_seconds": config.command_wait_timeout_sec},
+        # Allow margin for the Cloud response to traverse the network.
+        timeout=config.command_wait_timeout_sec + 30,
     )
     response.raise_for_status()
     return response.json()
@@ -109,9 +112,9 @@ def execute_job(config: AgentConfig, job: dict[str, Any]) -> tuple[str, dict[str
     return "failed", None, f"Unknown job_type: {job_type}"
 
 
-def process_next_job(config: AgentConfig) -> bool:
+def process_next_job(config: AgentConfig, http_client: Any = requests) -> bool:
     try:
-        job = fetch_next_job(config)
+        job = fetch_next_job(config, http_client)
     except requests.RequestException as exc:
         logger.warning("Job poll failed: %s", exc)
         return False

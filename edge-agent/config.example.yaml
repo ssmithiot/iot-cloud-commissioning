@@ -19,12 +19,18 @@ local_ui_write_timeout_sec: 120
 # environment for both the edge agent and the local UI; do not send it to the cloud.
 # edge_agent_write_token: replace-with-a-long-random-local-token
 # Router profiles:
-# - contemporary or basrtb: Contemporary Controls / BASRT-B commissioning on UDP 47814.
-# - bac-rtr: BAC-RTR commissioning on UDP 47809.
+# - general or bac-rtr: general BACnet client traffic on UDP 47809.
+# - edge-router-fdr: Agent source UDP 47814, registered to an Edge router/BBMD.
+# - contemporary or basrtb: legacy dedicated FDR-client aliases on UDP 47814.
 # - custom: use bacnet.default_port or BACNET_IP_PORT exactly.
 # BACNET_IP_PORT in the service environment overrides these profile defaults.
-bacnet_default_port: 47814
-heartbeat_interval_sec: 30
+bacnet_default_port: 47809
+# Low-bandwidth normal operation: heartbeats establish liveness every two
+# hours; commands use a separate, renewable 10 minute long-poll.
+heartbeat_interval_sec: 7200
+command_wait_timeout_sec: 600
+command_failure_backoff_initial_sec: 5
+command_failure_backoff_max_sec: 300
 # Trend samples stay local until the cloud acknowledges them. These bounds keep
 # an offline gateway from consuming unlimited disk while preserving the oldest
 # pending sample for a later retry.
@@ -46,8 +52,8 @@ trend_local_upload_batch_size: 200
 # agent_version is read from the installed edge app package and cannot be overridden here.
 ui_version: 0.1.0
 bacnet:
-  router_profile: contemporary
-  default_port: 47814
+  router_profile: general
+  default_port: 47809
   bacwi_path: bacwi
   bacrp_path: bacrp
   bacrpm_path: bacrpm

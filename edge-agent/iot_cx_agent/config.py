@@ -11,15 +11,18 @@ from iot_cx_agent import __version__
 DEFAULT_CONFIG_PATH = Path("/etc/iot-cx-agent/agent.yaml")
 DEFAULT_SQLITE_PATH = Path("/var/lib/iot-cx-agent/edge.db")
 DEFAULT_UI_VERSION = "0.1.0"
-DEFAULT_BACNET_PORT = 47814
-BAC_RTR_BACNET_PORT = 47809
+DEFAULT_BACNET_PORT = 47809
+EDGE_ROUTER_FDR_BACNET_PORT = 47814
 DEFAULT_BACNET_LOCK_DIR = Path("/tmp")
 DEFAULT_BACNET_LOCK_PREFIX = "iot-edge-bacnet"
 UNPROVISIONED_VALUE = "UNPROVISIONED"
 BACNET_ROUTER_PROFILE_PORTS = {
-    "contemporary": DEFAULT_BACNET_PORT,
-    "basrtb": DEFAULT_BACNET_PORT,
-    "bac-rtr": BAC_RTR_BACNET_PORT,
+    "general": DEFAULT_BACNET_PORT,
+    "bac-rtr": DEFAULT_BACNET_PORT,
+    # Explicit Edge Router/FDR mode keeps the Agent off the router/BBMD port.
+    "edge-router-fdr": EDGE_ROUTER_FDR_BACNET_PORT,
+    "contemporary": EDGE_ROUTER_FDR_BACNET_PORT,
+    "basrtb": EDGE_ROUTER_FDR_BACNET_PORT,
 }
 
 
@@ -34,7 +37,7 @@ class AgentConfig:
     # This is intentionally independent from the WebSocket connect timeout.
     tunnel_request_timeout_sec: float = 900.0
     local_ui_write_timeout_sec: float = 120.0
-    bacnet_router_profile: str = "contemporary"
+    bacnet_router_profile: str = "general"
     bacnet_default_port: int = DEFAULT_BACNET_PORT
     bacnet_bbmd_address: str | None = None
     bacnet_bbmd_port: int | None = None
@@ -45,7 +48,12 @@ class AgentConfig:
     bacnet_lock_path: Path | None = None
     bacnet_lock_timeout_sec: float = 30.0
     bacnet_lock_stale_sec: float = 120.0
-    heartbeat_interval_sec: int = 30
+    # Heartbeats are liveness signals, not a command transport. Commands use
+    # the separate bounded long-poll below.
+    heartbeat_interval_sec: int = 7_200
+    command_wait_timeout_sec: int = 600
+    command_failure_backoff_initial_sec: int = 5
+    command_failure_backoff_max_sec: int = 300
     edge_ui_data_dir: Path | None = None
     # Local Edge trends ship enabled in 0.2.0. The Edge UI gate
     # (EDGE_TRENDS_UI_ENABLED) must be set to match; both are required.
@@ -151,13 +159,13 @@ def _bool_flag(raw_value: object, source: str) -> bool:
 
 
 def normalize_bacnet_router_profile(raw_profile: object | None) -> str:
-    profile = str(raw_profile or "contemporary").strip().lower()
+    profile = str(raw_profile or "general").strip().lower()
     profile = profile.replace("_", "-")
     if profile == "basrt-b":
         profile = "basrtb"
     if profile not in {*BACNET_ROUTER_PROFILE_PORTS, "custom"}:
         raise ValueError(
-            "BACNET_ROUTER_PROFILE must be one of: contemporary, basrtb, bac-rtr, custom"
+            "BACNET_ROUTER_PROFILE must be one of: general, bac-rtr, edge-router-fdr, contemporary, basrtb, custom"
         )
     return profile
 
@@ -219,7 +227,10 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         bacnet_lock_path=lock_path,
         bacnet_lock_timeout_sec=float(bacnet.get("lock_timeout_sec", 30)),
         bacnet_lock_stale_sec=float(bacnet.get("lock_stale_sec", 120)),
-        heartbeat_interval_sec=int(raw.get("heartbeat_interval_sec", 30)),
+        heartbeat_interval_sec=_positive_int(raw.get("heartbeat_interval_sec", 7_200), "heartbeat_interval_sec"),
+        command_wait_timeout_sec=_positive_int(raw.get("command_wait_timeout_sec", 600), "command_wait_timeout_sec", minimum=300),
+        command_failure_backoff_initial_sec=_positive_int(raw.get("command_failure_backoff_initial_sec", 5), "command_failure_backoff_initial_sec"),
+        command_failure_backoff_max_sec=_positive_int(raw.get("command_failure_backoff_max_sec", 300), "command_failure_backoff_max_sec"),
         edge_ui_data_dir=Path(raw["edge_ui_data_dir"]) if raw.get("edge_ui_data_dir") else None,
         local_edge_trends_enabled=_bool_flag(raw.get("local_edge_trends_enabled", True), "local_edge_trends_enabled"),
         trend_lock_timeout_sec=_positive_float(raw.get("trend_lock_timeout_sec", 2.0), "trend_lock_timeout_sec"),
