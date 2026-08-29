@@ -508,6 +508,73 @@ def test_development_agent_override_is_the_only_agent_authority(monkeypatch):
     assert "echo LOCAL_EDGE_TRENDS_ENABLED=$trend" in final_text
 
 
+def test_same_version_agent_commit_update_always_checks_out_the_exact_target():
+    previous = "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
+    target = "d9232758b93fc9954a64235be918724df08238de"
+    request = dev.UpgradeRequest(
+        gateway_id="GW017", site_id="GW017", cloud_url="https://example.test", admin_api_token="x",
+        cradlepoint_host="x", cradlepoint_user="x", cradlepoint_password="x", gateway_host="x",
+        gateway_user="x", gateway_password="x", git_ref=target, remote_repo="/repo",
+        ui_source_folder="x", ui_username="x", ui_password="x", edge_agent_commit=target,
+        expected_agent_version="0.2.3", agent_source="Development override", development_agent_override=True,
+    )
+
+    commands = "\n".join(command for _label, command, _sudo in dev.repo_commands(request))
+    assert f"git checkout --detach {target}" in commands
+    assert previous not in commands
+    assert "expected_agent_version" not in commands
+
+
+def test_agent_cadence_migration_is_narrow_and_preserves_gateway_config(tmp_path):
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "gateway_id: GW017\nsite_id: pilot\ncloud_url: https://cloud.example\n"
+        "heartbeat_interval_sec: 30\nlocal_edge_trends_enabled: true\n"
+        "custom_gateway_setting: retain-me\nbacnet:\n  default_port: 47809\n",
+        encoding="utf-8",
+    )
+
+    namespace: dict[str, object] = {}
+    exec(dev.agent_cadence_migration_script(str(config_path)), namespace)
+    migrated = config_path.read_text(encoding="utf-8")
+
+    assert "heartbeat_interval_sec: 7200" in migrated
+    assert "command_wait_timeout_sec: 600" in migrated
+    assert "command_failure_backoff_initial_sec: 5" in migrated
+    assert "command_failure_backoff_max_sec: 300" in migrated
+    assert "gateway_id: GW017" in migrated
+    assert "site_id: pilot" in migrated
+    assert "cloud_url: https://cloud.example" in migrated
+    assert "local_edge_trends_enabled: true" in migrated
+    assert "custom_gateway_setting: retain-me" in migrated
+    assert "  default_port: 47809" in migrated
+
+
+def test_agent_cadence_migration_preserves_nonlegacy_custom_values(tmp_path):
+    config_path = tmp_path / "agent.yaml"
+    config_path.write_text(
+        "heartbeat_interval_sec: 1800\ncommand_wait_timeout_sec: 420\n"
+        "command_failure_backoff_initial_sec: 9\ncommand_failure_backoff_max_sec: 480\n",
+        encoding="utf-8",
+    )
+
+    exec(dev.agent_cadence_migration_script(str(config_path)), {})
+
+    assert config_path.read_text(encoding="utf-8") == (
+        "heartbeat_interval_sec: 1800\ncommand_wait_timeout_sec: 420\n"
+        "command_failure_backoff_initial_sec: 9\ncommand_failure_backoff_max_sec: 480\n"
+    )
+
+
+def test_fresh_agent_config_uses_the_new_platform_cadence_defaults():
+    request = gw006_override_request()
+    config = dev.agent_config_text(request)
+    assert "heartbeat_interval_sec: 7200" in config
+    assert "command_wait_timeout_sec: 600" in config
+    assert "command_failure_backoff_initial_sec: 5" in config
+    assert "command_failure_backoff_max_sec: 300" in config
+
+
 def test_candidate_version_is_read_from_immutable_source():
     class SourceResponse:
         def read(self): return b'__version__ = "0.2.1"\n'

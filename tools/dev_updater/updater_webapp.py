@@ -1548,7 +1548,12 @@ tunnel_request_timeout_sec: 900
 local_edge_trends_enabled: false
 
 bacnet_default_port: {port}
-heartbeat_interval_sec: 30
+# Platform-owned cadence defaults. Existing gateways receive the narrow
+# migration below so operator/gateway-specific settings remain intact.
+heartbeat_interval_sec: 7200
+command_wait_timeout_sec: 600
+command_failure_backoff_initial_sec: 5
+command_failure_backoff_max_sec: 300
 agent_version: current
 ui_version: current
 
@@ -1560,6 +1565,62 @@ bacnet:
   lock_path: /tmp/iot-cloud-commissioning-bacnet-{port}.lock
   timeout_sec: 10
 """
+
+
+def agent_cadence_migration_script(config_path: str = "/etc/iot-cx-agent/agent.yaml") -> str:
+    """Migrate only known legacy cadence defaults without rewriting YAML.
+
+    Agent-only updates intentionally do not provision credentials or replace
+    gateway-specific configuration.  A prior updater-owned default of exactly
+    30 seconds is the one unambiguous legacy value; every other existing value
+    is retained as an operator/gateway choice.
+    """
+    return f"""
+from pathlib import Path
+import re
+
+config_path = Path({config_path!r})
+defaults = {{
+    "heartbeat_interval_sec": "7200",
+    "command_wait_timeout_sec": "600",
+    "command_failure_backoff_initial_sec": "5",
+    "command_failure_backoff_max_sec": "300",
+}}
+pattern = re.compile(r"^(?P<indent>\\s*)(?P<key>heartbeat_interval_sec|command_wait_timeout_sec|command_failure_backoff_initial_sec|command_failure_backoff_max_sec)\\s*:(?P<value>.*)$")
+lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.exists() else []
+seen = set()
+actions = []
+updated = []
+for line in lines:
+    match = pattern.match(line)
+    if not match or match.group("indent"):
+        updated.append(line)
+        continue
+    key = match.group("key")
+    seen.add(key)
+    raw = match.group("value").split("#", 1)[0].strip().strip("\\\"'")
+    if key == "heartbeat_interval_sec" and raw == "30":
+        updated.append(f"{{key}}: {{defaults[key]}}")
+        actions.append("heartbeat_interval_sec=migrated_legacy_30_to_7200")
+    else:
+        updated.append(line)
+        actions.append(f"{{key}}=preserved")
+for key, default in defaults.items():
+    if key not in seen:
+        if updated and updated[-1].strip():
+            updated.append("")
+        updated.append(f"{{key}}: {{default}}")
+        actions.append(f"{{key}}=added_default")
+config_path.parent.mkdir(parents=True, exist_ok=True)
+config_path.write_text("\\n".join(updated) + "\\n", encoding="utf-8")
+print("AGENT_CADENCE_MIGRATION=" + ";".join(actions))
+"""
+
+
+def agent_cadence_migration_command() -> str:
+    payload = b64(agent_cadence_migration_script())
+    runner = f"import base64; exec(base64.b64decode({payload!r}).decode('utf-8'))"
+    return f"sudo -S -p '' timeout -k 5s 30s python3 -c {shell_quote(runner)}"
 
 
 def edge_ui_data_dir_config_script(
@@ -1673,6 +1734,7 @@ def install_agent_commands(request: UpgradeRequest) -> list[tuple[str, str, bool
         ("upgrade pip", f"cd {repo}/edge-agent && .venv/bin/python -m pip install --upgrade pip", False),
         ("install requirements", f"cd {repo}/edge-agent && .venv/bin/python -m pip install -r requirements.txt", False),
         ("install agent package", f"cd {repo}/edge-agent && .venv/bin/python -m pip install -e .", False),
+        ("migrate platform-owned Agent cadence defaults", agent_cadence_migration_command(), True),
         ("skip data folder ownership check", "echo 'data folder ownership check skipped in legacy nested SSH mode'", False),
     ]
 
