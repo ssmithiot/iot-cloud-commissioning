@@ -3227,7 +3227,7 @@ def test_ui_gateway_status_flags_duplicate_physical_identity() -> None:
 
 def test_ui_gateway_status_marks_old_heartbeat_stale() -> None:
     create_gateway_token("GW001")
-    set_gateway_heartbeat("GW001", seconds_ago=600)
+    set_gateway_heartbeat("GW001", seconds_ago=10_801)
     user_id = create_operator_user("operator@example.com", role="operator", status="active")
 
     response = client.get("/api/ui/gateways", headers=user_headers("operator@example.com", user_id))
@@ -3240,7 +3240,7 @@ def test_ui_gateway_status_marks_missing_or_expired_heartbeat_offline() -> None:
     create_gateway_token("GW001")
     create_gateway_token("GW002", token_prefix="gw00202")
     set_gateway_heartbeat("GW001", seconds_ago=None)
-    set_gateway_heartbeat("GW002", seconds_ago=3600)
+    set_gateway_heartbeat("GW002", seconds_ago=21_601)
     user_id = create_operator_user("operator@example.com", role="operator", status="active")
 
     response = client.get("/api/ui/gateways", headers=user_headers("operator@example.com", user_id))
@@ -3255,8 +3255,8 @@ def test_ui_gateway_summary_counts_online_stale_offline() -> None:
     create_gateway_token("GW002", token_prefix="gw00202")
     create_gateway_token("GW003", token_prefix="gw00303")
     set_gateway_heartbeat("GW001", seconds_ago=20)
-    set_gateway_heartbeat("GW002", seconds_ago=600)
-    set_gateway_heartbeat("GW003", seconds_ago=3600)
+    set_gateway_heartbeat("GW002", seconds_ago=10_801)
+    set_gateway_heartbeat("GW003", seconds_ago=21_601)
     user_id = create_operator_user("operator@example.com", role="operator", status="active")
 
     response = client.get("/api/ui/gateways/summary", headers=user_headers("operator@example.com", user_id))
@@ -3950,7 +3950,7 @@ def test_ui_discover_devices_queues_safe_47814_job_for_online_gateway() -> None:
 
 def test_ui_discover_devices_rejects_offline_gateway() -> None:
     create_gateway_token("GW001")
-    set_gateway_heartbeat("GW001", seconds_ago=3600)
+    set_gateway_heartbeat("GW001", seconds_ago=21_601)
     user_id = create_operator_user("operator@example.com", role="operator", status="active")
 
     response = client.post(
@@ -3989,7 +3989,7 @@ def test_ui_operator_can_queue_point_load_for_saved_device() -> None:
 
 def test_ui_point_load_rejects_offline_gateway() -> None:
     create_gateway_token("GW001")
-    set_gateway_heartbeat("GW001", seconds_ago=3600)
+    set_gateway_heartbeat("GW001", seconds_ago=21_601)
     user_id = create_operator_user("operator@example.com", role="operator", status="active")
     headers = user_headers("operator@example.com", user_id)
     device_response = client.post(

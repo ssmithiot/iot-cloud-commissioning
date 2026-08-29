@@ -9,6 +9,7 @@ import ipaddress
 import json
 import logging
 import re
+import threading
 import time
 from urllib.parse import parse_qsl, quote, urlsplit
 from urllib.parse import urlencode
@@ -242,6 +243,9 @@ def _ensure_visible_logging(target: logging.Logger) -> None:
 _ensure_visible_logging(request_logger)
 
 _REQUEST_LOG_EXCLUDED_PATHS = {"/health", "/health/db", "/health/schema"}
+# In-process wake-up for the Agent's bounded command wait. The database remains
+# authoritative; a missed notification merely lets the bounded wait expire.
+job_wait_condition = threading.Condition()
 
 
 @app.middleware("http")
@@ -3061,6 +3065,8 @@ def ui_load_device_points(
     db.add(job)
     db.commit()
     db.refresh(job)
+    with job_wait_condition:
+        job_wait_condition.notify_all()
     return job
 
 
@@ -3217,6 +3223,8 @@ def ui_read_saved_points(
         db.add(job)
         job_ids.append(job.job_id)
     db.commit()
+    with job_wait_condition:
+        job_wait_condition.notify_all()
     return SavedPointsReadOut(
         requested_count=len(payload.point_ids),
         queued_count=len(job_ids),
@@ -3658,6 +3666,8 @@ def ui_discover_devices(
     db.add(job)
     db.commit()
     db.refresh(job)
+    with job_wait_condition:
+        job_wait_condition.notify_all()
     return job
 
 
@@ -3978,6 +3988,8 @@ def create_job(
     db.add(job)
     db.commit()
     db.refresh(job)
+    with job_wait_condition:
+        job_wait_condition.notify_all()
     return job
 
 
@@ -4326,6 +4338,7 @@ def admin_evaluate_alerts(
 def claim_next_job(
     gateway_id: str,
     response: Response,
+    wait_seconds: int = Query(default=0, ge=0, le=600),
     auth: GatewayAuthContext = Depends(require_gateway_auth),
     db: Session = Depends(get_db),
 ) -> EdgeJobClaimOut | None:
@@ -4372,6 +4385,20 @@ def claim_next_job(
         .limit(1)
         .with_for_update(skip_locked=True)
     )
+    if job is None and wait_seconds:
+        # Release the SQLAlchemy connection while the request waits. A create
+        # wakes this condition promptly; timeout preserves the Agent's single
+        # renewable request and bounds every worker/resource commitment.
+        db.close()
+        with job_wait_condition:
+            job_wait_condition.wait(timeout=wait_seconds)
+        job = db.scalar(
+            select(EdgeJob)
+            .where(EdgeJob.gateway_id == gateway_id, EdgeJob.status == "queued")
+            .order_by(EdgeJob.created_at, EdgeJob.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
     if job is None:
         return None
 

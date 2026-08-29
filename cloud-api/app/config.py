@@ -63,8 +63,11 @@ class Settings(BaseSettings):
     # unset, the invite endpoint uses the current application origin.
     supabase_invite_redirect_url: str | None = Field(default=None, validation_alias="SUPABASE_INVITE_REDIRECT_URL")
     supabase_jwks_url: str | None = Field(default=None, validation_alias="SUPABASE_JWKS_URL")
-    gateway_stale_after_seconds: int = Field(default=300, validation_alias="GATEWAY_STALE_AFTER_SECONDS")
-    gateway_offline_after_seconds: int = Field(default=1800, validation_alias="GATEWAY_OFFLINE_AFTER_SECONDS")
+    # With the 2-hour Agent heartbeat, these retain an honest missed-heartbeat
+    # window: stale after 3 hours and offline after 6 hours. Deployments may
+    # still override both existing environment settings.
+    gateway_stale_after_seconds: int = Field(default=10_800, validation_alias="GATEWAY_STALE_AFTER_SECONDS")
+    gateway_offline_after_seconds: int = Field(default=21_600, validation_alias="GATEWAY_OFFLINE_AFTER_SECONDS")
     trend_retention_days: int = Field(default=90, ge=1, le=3650, validation_alias="TREND_RETENTION_DAYS")
     heartbeat_retention_days: int = Field(default=30, ge=1, le=3650, validation_alias="HEARTBEAT_RETENTION_DAYS")
     # Database connection pool controls. Applied only to non-SQLite URLs.
