@@ -38,6 +38,7 @@ from tools.dev_updater.commit_resolution import (
     resolve_commit,
 )
 from tools.dev_updater.ui_artifact import UIArtifactError, materialize as materialize_ui_artifact
+from tools.dev_updater.trend_config_backup import SNAPSHOT_FILENAME, create_snapshot_script, restore_config_script
 
 try:
     import paramiko
@@ -1348,14 +1349,24 @@ def full_backup_command(
     timeout_seconds: int = 600,
     heartbeat_seconds: int = 15,
 ) -> str:
-    """Create and validate a live Edge UI backup without excluding its data."""
+    """Create a live UI backup with configuration-only trend data."""
     root = shell_quote(backup_root)
+    ui_root = f"{backup_root.rstrip('/')}/edge-bacnet-ui-v2"
+    trend_db = f"{ui_root}/data/edge-trends.db"
+    trend_snapshot = f"{ui_root}/data/{SNAPSHOT_FILENAME}"
+    snapshot_command = "python3 -c " + shell_quote(create_snapshot_script(trend_db, trend_snapshot))
     return f'''cd {root}
 archive="edge-bacnet-ui-v2.backup.$(date +%Y%m%d-%H%M%S).tar.gz"
 stderr_file="${{archive}}.tar.stderr"
-rm -f "$stderr_file"
+trend_snapshot={shell_quote(trend_snapshot)}
+cleanup_backup_files() {{ rm -f "$stderr_file" "$trend_snapshot" "$trend_snapshot-wal" "$trend_snapshot-shm"; }}
+trap cleanup_backup_files EXIT HUP INT TERM
+rm -f "$stderr_file" "$trend_snapshot" "$trend_snapshot-wal" "$trend_snapshot-shm"
 echo "BACKUP_ARCHIVE=$archive"
-timeout -k 10s {timeout_seconds}s tar -czf "$archive" edge-bacnet-ui-v2 2>"$stderr_file" &
+{snapshot_command}
+echo "TREND_HISTORY_BACKUP=excluded_by_policy"
+echo "TREND_HISTORY_EXCLUSIONS=data/edge-trends.db*"
+timeout -k 10s {timeout_seconds}s tar -czf "$archive" --exclude='edge-bacnet-ui-v2/data/edge-trends.db*' edge-bacnet-ui-v2 2>"$stderr_file" &
 backup_pid=$!
 heartbeat_remaining=0
 while kill -0 "$backup_pid" 2>/dev/null; do
@@ -1383,7 +1394,12 @@ if [ ! -s "$archive" ]; then
 fi
 gzip -t "$archive" || {{ echo "BACKUP_ARCHIVE_INVALID=gzip" >&2; exit 1; }}
 tar -tzf "$archive" >/dev/null || {{ echo "BACKUP_ARCHIVE_INVALID=listing" >&2; exit 1; }}
-rm -f "$stderr_file"
+tar -tzf "$archive" | grep -Fx 'edge-bacnet-ui-v2/data/{SNAPSHOT_FILENAME}' >/dev/null || {{ echo "BACKUP_ARCHIVE_INVALID=missing-trend-config" >&2; exit 1; }}
+if tar -tzf "$archive" | grep -E '^edge-bacnet-ui-v2/data/edge-trends[.]db($|[-.]|.*[.]bak$)' >/dev/null; then
+  echo "BACKUP_ARCHIVE_INVALID=trend-history-present" >&2
+  exit 1
+fi
+echo "BACKUP_ARCHIVE_POLICY=Passed"
 echo "BACKUP_ARCHIVE_VALID=Passed"
 '''
 
@@ -1797,14 +1813,52 @@ def validate_agent_runtime_output(output: str, request: UpgradeRequest, pre_rest
         raise RuntimeError("Actual Agent runtime validation failed: " + "; ".join(mismatches))
 
 
+def full_restore_command(
+    backup: str,
+    backup_root: str = "/home/swadmin",
+    restore_root: str = "/tmp/edge-ui-full-restore",
+) -> str:
+    quoted = shell_quote(backup)
+    extracted_ui = f"{restore_root}/edge-bacnet-ui-v2"
+    snapshot = f"{extracted_ui}/data/{SNAPSHOT_FILENAME}"
+    legacy_db = f"{extracted_ui}/data/edge-trends.db"
+    live_ui = f"{backup_root.rstrip('/')}/edge-bacnet-ui-v2"
+    live_db = f"{live_ui}/data/edge-trends.db"
+    restore_script = "python3 -c " + shell_quote(restore_config_script(None, live_db))
+    return f'''set -e
+restore_root={shell_quote(restore_root)}
+cleanup_restore_files() {{ rm -rf "$restore_root"; }}
+trap cleanup_restore_files EXIT HUP INT TERM
+rm -rf "$restore_root"
+mkdir -p "$restore_root"
+cd {shell_quote(backup_root)}
+tar -xzf {quoted} -C "$restore_root"
+test -d "$restore_root/edge-bacnet-ui-v2"
+if [ -f {shell_quote(snapshot)} ]; then
+  trend_config_source={shell_quote(snapshot)}
+  echo "TREND_CONFIG_RESTORE_SOURCE=configuration_snapshot"
+elif [ -f {shell_quote(legacy_db)} ]; then
+  trend_config_source={shell_quote(legacy_db)}
+  echo "TREND_CONFIG_RESTORE_SOURCE=legacy_database_configuration_only"
+else
+  echo "TREND_CONFIG_RESTORE=failed_missing_configuration" >&2
+  exit 1
+fi
+TREND_CONFIG_SOURCE="$trend_config_source" {restore_script}
+find "$restore_root/edge-bacnet-ui-v2/data" -maxdepth 1 -name 'edge-trends.db*' -delete
+rm -f {shell_quote(snapshot)}
+cp -a "$restore_root/edge-bacnet-ui-v2/." {shell_quote(live_ui)}/
+echo "LEGACY_TREND_HISTORY_RESTORE=ignored_by_policy"
+echo "TREND_HISTORY_RESTORE=preserved_current"
+'''
+
+
 def rollback_commands(backup: str) -> list[tuple[str, str, bool]]:
     if not re.fullmatch(r"edge-bacnet-ui-v2\.backup\.\d{8}-\d{6}\.tar\.gz", backup):
         raise ValueError("Backup filename must look like edge-bacnet-ui-v2.backup.YYYYMMDD-HHMMSS.tar.gz")
-    quoted = shell_quote(backup)
     return [
         ("stop edge UI", stop_edge_ui_command(), True),
-        ("move failed UI folder", 'cd /home/swadmin && mv edge-bacnet-ui-v2 "edge-bacnet-ui-v2.failed.$(date +%Y%m%d-%H%M%S)"', False),
-        ("restore selected backup", f"cd /home/swadmin && tar -xzf {quoted}", False),
+        ("restore selected backup without trend history", full_restore_command(backup), False),
         ("fix restored ownership", "sudo -S -p '' chown -R swadmin:swadmin /home/swadmin/edge-bacnet-ui-v2", True),
         ("restore start.sh executable", "chmod +x /home/swadmin/edge-bacnet-ui-v2/start.sh", False),
         ("start edge UI", "sudo -S -p '' systemctl start --no-block edge-bacnet-ui.service", True),

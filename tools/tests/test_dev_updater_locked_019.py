@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import tarfile
 import textwrap
@@ -21,6 +22,7 @@ from tools.dev_updater.commit_resolution import (
     resolve_commit,
 )
 from tools.dev_updater import ui_artifact
+from tools.dev_updater import trend_config_backup
 
 ROOT = Path(__file__).resolve().parents[2]
 LEGACY = ROOT / "tools/legacy_edge_upgrade_webapp.py"
@@ -55,8 +57,8 @@ def test_identity_isolated_and_version_mapping_is_explicit(monkeypatch):
     monkeypatch.setenv("ProgramData", r"C:\ProgramData")
     assert identity.DEFAULT_PORT == 8791
     assert identity.LEGACY_PORT == 8766
-    assert identity.APP_VERSION == "0.2.0-dev.2"
-    assert identity.MSI_PRODUCT_VERSION == "0.2.2"
+    assert identity.APP_VERSION == "0.2.0-dev.3"
+    assert identity.MSI_PRODUCT_VERSION == "0.2.3"
     assert identity.UPGRADE_CODE == "AECCDF45-A1D2-43A5-9142-32E6A984A66E"
     assert identity.env_path().name == ".env"
     assert "EdgeDevUpdater" in str(identity.env_path())
@@ -64,8 +66,11 @@ def test_identity_isolated_and_version_mapping_is_explicit(monkeypatch):
 
 def test_msi_upgrade_preserves_programdata_env_and_uses_new_product_version():
     build = (ROOT / "deploy/dev-updater/build-msi.sh").read_text(encoding="utf-8")
-    assert 'MSI="$OUT_DIR/$APP-0.2.0-dev.2-x64.msi"' in build
+    assert 'MSI="$OUT_DIR/$APP-$DISPLAY_VERSION-x64.msi"' in build
     assert 'UPGRADE_CODE=\'AECCDF45-A1D2-43A5-9142-32E6A984A66E\'' in build
+    assert "DISPLAY_VERSION" in build and "MSI_PRODUCT_VERSION" in build
+    assert "IOT Edge Development Updater $DISPLAY_VERSION" in build
+    assert '<Directory Id="INSTALLDIR" Name="$PRODUCT"/>' in build
     assert 'Version="$VERSION"' in build and 'RemoveExistingProducts After="InstallInitialize"' in build
     assert 'cp "$REPO"/deploy/dev-updater/requirements.txt "$REPO"/deploy/dev-updater/.env.example "$STAGE/"' in build
     assert 'find "$STAGE" -name .env -print -quit' in build
@@ -73,7 +78,7 @@ def test_msi_upgrade_preserves_programdata_env_and_uses_new_product_version():
 def test_form_keeps_the_original_phase_values_and_displays_commit_controls(tmp_path, monkeypatch):
     monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
     page = dev.form_page().decode()
-    assert "Updater Version 0.2.0-dev.2" in page
+    assert "Updater Version 0.2.0-dev.3" in page
     assert page.count('type="checkbox" name="selected_phases"') == len(dev.PHASES)
     for index, phase in enumerate(dev.PHASES):
         assert f'value="{index}" checked> {phase}' in page
@@ -285,22 +290,112 @@ def test_two_distinct_local_listeners_can_run_together():
         legacy.close(); development.close()
 
 
+TREND_SCHEMA = """
+PRAGMA journal_mode=WAL;
+CREATE TABLE trend_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+    interval_sec INTEGER NOT NULL, enabled INTEGER NOT NULL,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE trend_points (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL,
+    device_profile_id TEXT NOT NULL, device_instance INTEGER NOT NULL,
+    object_type TEXT NOT NULL, object_instance INTEGER NOT NULL,
+    object_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+    UNIQUE(group_id, device_instance, object_type, object_instance),
+    FOREIGN KEY(group_id) REFERENCES trend_groups(id) ON DELETE CASCADE
+);
+CREATE TABLE trend_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL,
+    started_at TEXT NOT NULL, completed_at TEXT, requested_count INTEGER NOT NULL DEFAULT 0,
+    returned_count INTEGER NOT NULL DEFAULT 0, deferred_count INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER, cpu_load_pct REAL, memory_used_pct REAL,
+    network_rx_bytes INTEGER, network_tx_bytes INTEGER, error_text TEXT,
+    FOREIGN KEY(group_id) REFERENCES trend_groups(id) ON DELETE CASCADE
+);
+CREATE TABLE trend_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, trend_point_id INTEGER NOT NULL,
+    sampled_at TEXT NOT NULL, value_text TEXT, status TEXT NOT NULL,
+    read_source TEXT, error_text TEXT,
+    FOREIGN KEY(trend_point_id) REFERENCES trend_points(id) ON DELETE CASCADE
+);
+CREATE TABLE trend_upload_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
+    trend_sample_id INTEGER NOT NULL UNIQUE, state TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, last_error TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, uploaded_at TEXT,
+    FOREIGN KEY(trend_sample_id) REFERENCES trend_samples(id) ON DELETE CASCADE
+);
+CREATE TABLE trend_sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE trend_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL,
+    name TEXT NOT NULL, settings_json TEXT NOT NULL,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    UNIQUE(group_id, name),
+    FOREIGN KEY(group_id) REFERENCES trend_groups(id) ON DELETE CASCADE
+);
+"""
+
+
+def create_trend_database(
+    path: Path,
+    *,
+    group_name: str = "Current trend",
+    interval: int = 60,
+    enabled: int = 1,
+    sample_value: str = "72.5",
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as connection:
+        connection.executescript(TREND_SCHEMA)
+        connection.execute("INSERT INTO trend_groups VALUES (10, ?, ?, ?, 'created', 'updated')", (group_name, interval, enabled))
+        connection.execute("INSERT INTO trend_points VALUES (20, 10, 'profile-1', 1234, 'analog-input', 7, 'Space Temp', 'created')")
+        connection.execute("INSERT INTO trend_views VALUES (30, 10, 'Primary', '{\"range\":\"24h\"}', 'created', 'updated')")
+        connection.execute("INSERT INTO trend_runs VALUES (40, 10, 'run-start', 'run-end', 1, 1, 0, 20, 2.5, 30.0, 100, 50, NULL)")
+        connection.execute("INSERT INTO trend_samples VALUES (50, 20, 'sample-time', ?, 'ok', 'rpm-bulk', NULL)", (sample_value,))
+        connection.execute("INSERT INTO trend_upload_outbox VALUES (60, 'event-1', 50, 'pending', 2, NULL, 'retry', 'created', 'updated', NULL)")
+        connection.execute("INSERT INTO trend_sync_state VALUES ('cursor', 'current-cursor', 'updated')")
+        connection.execute("PRAGMA user_version=2")
+
+
+def table_rows(path: Path, table: str) -> list[tuple]:
+    with sqlite3.connect(path) as connection:
+        return list(connection.execute(f'SELECT * FROM "{table}" ORDER BY 1'))
+
+
 def run_full_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tar_script: str, *, timeout_seconds: int = 5) -> subprocess.CompletedProcess[str]:
     root = tmp_path / "swadmin"
     (root / "edge-bacnet-ui-v2" / "data").mkdir(parents=True)
-    (root / "edge-bacnet-ui-v2" / "data" / "history.sqlite").write_bytes(b"live data")
+    ui = root / "edge-bacnet-ui-v2"
+    (ui / ".env").write_text("GATEWAY_ID=GW006\n", encoding="utf-8")
+    (ui / "start.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (ui / "data" / "devices").mkdir()
+    (ui / "data" / "devices" / "1234.json").write_text('{"points":[7]}', encoding="utf-8")
+    trend_db = ui / "data" / "edge-trends.db"
+    create_trend_database(trend_db)
+    (ui / "data" / "edge-trends.db.pre-2-history.bak").write_bytes(b"old history backup")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     tar = fake_bin / "tar"
     tar.write_text("#!/bin/sh\n" + textwrap.dedent(tar_script), encoding="utf-8")
     tar.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
-    return subprocess.run(
-        ["/bin/sh", "-c", dev.full_backup_command(str(root), timeout_seconds=timeout_seconds, heartbeat_seconds=1)],
-        text=True,
-        capture_output=True,
-        env=os.environ.copy(),
-    )
+    live_connection = sqlite3.connect(trend_db)
+    try:
+        live_connection.execute("PRAGMA journal_mode=WAL")
+        live_connection.execute("PRAGMA wal_autocheckpoint=0")
+        live_connection.execute("UPDATE trend_sync_state SET updated_at='backup-running' WHERE key='cursor'")
+        live_connection.commit()
+        assert trend_db.with_name("edge-trends.db-wal").exists()
+        assert trend_db.with_name("edge-trends.db-shm").exists()
+        return subprocess.run(
+            ["/bin/sh", "-c", dev.full_backup_command(str(root), timeout_seconds=timeout_seconds, heartbeat_seconds=1)],
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+        )
+    finally:
+        live_connection.close()
 
 
 REAL_TAR = 'exec /usr/bin/tar "$@"\n'
@@ -311,6 +406,34 @@ def test_full_backup_accepts_a_clean_tar_and_valid_archive(tmp_path, monkeypatch
     assert result.returncode == 0
     assert "BACKUP_TAR_RESULT=clean" in result.stdout
     assert "BACKUP_ARCHIVE_VALID=Passed" in result.stdout
+    assert "TREND_HISTORY_BACKUP=excluded_by_policy" in result.stdout
+    assert "TREND_CONFIG_GROUPS=1" in result.stdout
+    assert "TREND_CONFIG_POINTS=1" in result.stdout
+    assert "TREND_CONFIG_VIEWS=1" in result.stdout
+
+    archive_path = next((tmp_path / "swadmin").glob("edge-bacnet-ui-v2.backup.*.tar.gz"))
+    with tarfile.open(archive_path, "r:gz") as archive:
+        names = set(archive.getnames())
+        assert "edge-bacnet-ui-v2/.env" in names
+        assert "edge-bacnet-ui-v2/start.sh" in names
+        assert "edge-bacnet-ui-v2/data/devices/1234.json" in names
+        assert f"edge-bacnet-ui-v2/data/{trend_config_backup.SNAPSHOT_FILENAME}" in names
+        assert not any("edge-trends.db" in name for name in names)
+        archive.extract(
+            f"edge-bacnet-ui-v2/data/{trend_config_backup.SNAPSHOT_FILENAME}",
+            path=tmp_path / "inspect",
+            filter="data",
+        )
+    snapshot = tmp_path / "inspect" / "edge-bacnet-ui-v2" / "data" / trend_config_backup.SNAPSHOT_FILENAME
+    with sqlite3.connect(snapshot) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+        assert tables == set(trend_config_backup.CONFIG_TABLES)
+        assert connection.execute("SELECT id,name,interval_sec,enabled FROM trend_groups").fetchone() == (10, "Current trend", 60, 1)
+        assert connection.execute("SELECT id,group_id,device_instance,object_instance FROM trend_points").fetchone() == (20, 10, 1234, 7)
+        assert connection.execute("SELECT id,group_id,name FROM trend_views").fetchone() == (30, 10, "Primary")
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert not (tmp_path / "swadmin" / "edge-bacnet-ui-v2" / "data" / trend_config_backup.SNAPSHOT_FILENAME).exists()
+    assert "systemctl" not in dev.full_backup_command(str(tmp_path / "swadmin"))
 
 
 def test_full_backup_accepts_only_live_file_change_warning_after_validation(tmp_path, monkeypatch):
@@ -387,6 +510,128 @@ def test_full_backup_timeout_is_reported_clearly(tmp_path, monkeypatch):
     assert result.returncode == 124
     assert "BACKUP_TAR_RESULT=failed exit=124" in result.stderr
     assert "BACKUP_PROGRESS_HEARTBEAT=" in result.stdout
+
+
+def history_state(path: Path) -> dict[str, list[tuple]]:
+    return {table: table_rows(path, table) for table in trend_config_backup.HISTORY_TABLES}
+
+
+def test_new_backup_restore_replaces_only_configuration_and_preserves_newer_history(tmp_path, monkeypatch):
+    backup_result = run_full_backup(tmp_path, monkeypatch, REAL_TAR)
+    assert backup_result.returncode == 0
+    root = tmp_path / "swadmin"
+    archive = next(root.glob("edge-bacnet-ui-v2.backup.*.tar.gz"))
+    live_db = root / "edge-bacnet-ui-v2" / "data" / "edge-trends.db"
+    with sqlite3.connect(live_db) as connection:
+        connection.execute("UPDATE trend_groups SET name='Newer config', interval_sec=900, enabled=0 WHERE id=10")
+        connection.execute("UPDATE trend_samples SET value_text='newer-history' WHERE id=50")
+        connection.execute("UPDATE trend_runs SET error_text='newer-run' WHERE id=40")
+        connection.execute("UPDATE trend_upload_outbox SET last_error='newer-outbox' WHERE id=60")
+        connection.execute("UPDATE trend_sync_state SET value='newer-cursor' WHERE key='cursor'")
+    history_before = history_state(live_db)
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", dev.full_restore_command(archive.name, str(root), str(tmp_path / "restore"))],
+        text=True,
+        capture_output=True,
+        env=os.environ.copy(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "TREND_CONFIG_RESTORE_SOURCE=configuration_snapshot" in result.stdout
+    assert "TREND_HISTORY_RESTORE=preserved_current" in result.stdout
+    assert table_rows(live_db, "trend_groups")[0][1:4] == ("Current trend", 60, 1)
+    assert table_rows(live_db, "trend_points")[0][0:2] == (20, 10)
+    assert table_rows(live_db, "trend_views")[0][0:3] == (30, 10, "Primary")
+    assert history_state(live_db) == history_before
+    assert not (tmp_path / "restore").exists()
+
+
+def test_legacy_backup_database_supplies_only_config_and_never_replaces_history(tmp_path):
+    root = tmp_path / "swadmin"
+    live_ui = root / "edge-bacnet-ui-v2"
+    live_db = live_ui / "data" / "edge-trends.db"
+    create_trend_database(live_db, group_name="Current config", interval=60, enabled=1, sample_value="current-history")
+    (live_ui / ".env").write_text("CURRENT=yes\n", encoding="utf-8")
+    history_before = history_state(live_db)
+
+    archived_ui = tmp_path / "archived" / "edge-bacnet-ui-v2"
+    legacy_db = archived_ui / "data" / "edge-trends.db"
+    create_trend_database(legacy_db, group_name="Backup config", interval=300, enabled=0, sample_value="old-history")
+    (archived_ui / ".env").write_text("BACKUP=yes\n", encoding="utf-8")
+    legacy_connection = sqlite3.connect(legacy_db)
+    try:
+        legacy_connection.execute("PRAGMA journal_mode=WAL")
+        legacy_connection.execute("PRAGMA wal_autocheckpoint=0")
+        legacy_connection.execute("UPDATE trend_sync_state SET updated_at='archived-wal' WHERE key='cursor'")
+        legacy_connection.commit()
+        assert legacy_db.with_name("edge-trends.db-wal").exists()
+        archive = root / "edge-bacnet-ui-v2.backup.20260830-010203.tar.gz"
+        root.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive, "w:gz") as output:
+            output.add(archived_ui, arcname="edge-bacnet-ui-v2")
+    finally:
+        legacy_connection.close()
+
+    result = subprocess.run(
+        ["/bin/sh", "-c", dev.full_restore_command(archive.name, str(root), str(tmp_path / "legacy-restore"))],
+        text=True,
+        capture_output=True,
+        env=os.environ.copy(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "TREND_CONFIG_RESTORE_SOURCE=legacy_database_configuration_only" in result.stdout
+    assert "LEGACY_TREND_HISTORY_RESTORE=ignored_by_policy" in result.stdout
+    assert table_rows(live_db, "trend_groups")[0][1:4] == ("Backup config", 300, 0)
+    assert history_state(live_db) == history_before
+    assert (live_ui / ".env").read_text(encoding="utf-8") == "BACKUP=yes\n"
+    assert not (live_ui / "data" / trend_config_backup.SNAPSHOT_FILENAME).exists()
+
+
+def test_incompatible_config_restore_rolls_back_without_history_or_config_mutation(tmp_path):
+    live_db = tmp_path / "live" / "edge-trends.db"
+    backup_db = tmp_path / "backup" / "edge-trends.db"
+    create_trend_database(live_db, group_name="Current", sample_value="current-history")
+    create_trend_database(backup_db, group_name="Incomplete", sample_value="old-history")
+    with sqlite3.connect(backup_db) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("DELETE FROM trend_upload_outbox")
+        connection.execute("DELETE FROM trend_samples")
+        connection.execute("DELETE FROM trend_points")
+    before = {table: table_rows(live_db, table) for table in (*trend_config_backup.CONFIG_TABLES, *trend_config_backup.HISTORY_TABLES)}
+
+    with pytest.raises(RuntimeError, match="omits trend point IDs"):
+        trend_config_backup.restore_trend_config(backup_db, live_db)
+
+    after = {table: table_rows(live_db, table) for table in (*trend_config_backup.CONFIG_TABLES, *trend_config_backup.HISTORY_TABLES)}
+    assert after == before
+
+
+def test_schema_mismatch_restore_fails_without_partial_mutation(tmp_path):
+    live_db = tmp_path / "live" / "edge-trends.db"
+    backup_db = tmp_path / "backup" / "edge-trends.db"
+    create_trend_database(live_db, group_name="Current", sample_value="current-history")
+    create_trend_database(backup_db, group_name="Backup", sample_value="old-history")
+    with sqlite3.connect(backup_db) as connection:
+        connection.execute("ALTER TABLE trend_views ADD COLUMN incompatible TEXT")
+    before = {table: table_rows(live_db, table) for table in (*trend_config_backup.CONFIG_TABLES, *trend_config_backup.HISTORY_TABLES)}
+
+    with pytest.raises(RuntimeError, match="schema mismatch"):
+        trend_config_backup.restore_trend_config(backup_db, live_db)
+
+    after = {table: table_rows(live_db, table) for table in (*trend_config_backup.CONFIG_TABLES, *trend_config_backup.HISTORY_TABLES)}
+    assert after == before
+
+
+def test_rollback_commands_use_safe_overlay_and_never_move_the_live_ui_directory():
+    commands = dev.rollback_commands("edge-bacnet-ui-v2.backup.20260830-010203.tar.gz")
+    text = "\n".join(command for _label, command, _sudo in commands)
+    assert "move failed UI folder" not in {label for label, _command, _sudo in commands}
+    assert " mv edge-bacnet-ui-v2 " not in text
+    assert "TREND_CONFIG_RESTORE_SOURCE" in text
+    assert "find \"$restore_root/edge-bacnet-ui-v2/data\" -maxdepth 1 -name 'edge-trends.db*' -delete" in text
+    assert "cp -a" in text
 
 def ui_checkout(root: Path, *, include_required: bool = True) -> tuple[Path, str]:
     root.mkdir(); subprocess.run(["git", "init", "-q", str(root)], check=True)
