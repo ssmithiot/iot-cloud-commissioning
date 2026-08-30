@@ -8,7 +8,6 @@ import socket
 import subprocess
 import tarfile
 import textwrap
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -189,7 +188,6 @@ def test_cloud_full_rollout_materializes_exact_ui_before_starting_shared_engine(
         lambda commit, **_kwargs: "0.2.3" if commit == cloud_queue_defaults()["IOT_EDGE_DEV_AGENT_COMMIT"] else pytest.fail("Cloud claim must not select Agent source"),
     )
     monkeypatch.setattr(dev, "start_job", fake_start)
-    monkeypatch.setattr(dev, "health_gate_enabled", lambda: False)
     try:
         assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "completed"
     finally:
@@ -279,7 +277,6 @@ def test_cloud_agent_only_rollout_does_not_require_or_materialize_ui(monkeypatch
     monkeypatch.setattr(dev, "materialize_ui_artifact", lambda *_args, **_kwargs: pytest.fail("agent-only must not materialize UI"))
     monkeypatch.setattr(dev, "read_agent_version_from_source", lambda _commit, **_kwargs: "0.2.3")
     monkeypatch.setattr(dev, "start_job", fake_start)
-    monkeypatch.setattr(dev, "health_gate_enabled", lambda: False)
     try:
         assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "completed"
     finally:
@@ -304,78 +301,48 @@ def test_cloud_update_requires_configured_agent_target_before_claiming_or_gatewa
         dev.run_queued_gateway_update({"request_id": "request-1"}, defaults)
 
 
-def test_post_update_heartbeat_timeout_is_warning_for_the_7200_second_cadence(monkeypatch):
-    finished_at = datetime(2026, 8, 30, 18, 0, tzinfo=timezone.utc)
-    ticks = iter((0.0, 300.0))
-    monkeypatch.setenv("IOT_EDGE_UPDATE_HEALTH_TIMEOUT_SEC", "300")
-    monkeypatch.setattr(dev.time, "monotonic", lambda: next(ticks))
-    status, detail = dev.wait_for_post_update_health(
-        "https://cloud.example.test",
-        "token",
-        "GW010",
-        finished_at,
-        poll_sec=1,
-        fetch=lambda *_args, **_kwargs: {
-            "effective_status": "online",
-            "sqlite_db_ok": True,
-            "latest_heartbeat_at": (finished_at - timedelta(seconds=1)).isoformat(),
-        },
-        sleep=lambda _seconds: None,
-    )
-
-    assert status is dev.PostUpdateHealthStatus.WARNING
-    assert "Warning only" in detail
-    assert "7200s heartbeat interval" in detail
-
-
-def test_completed_update_reports_missing_heartbeat_as_warning_and_completes(monkeypatch, capsys):
+@pytest.mark.parametrize("heartbeat_state", ("passed", "warning/no heartbeat"))
+def test_final_verification_success_completes_without_post_final_heartbeat_work(monkeypatch, heartbeat_state):
     claimed = claimed_cloud_update("agent")
     claimed.pop("target_ui_commit")
     claimed.pop("target_ui_version")
     completed: list[dict[str, object]] = []
-    job_id = "health-warning-test"
+    job_id = "terminal-final-verification-test"
 
     def fake_cloud(_url, _token, path, **kwargs):
         if path.endswith("/claim"):
             return claimed
+        if "/api/ui/gateways/" in path:
+            pytest.fail(f"post-final {heartbeat_state} heartbeat check must not execute")
         completed.append(kwargs["body"])
         return {"ok": True}
 
     def fake_start(request):
         with dev.JOBS_LOCK:
-            dev.JOBS[job_id] = dev.UpgradeJob(request=request, status="complete")
+            job = dev.UpgradeJob(request=request, status="complete")
+            job.summary["Final verification"] = "Passed"
+            job.log = "Final verification report persisted\nPhase passed: Final verification\n"
+            dev.JOBS[job_id] = job
         return job_id
 
     monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
     monkeypatch.setattr(dev, "read_agent_version_from_source", lambda _commit, **_kwargs: "0.2.3")
     monkeypatch.setattr(dev, "start_job", fake_start)
-    monkeypatch.setattr(dev, "health_gate_enabled", lambda: True)
-    monkeypatch.setattr(
-        dev,
-        "wait_for_post_update_health",
-        lambda *_args, **_kwargs: (
-            dev.PostUpdateHealthStatus.WARNING,
-            "Heartbeat not seen after update within the observation window: Warning only, expected with 7200s heartbeat interval",
-        ),
-    )
+    monkeypatch.setattr(dev.time, "sleep", lambda _seconds: pytest.fail("completed Final verification must not sleep"))
     try:
         assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "completed"
         with dev.JOBS_LOCK:
-            summary = dev.JOBS[job_id].summary
+            job = dev.JOBS[job_id]
         assert completed == [{"status": "completed"}]
-        assert summary["Final verification"] == "Passed"
-        assert summary["Post-update heartbeat observation"].startswith("Warning —")
+        assert job.summary["Final verification"] == "Passed"
+        assert "Phase passed: Final verification" in job.log
     finally:
         with dev.JOBS_LOCK:
             dev.JOBS.pop(job_id, None)
 
-    output = capsys.readouterr().out
-    assert "Final verification for GW004: Passed" in output
-    assert "Post-update heartbeat observation for GW004: Warning" in output
-
 
 @pytest.mark.parametrize("final_error", ("agent service inactive", "UI down", "final verification failed"))
-def test_final_verification_failures_remain_failed_without_heartbeat_gate(monkeypatch, final_error):
+def test_failure_before_final_verification_remains_failed(monkeypatch, final_error):
     claimed = claimed_cloud_update("agent")
     claimed.pop("target_ui_commit")
     claimed.pop("target_ui_version")
@@ -396,8 +363,6 @@ def test_final_verification_failures_remain_failed_without_heartbeat_gate(monkey
     monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
     monkeypatch.setattr(dev, "read_agent_version_from_source", lambda _commit, **_kwargs: "0.2.3")
     monkeypatch.setattr(dev, "start_job", fake_start)
-    monkeypatch.setattr(dev, "health_gate_enabled", lambda: True)
-    monkeypatch.setattr(dev, "wait_for_post_update_health", lambda *_args, **_kwargs: pytest.fail("strict final failure must not enter heartbeat observation"))
     try:
         assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "failed"
         assert completed == [{"status": "failed", "error_message": final_error}]
@@ -406,7 +371,7 @@ def test_final_verification_failures_remain_failed_without_heartbeat_gate(monkey
             dev.JOBS.pop(job_id, None)
 
 
-def test_worker_does_not_halt_or_count_a_completed_warning_outcome(monkeypatch):
+def test_worker_immediately_advances_after_completed_final_verification(monkeypatch):
     class StopWorker(Exception):
         pass
 
@@ -414,8 +379,13 @@ def test_worker_does_not_halt_or_count_a_completed_warning_outcome(monkeypatch):
     defaults = cloud_queue_defaults()
     monkeypatch.setenv("IOT_EDGE_UPDATE_HALT_AFTER_FAILURES", "1")
     monkeypatch.setattr(dev, "load_env_defaults", lambda: defaults)
-    monkeypatch.setattr(dev, "cloud_json_request", lambda *_args, **_kwargs: [{"request_id": "request-1"}])
-    monkeypatch.setattr(dev, "run_queued_gateway_update", lambda _update, _defaults: "completed")
+    completed_request_ids: list[str] = []
+    monkeypatch.setattr(dev, "cloud_json_request", lambda *_args, **_kwargs: [{"request_id": "request-1"}, {"request_id": "request-2"}])
+    monkeypatch.setattr(
+        dev,
+        "run_queued_gateway_update",
+        lambda update, _defaults: completed_request_ids.append(str(update["request_id"])) or "completed",
+    )
     monkeypatch.setattr(dev.time, "sleep", lambda _seconds: (_ for _ in ()).throw(StopWorker()))
     with dev.WORKER_STATUS_LOCK:
         dev.WORKER_STATUS.update({"state": "starting", "last_poll_at": None, "last_success_at": None, "last_error": None})
@@ -425,10 +395,18 @@ def test_worker_does_not_halt_or_count_a_completed_warning_outcome(monkeypatch):
         with dev.WORKER_STATUS_LOCK:
             assert dev.WORKER_STATUS["state"] == "polling"
             assert dev.WORKER_STATUS["last_error"] is None
+        assert completed_request_ids == ["request-1", "request-2"]
     finally:
         with dev.WORKER_STATUS_LOCK:
             dev.WORKER_STATUS.clear()
             dev.WORKER_STATUS.update(original_status)
+
+
+def test_no_post_final_heartbeat_code_path_remains_in_the_development_updater():
+    source = DEV.read_text()
+    assert "wait_for_post_update_health" not in source
+    assert "health_gate_enabled" not in source
+    assert "IOT_EDGE_UPDATE_HEALTH_" not in source
 
 
 def test_development_audit_log_is_separate_and_redacted(tmp_path, monkeypatch):
