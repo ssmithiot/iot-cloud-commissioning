@@ -149,7 +149,7 @@ from app.tunnel import (
     tunnel_metrics,
     tunnel_session_manager,
 )
-from app.tunnel_relay_canary import TunnelOwnerUnavailable, owner_api, relay_client, selected as relay_canary_selected
+from app.tunnel_relay_canary import TunnelOwnerUnavailable, owner_api, owner_connection_state, relay_client, selected as relay_canary_selected
 from app.ui import (
     admin_users_html,
     app_html,
@@ -268,7 +268,15 @@ def _active_durable_tunnel_request(db: Session, gateway_id: str) -> GatewayTunne
 
 def _set_tunnel_instruction_headers(response: Response, db: Session, gateway_id: str) -> None:
     """Use durable intent only for the explicitly selected relay canary."""
-    if _relay_canary_selected(gateway_id):
+    canary_relay = _relay_canary_selected(gateway_id)
+    for header in (
+        "X-IOT-Tunnel-Lease-Expires-At",
+        "X-IOT-Tunnel-Requested",
+        "X-IOT-Tunnel-Expires-At",
+    ):
+        if header in response.headers:
+            del response.headers[header]
+    if canary_relay:
         request = _active_durable_tunnel_request(db, gateway_id)
         expires_at = request.expires_at if request else None
     else:
@@ -278,6 +286,14 @@ def _set_tunnel_instruction_headers(response: Response, db: Session, gateway_id:
         return
     response.headers["X-IOT-Tunnel-Lease"] = "active"
     response.headers["X-IOT-Tunnel-Lease-Expires-At"] = expires_at.isoformat()
+    if canary_relay and owner_connection_state(
+        settings.iot_tunnel_relay_owner_url,
+        settings.iot_tunnel_relay_owner_secret,
+        gateway_id,
+    ) is not False:
+        # Connected means the authorization is already satisfied. Unknown
+        # owner state fails toward preserving this held Agent request.
+        return
     response.headers["X-IOT-Tunnel-Requested"] = "true"
     response.headers["X-IOT-Tunnel-Expires-At"] = expires_at.isoformat()
 

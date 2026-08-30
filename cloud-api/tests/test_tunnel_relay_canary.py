@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
-from app.tunnel_relay_canary import owner_websocket_target, relay_client, selected
+from app import tunnel_relay_canary
+from app.tunnel_relay_canary import owner_connection_state, owner_websocket_target, relay_client, selected
 from app.tunnel_relay_owner_service import app as owner_app
 
 
@@ -86,3 +87,44 @@ def test_durable_canary_recheck_contract_is_worker_independent() -> None:
     assert "db.close()" in source
     assert "_set_tunnel_instruction_headers(response, db, gateway_id)" in source
     assert "min(remaining, RELAY_CANARY_DURABLE_RECHECK_SECONDS if canary_relay else remaining)" in source
+
+
+def test_owner_connection_state_is_strict_and_fails_unknown(monkeypatch) -> None:
+    class Response:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self.payload
+
+    class Client:
+        payload: dict | BaseException = {"connected": True}
+
+        def __init__(self, *, timeout: int) -> None:
+            assert timeout == 5
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def get(self, url: str, *, headers: dict) -> Response:
+            assert url == "http://owner/internal/tunnel-relay/status/GW017"
+            assert headers == {"x-iot-relay-owner-auth": "owner-secret"}
+            if isinstance(self.payload, BaseException):
+                raise self.payload
+            return Response(self.payload)
+
+    monkeypatch.setattr(tunnel_relay_canary.httpx, "Client", Client)
+    assert owner_connection_state("ws://owner/internal/tunnel-relay/owner", "owner-secret", "GW017") is True
+    Client.payload = {"connected": False}
+    assert owner_connection_state("ws://owner/internal/tunnel-relay/owner", "owner-secret", "GW017") is False
+    Client.payload = {"connected": "false"}
+    assert owner_connection_state("ws://owner/internal/tunnel-relay/owner", "owner-secret", "GW017") is None
+    Client.payload = tunnel_relay_canary.httpx.ConnectError("owner down")
+    assert owner_connection_state("ws://owner/internal/tunnel-relay/owner", "owner-secret", "GW017") is None
+    assert owner_connection_state(None, "owner-secret", "GW017") is None

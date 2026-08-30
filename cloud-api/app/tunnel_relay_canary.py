@@ -75,6 +75,23 @@ def owner_api_base(owner_url: str) -> str:
     return urlunsplit((scheme, parsed.netloc, parsed.path.rsplit(marker, 1)[0], "", ""))
 
 
+def owner_connection_state(owner_url: str | None, owner_secret: str | None, gateway_id: str) -> bool | None:
+    """Return private-owner connection truth, or None when it is unavailable."""
+    if not owner_url or not owner_secret:
+        return None
+    try:
+        with httpx.Client(timeout=5) as client:
+            response = client.get(
+                owner_api_base(owner_url) + f"/status/{quote(gateway_id, safe='')}",
+                headers={"x-iot-relay-owner-auth": owner_secret},
+            )
+            response.raise_for_status()
+            connected = response.json().get("connected")
+            return connected if isinstance(connected, bool) else None
+    except (httpx.HTTPError, TypeError, ValueError):
+        return None
+
+
 async def owner_api(owner_url: str | None, owner_secret: str | None, method: str, path: str, payload: dict | None = None) -> dict:
     if not owner_url or not owner_secret:
         raise TunnelOwnerUnavailable("Tunnel owner is not configured")

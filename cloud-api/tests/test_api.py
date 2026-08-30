@@ -1592,6 +1592,151 @@ def test_open_close_tunnel_request_is_gateway_scoped_and_idempotent(monkeypatch:
     assert reopened.status_code == 200
 
 
+def _create_active_relay_canary_request(gateway_id: str = "GW017", *, state: str = "requested", expires_at: datetime | None = None) -> None:
+    from app.models import GatewayTunnelRequest
+
+    with SessionLocal() as db:
+        db.add(GatewayTunnelRequest(
+            gateway_id=gateway_id,
+            requested_duration_minutes=15,
+            requested_at=utc_now(),
+            expires_at=expires_at or (utc_now() + timedelta(minutes=15)),
+            requested_by="test-admin-token",
+            state=state,
+        ))
+        db.commit()
+
+
+def _configure_relay_canary(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module.settings, "iot_tunnel_relay_enabled", True)
+    monkeypatch.setattr(main_module.settings, "iot_tunnel_relay_canary_gateways", "GW017")
+    monkeypatch.setattr(main_module.settings, "iot_tunnel_relay_owner_url", "ws://owner/internal/tunnel-relay/owner")
+    monkeypatch.setattr(main_module.settings, "iot_tunnel_relay_owner_secret", "owner-secret")
+    monkeypatch.setattr(main_module, "RELAY_CANARY_DURABLE_RECHECK_SECONDS", 0.02)
+
+
+def test_relay_canary_tunnel_instruction_requires_owner_disconnected(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_relay_canary(monkeypatch)
+    raw_token = create_gateway_token("GW017", token_prefix="gw01701")
+    _create_active_relay_canary_request()
+    owner_state: dict[str, bool | None] = {"connected": False}
+    monkeypatch.setattr(main_module, "owner_connection_state", lambda *_: owner_state["connected"])
+
+    disconnected = client.get("/api/edge/GW017/jobs/next", headers=auth_headers(raw_token))
+    assert disconnected.headers["X-IOT-Tunnel-Requested"] == "true"
+
+    owner_state["connected"] = True
+    connected = client.get("/api/edge/GW017/jobs/next", headers=auth_headers(raw_token))
+    assert connected.headers["X-IOT-Tunnel-Lease"] == "active"
+    assert "X-IOT-Tunnel-Requested" not in connected.headers
+
+    owner_state["connected"] = None
+    unavailable = client.get("/api/edge/GW017/jobs/next", headers=auth_headers(raw_token))
+    assert unavailable.headers["X-IOT-Tunnel-Lease"] == "active"
+    assert "X-IOT-Tunnel-Requested" not in unavailable.headers
+
+
+def test_non_canary_and_disabled_relay_never_query_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_relay_canary(monkeypatch)
+    gw018_token = create_gateway_token("GW018", token_prefix="gw01801")
+
+    def unexpected_owner_query(*_args):
+        raise AssertionError("non-canary and disabled relay paths must not query the owner")
+
+    monkeypatch.setattr(main_module, "owner_connection_state", unexpected_owner_query)
+    non_canary = client.get("/api/edge/GW018/jobs/next", headers=auth_headers(gw018_token))
+    assert non_canary.headers["X-IOT-Tunnel-Lease"] == "none"
+
+    gw017_token = create_gateway_token("GW017", token_prefix="gw01701")
+    monkeypatch.setattr(main_module.settings, "iot_tunnel_relay_enabled", False)
+    disabled = client.get("/api/edge/GW017/jobs/next", headers=auth_headers(gw017_token))
+    assert disabled.headers["X-IOT-Tunnel-Lease"] == "none"
+
+
+def test_relay_canary_connected_poll_stays_held_until_owner_disconnects(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_relay_canary(monkeypatch)
+    raw_token = create_gateway_token("GW017", token_prefix="gw01701")
+    _create_active_relay_canary_request()
+    owner_state = {"connected": True, "checks": 0}
+
+    def current_owner_state(*_args) -> bool:
+        owner_state["checks"] += 1
+        return owner_state["connected"]
+
+    monkeypatch.setattr(main_module, "owner_connection_state", current_owner_state)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        waiting = executor.submit(client.get, "/api/edge/GW017/jobs/next?wait_seconds=2", headers=auth_headers(raw_token))
+        time.sleep(0.1)
+        assert waiting.done() is False
+        assert owner_state["checks"] >= 2
+        owner_state["connected"] = False
+        response = waiting.result(timeout=1)
+
+    assert response.status_code == 200
+    assert response.json() is None
+    assert response.headers["X-IOT-Tunnel-Requested"] == "true"
+
+
+def test_relay_canary_owner_unavailable_keeps_poll_held(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_relay_canary(monkeypatch)
+    raw_token = create_gateway_token("GW017", token_prefix="gw01701")
+    _create_active_relay_canary_request()
+    monkeypatch.setattr(main_module, "owner_connection_state", lambda *_: None)
+
+    started = time.monotonic()
+    response = client.get("/api/edge/GW017/jobs/next?wait_seconds=1", headers=auth_headers(raw_token))
+    elapsed = time.monotonic() - started
+
+    assert elapsed >= 0.8
+    assert response.status_code == 200
+    assert response.json() is None
+    assert "X-IOT-Tunnel-Requested" not in response.headers
+
+
+def test_relay_canary_connected_poll_still_wakes_for_edge_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_relay_canary(monkeypatch)
+    raw_token = create_gateway_token("GW017", token_prefix="gw01701")
+    _create_active_relay_canary_request()
+    monkeypatch.setattr(main_module, "owner_connection_state", lambda *_: True)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        waiting = executor.submit(client.get, "/api/edge/GW017/jobs/next?wait_seconds=2", headers=auth_headers(raw_token))
+        time.sleep(0.1)
+        assert waiting.done() is False
+        created = client.post(
+            "/api/edge/jobs",
+            headers=admin_headers(),
+            json={"gateway_id": "GW017", "job_type": "echo", "request": {"message": "wake"}},
+        )
+        response = waiting.result(timeout=1)
+
+    assert response.status_code == 200
+    assert response.json()["job_id"] == created.json()["job_id"]
+    assert "X-IOT-Tunnel-Requested" not in response.headers
+
+
+@pytest.mark.parametrize(
+    ("state", "expires_at"),
+    (("closed", None), ("requested", utc_now() - timedelta(seconds=1))),
+)
+def test_relay_canary_inactive_authorization_never_queries_owner_or_emits_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+    expires_at: datetime | None,
+) -> None:
+    _configure_relay_canary(monkeypatch)
+    raw_token = create_gateway_token("GW017", token_prefix="gw01701")
+    _create_active_relay_canary_request(state=state, expires_at=expires_at)
+
+    def unexpected_owner_query(*_args):
+        raise AssertionError("inactive authorization must not query the owner")
+
+    monkeypatch.setattr(main_module, "owner_connection_state", unexpected_owner_query)
+    response = client.get("/api/edge/GW017/jobs/next", headers=auth_headers(raw_token))
+    assert response.headers["X-IOT-Tunnel-Lease"] == "none"
+    assert "X-IOT-Tunnel-Requested" not in response.headers
+
+
 def test_tunnel_capacity_is_enforced_by_in_memory_leases_only(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.tunnel import tunnel_allowlist
 
