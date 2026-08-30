@@ -8,6 +8,7 @@ import socket
 import subprocess
 import tarfile
 import textwrap
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -301,6 +302,133 @@ def test_cloud_update_requires_configured_agent_target_before_claiming_or_gatewa
 
     with pytest.raises(ValueError, match="IOT_EDGE_DEV_AGENT_COMMIT must be set"):
         dev.run_queued_gateway_update({"request_id": "request-1"}, defaults)
+
+
+def test_post_update_heartbeat_timeout_is_warning_for_the_7200_second_cadence(monkeypatch):
+    finished_at = datetime(2026, 8, 30, 18, 0, tzinfo=timezone.utc)
+    ticks = iter((0.0, 300.0))
+    monkeypatch.setenv("IOT_EDGE_UPDATE_HEALTH_TIMEOUT_SEC", "300")
+    monkeypatch.setattr(dev.time, "monotonic", lambda: next(ticks))
+    status, detail = dev.wait_for_post_update_health(
+        "https://cloud.example.test",
+        "token",
+        "GW010",
+        finished_at,
+        poll_sec=1,
+        fetch=lambda *_args, **_kwargs: {
+            "effective_status": "online",
+            "sqlite_db_ok": True,
+            "latest_heartbeat_at": (finished_at - timedelta(seconds=1)).isoformat(),
+        },
+        sleep=lambda _seconds: None,
+    )
+
+    assert status is dev.PostUpdateHealthStatus.WARNING
+    assert "Warning only" in detail
+    assert "7200s heartbeat interval" in detail
+
+
+def test_completed_update_reports_missing_heartbeat_as_warning_and_completes(monkeypatch, capsys):
+    claimed = claimed_cloud_update("agent")
+    claimed.pop("target_ui_commit")
+    claimed.pop("target_ui_version")
+    completed: list[dict[str, object]] = []
+    job_id = "health-warning-test"
+
+    def fake_cloud(_url, _token, path, **kwargs):
+        if path.endswith("/claim"):
+            return claimed
+        completed.append(kwargs["body"])
+        return {"ok": True}
+
+    def fake_start(request):
+        with dev.JOBS_LOCK:
+            dev.JOBS[job_id] = dev.UpgradeJob(request=request, status="complete")
+        return job_id
+
+    monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
+    monkeypatch.setattr(dev, "read_agent_version_from_source", lambda _commit, **_kwargs: "0.2.3")
+    monkeypatch.setattr(dev, "start_job", fake_start)
+    monkeypatch.setattr(dev, "health_gate_enabled", lambda: True)
+    monkeypatch.setattr(
+        dev,
+        "wait_for_post_update_health",
+        lambda *_args, **_kwargs: (
+            dev.PostUpdateHealthStatus.WARNING,
+            "Heartbeat not seen after update within the observation window: Warning only, expected with 7200s heartbeat interval",
+        ),
+    )
+    try:
+        assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "completed"
+        with dev.JOBS_LOCK:
+            summary = dev.JOBS[job_id].summary
+        assert completed == [{"status": "completed"}]
+        assert summary["Final verification"] == "Passed"
+        assert summary["Post-update heartbeat observation"].startswith("Warning —")
+    finally:
+        with dev.JOBS_LOCK:
+            dev.JOBS.pop(job_id, None)
+
+    output = capsys.readouterr().out
+    assert "Final verification for GW004: Passed" in output
+    assert "Post-update heartbeat observation for GW004: Warning" in output
+
+
+@pytest.mark.parametrize("final_error", ("agent service inactive", "UI down", "final verification failed"))
+def test_final_verification_failures_remain_failed_without_heartbeat_gate(monkeypatch, final_error):
+    claimed = claimed_cloud_update("agent")
+    claimed.pop("target_ui_commit")
+    claimed.pop("target_ui_version")
+    completed: list[dict[str, object]] = []
+    job_id = "strict-final-failure-test"
+
+    def fake_cloud(_url, _token, path, **kwargs):
+        if path.endswith("/claim"):
+            return claimed
+        completed.append(kwargs["body"])
+        return {"ok": True}
+
+    def fake_start(request):
+        with dev.JOBS_LOCK:
+            dev.JOBS[job_id] = dev.UpgradeJob(request=request, status="failed", error=final_error)
+        return job_id
+
+    monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
+    monkeypatch.setattr(dev, "read_agent_version_from_source", lambda _commit, **_kwargs: "0.2.3")
+    monkeypatch.setattr(dev, "start_job", fake_start)
+    monkeypatch.setattr(dev, "health_gate_enabled", lambda: True)
+    monkeypatch.setattr(dev, "wait_for_post_update_health", lambda *_args, **_kwargs: pytest.fail("strict final failure must not enter heartbeat observation"))
+    try:
+        assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "failed"
+        assert completed == [{"status": "failed", "error_message": final_error}]
+    finally:
+        with dev.JOBS_LOCK:
+            dev.JOBS.pop(job_id, None)
+
+
+def test_worker_does_not_halt_or_count_a_completed_warning_outcome(monkeypatch):
+    class StopWorker(Exception):
+        pass
+
+    original_status = dict(dev.WORKER_STATUS)
+    defaults = cloud_queue_defaults()
+    monkeypatch.setenv("IOT_EDGE_UPDATE_HALT_AFTER_FAILURES", "1")
+    monkeypatch.setattr(dev, "load_env_defaults", lambda: defaults)
+    monkeypatch.setattr(dev, "cloud_json_request", lambda *_args, **_kwargs: [{"request_id": "request-1"}])
+    monkeypatch.setattr(dev, "run_queued_gateway_update", lambda _update, _defaults: "completed")
+    monkeypatch.setattr(dev.time, "sleep", lambda _seconds: (_ for _ in ()).throw(StopWorker()))
+    with dev.WORKER_STATUS_LOCK:
+        dev.WORKER_STATUS.update({"state": "starting", "last_poll_at": None, "last_success_at": None, "last_error": None})
+    try:
+        with pytest.raises(StopWorker):
+            dev.gateway_update_worker()
+        with dev.WORKER_STATUS_LOCK:
+            assert dev.WORKER_STATUS["state"] == "polling"
+            assert dev.WORKER_STATUS["last_error"] is None
+    finally:
+        with dev.WORKER_STATUS_LOCK:
+            dev.WORKER_STATUS.clear()
+            dev.WORKER_STATUS.update(original_status)
 
 
 def test_development_audit_log_is_separate_and_redacted(tmp_path, monkeypatch):
