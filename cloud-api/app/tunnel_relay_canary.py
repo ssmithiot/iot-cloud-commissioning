@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from base64 import b64decode, b64encode
 import re
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from fastapi import WebSocket, WebSocketDisconnect
 import httpx
@@ -39,6 +39,13 @@ async def _owner_to_public(owner: object, public: WebSocket) -> None:
         else: await public.send_text(frame)
 
 
+def owner_websocket_target(owner_url: str, gateway_id: str, expires_at: str | None) -> str:
+    target = f"{owner_url.rstrip('/')}/{quote(gateway_id, safe='')}"
+    if expires_at:
+        target = f"{target}?{urlencode({'expires_at': expires_at})}"
+    return target
+
+
 async def relay_client(gateway_id: str, public: WebSocket, *, owner_url: str | None, owner_secret: str | None, expires_at: str | None = None) -> None:
     """Relay a selected Agent connection, with no legacy-manager fallback."""
     if not owner_url or not owner_secret:
@@ -46,9 +53,7 @@ async def relay_client(gateway_id: str, public: WebSocket, *, owner_url: str | N
         return
     try:
         import websockets
-        target = f"{owner_url.rstrip('/')}/{gateway_id}"
-        if expires_at:
-            target += f"?expires_at={expires_at}"
+        target = owner_websocket_target(owner_url, gateway_id, expires_at)
         async with websockets.connect(target, additional_headers={"x-iot-relay-owner-auth": owner_secret}, open_timeout=10) as owner:
             tasks = [asyncio.create_task(_public_to_owner(public, owner)), asyncio.create_task(_owner_to_public(owner, public))]
             try:

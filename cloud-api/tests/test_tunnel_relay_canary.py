@@ -1,9 +1,12 @@
 """Safety properties for the exact-ID production relay canary gate."""
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
-from app.tunnel_relay_canary import relay_client, selected
+from starlette.websockets import WebSocketDisconnect
+from app.tunnel_relay_canary import owner_websocket_target, relay_client, selected
 from app.tunnel_relay_owner_service import app as owner_app
 
 
@@ -47,6 +50,31 @@ def test_private_owner_health_and_internal_auth(monkeypatch) -> None:
     assert client.get("/health").json() == {"status": "ok", "internal_secret_configured": True}
     with client.websocket_connect("/internal/tunnel-relay/owner/GW017", headers={"x-iot-relay-owner-auth": "owner-test-secret"}) as socket:
         assert socket is not None
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/internal/tunnel-relay/owner/GW017", headers={"x-iot-relay-owner-auth": "wrong-secret"}):
+            pass
+
+
+def test_owner_expiry_query_encodes_timezone_offset_and_connects(monkeypatch) -> None:
+    expires = "2026-08-30T12:57:20.780667+00:00"
+    target = owner_websocket_target("ws://owner:10000/internal/tunnel-relay/owner", "GW017", expires)
+    assert target == "ws://owner:10000/internal/tunnel-relay/owner/GW017?expires_at=2026-08-30T12%3A57%3A20.780667%2B00%3A00"
+    assert datetime.fromisoformat(expires).astimezone(timezone.utc) == datetime(2026, 8, 30, 12, 57, 20, 780667, tzinfo=timezone.utc)
+
+    monkeypatch.setenv("IOT_TUNNEL_RELAY_INTERNAL_SECRET", "owner-test-secret")
+    client = TestClient(owner_app)
+    path = target.split("owner:10000", 1)[1]
+    with client.websocket_connect(path, headers={"x-iot-relay-owner-auth": "owner-test-secret"}) as socket:
+        assert socket is not None
+
+
+def test_unencoded_timezone_offset_is_rejected_before_owner_accept(monkeypatch) -> None:
+    monkeypatch.setenv("IOT_TUNNEL_RELAY_INTERNAL_SECRET", "owner-test-secret")
+    client = TestClient(owner_app)
+    path = "/internal/tunnel-relay/owner/GW017?expires_at=2026-08-30T12:57:20.780667+00:00"
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(path, headers={"x-iot-relay-owner-auth": "owner-test-secret"}):
+            pass
 
 
 def test_durable_canary_recheck_contract_is_worker_independent() -> None:
