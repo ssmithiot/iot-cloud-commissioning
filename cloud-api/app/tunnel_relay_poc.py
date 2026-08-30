@@ -24,7 +24,7 @@ app = FastAPI(docs_url=None, redoc_url=None)
 
 
 def secret() -> str:
-    return os.environ.get("POC_INTERNAL_RELAY_SECRET", "poc-only-change-me")
+    return os.environ.get("IOT_TUNNEL_RELAY_INTERNAL_SECRET", "poc-only-change-me")
 
 
 @app.get("/poc/relay/health")

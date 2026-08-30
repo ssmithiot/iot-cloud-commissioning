@@ -21,7 +21,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", required=True)
     parser.add_argument("--tunnel", required=True)
-    parser.add_argument("--secret", default=os.environ.get("POC_INTERNAL_RELAY_SECRET", "poc-only-change-me"))
+    parser.add_argument("--secret", default=os.environ.get("IOT_TUNNEL_RELAY_INTERNAL_SECRET", "poc-only-change-me"))
     parser.add_argument("--emit", default="owner-push")
     parser.add_argument("--emit-count", type=int, default=0)
     asyncio.run(run(parser.parse_args()))

@@ -147,6 +147,7 @@ from app.tunnel import (
     tunnel_metrics,
     tunnel_session_manager,
 )
+from app.tunnel_relay_canary import relay_client, selected as relay_canary_selected
 from app.ui import (
     admin_users_html,
     app_html,
@@ -2387,6 +2388,13 @@ async def edge_tunnel(
 
     await websocket.accept()
     tunnel_metrics.record_accepted()
+    if relay_canary_selected(
+        gateway_id,
+        enabled=settings.iot_tunnel_relay_enabled,
+        configured_ids=settings.iot_tunnel_relay_canary_gateways,
+    ):
+        await relay_client(gateway_id, websocket, owner_url=settings.iot_tunnel_relay_owner_url, owner_secret=settings.iot_tunnel_relay_owner_secret)
+        return
     tunnel, replaced_tunnel = tunnel_manager.register(gateway_id, websocket)
     if replaced_tunnel is not None:
         tunnel_metrics.record_duplicate_replacement()

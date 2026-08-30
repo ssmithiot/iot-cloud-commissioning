@@ -25,7 +25,7 @@ def port() -> int:
 @pytest.fixture
 def relay():
     value = port()
-    env = {**os.environ, "PYTHONPATH": str(CLOUD), "POC_INTERNAL_RELAY_SECRET": SECRET}
+    env = {**os.environ, "PYTHONPATH": str(CLOUD), "IOT_TUNNEL_RELAY_INTERNAL_SECRET": SECRET}
     proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.tunnel_relay_poc:app", "--host", "127.0.0.1", "--port", str(value)], cwd=CLOUD, env=env)
     url = f"http://127.0.0.1:{value}"
     for _ in range(100):

@@ -4,7 +4,7 @@ This POC is a separate ASGI app, never imported by `app.main`; production
 tunnel routes are unchanged. Run the relay with `uvicorn app.tunnel_relay_poc:app`.
 The owner test process connects over the private owner endpoint and presents
 `X-IOT-Relay-Owner-Auth`, populated from the server-only
-`POC_INTERNAL_RELAY_SECRET`. No public headers are forwarded; the owner sees
+`IOT_TUNNEL_RELAY_INTERNAL_SECRET`. No public headers are forwarded; the owner sees
 only a tunnel identifier and opaque text/binary frames.
 
 Each direction has one copy task. It awaits the peer `send_text`/`send_bytes`
@@ -28,3 +28,22 @@ uses two WebSockets, two relay tasks, and roughly two socket FDs plus small
 task buffers; the owner uses one private WebSocket plus its live gateway state.
 That is reasonable for a small operator-requested tunnel count; throughput is
 limited by the slower peer rather than by an unbounded relay queue.
+
+## Production canary gate
+
+The production route remains on the legacy manager unless both
+`IOT_TUNNEL_RELAY_ENABLED=true` and the exact authenticated gateway ID appears
+as a comma-separated item in `IOT_TUNNEL_RELAY_CANARY_GATEWAYS`. There are no
+wildcards, prefixes, site, or version rules. The initial value may be `GW017`.
+Only selected IDs connect outbound to `IOT_TUNNEL_RELAY_OWNER_URL/{gateway_id}`
+using `IOT_TUNNEL_RELAY_OWNER_SECRET`. If no owner is present the selected
+connection closes with 1013 and does not fall back. Heartbeats, jobs, trends,
+status, and all idle Agent behavior are untouched because the gate executes
+only after an Agent has already initiated the existing tunnel WebSocket.
+
+The standalone private owner entrypoint is
+`app.tunnel_relay_owner_service:app`. It exposes `/health` and the private
+WebSocket `/internal/tunnel-relay/owner/{gateway_id}`. Set the public Cloud
+variable `IOT_TUNNEL_RELAY_OWNER_URL` to the Render private address including
+that path but excluding `/{gateway_id}`, for example
+`ws://<private-host>:10000/internal/tunnel-relay/owner`.
