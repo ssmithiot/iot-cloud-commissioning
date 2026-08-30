@@ -1348,14 +1348,19 @@ def full_backup_command(
     timeout_seconds: int = 600,
     heartbeat_seconds: int = 15,
 ) -> str:
-    """Create and validate a live Edge UI backup without excluding its data."""
+    """Create and validate a live Edge UI backup without trend data files."""
     root = shell_quote(backup_root)
     return f'''cd {root}
 archive="edge-bacnet-ui-v2.backup.$(date +%Y%m%d-%H%M%S).tar.gz"
 stderr_file="${{archive}}.tar.stderr"
 rm -f "$stderr_file"
 echo "BACKUP_ARCHIVE=$archive"
-timeout -k 10s {timeout_seconds}s tar -czf "$archive" edge-bacnet-ui-v2 2>"$stderr_file" &
+echo "TREND_HISTORY_BACKUP=excluded_by_policy"
+timeout -k 10s {timeout_seconds}s tar -czf "$archive" \
+  --exclude='edge-bacnet-ui-v2/data/edge-trends.db' \
+  --exclude='edge-bacnet-ui-v2/data/edge-trends.db-wal' \
+  --exclude='edge-bacnet-ui-v2/data/edge-trends.db-shm' \
+  edge-bacnet-ui-v2 2>"$stderr_file" &
 backup_pid=$!
 heartbeat_remaining=0
 while kill -0 "$backup_pid" 2>/dev/null; do
