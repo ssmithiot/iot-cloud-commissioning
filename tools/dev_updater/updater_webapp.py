@@ -966,11 +966,20 @@ def parse_bool(fields: dict[str, list[str]], key: str) -> bool:
     return value(fields, key) in {"1", "true", "on", "yes"}
 
 
-def resolve_requested_commits(fields: dict[str, list[str]]) -> tuple[object, object]:
+def configured_agent_target(defaults: dict[str, str]) -> str:
+    target = defaults["IOT_EDGE_DEV_AGENT_COMMIT"].strip()
+    if not target:
+        raise ValueError("IOT_EDGE_DEV_AGENT_COMMIT must be set to an exact Agent commit before gateway work starts.")
+    return target
+
+
+def resolve_requested_commits(fields: dict[str, list[str]], *, defaults: dict[str, str] | None = None) -> tuple[object, object]:
     """Resolve only explicit immutable object IDs; branch names are rejected."""
-    token = load_env_defaults()["GITHUB_TOKEN"]
+    defaults = defaults or load_env_defaults()
+    token = defaults["GITHUB_TOKEN"]
+    agent_target = configured_agent_target(defaults)
     edge_ui = resolve_commit(EDGE_UI_REPOSITORY, value(fields, "edge_ui_commit") or configured_default("IOT_EDGE_DEV_UI_COMMIT", DEFAULT_EDGE_UI_INPUT), token=token)
-    edge_agent = resolve_commit(EDGE_AGENT_REPOSITORY, value(fields, "edge_agent_commit") or configured_default("IOT_EDGE_DEV_AGENT_COMMIT", DEFAULT_EDGE_AGENT_INPUT), token=token)
+    edge_agent = resolve_commit(EDGE_AGENT_REPOSITORY, agent_target, token=token)
     return edge_ui, edge_agent
 
 
@@ -1009,8 +1018,9 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
     if "'" in ui_password:
         raise ValueError("Local BACnet UI password cannot contain a single quote for this legacy update flow.")
     final_update_confirmed = parse_bool(fields, "final_update_confirmed")
+    defaults = load_env_defaults()
     try:
-        edge_ui, edge_agent = resolve_requested_commits(fields)
+        edge_ui, edge_agent = resolve_requested_commits(fields, defaults=defaults)
     except CommitResolutionError as exc:
         raise ValueError(str(exc)) from exc
     if final_update_confirmed and not parse_bool(fields, "commit_resolution_confirmed"):
@@ -1031,14 +1041,8 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         artifact_path, artifact_sha256 = str(artifact.path), artifact.sha256
     manifest_path = value(fields, "release_manifest_path") or DEFAULT_RELEASE_MANIFEST
     manifest = load_manifest(Path(manifest_path))
-    defaults = load_env_defaults()
-    override_requested = bool(defaults["IOT_EDGE_DEV_AGENT_COMMIT"].strip())
-    effective_agent_commit = edge_agent.full_sha if override_requested else manifest.agent_source_commit
-    expected_agent_version = (
-        read_agent_version_from_source(effective_agent_commit, token=defaults["GITHUB_TOKEN"])
-        if override_requested
-        else DEFAULT_EDGE_RELEASE
-    )
+    effective_agent_commit = edge_agent.full_sha
+    expected_agent_version = read_agent_version_from_source(effective_agent_commit, token=defaults["GITHUB_TOKEN"])
     request = UpgradeRequest(
         gateway_id=gateway_id,
         site_id=value(fields, "site_id") or gateway_id,
@@ -1066,8 +1070,8 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         edge_ui_commit=edge_ui.full_sha,
         edge_agent_commit=effective_agent_commit,
         expected_agent_version=expected_agent_version,
-        agent_source="Development override" if override_requested else "Validated release manifest",
-        development_agent_override=override_requested,
+        agent_source="Development environment target",
+        development_agent_override=True,
         ui_artifact_path=artifact_path,
         ui_artifact_sha256=artifact_sha256,
     )

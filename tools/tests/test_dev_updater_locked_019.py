@@ -123,7 +123,7 @@ def test_private_edge_ui_commit_clones_and_checks_out_with_pat(tmp_path):
 
 def test_final_execution_requires_reviewed_resolved_commits(monkeypatch):
     resolved = type("Resolved", (), {"full_sha": "a" * 40})()
-    monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields: (resolved, resolved))
+    monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields, **_kwargs: (resolved, resolved))
     body = b"gateway_id=GW1&cloud_url=https%3A%2F%2Fexample.test&admin_api_token=x&cradlepoint_host=10.0.0.1&cradlepoint_password=x&gateway_password=x&ui_password=x&final_update_confirmed=1"
     with pytest.raises(ValueError, match="commit confirmation"):
         dev.parse_upgrade_request(body)
@@ -437,8 +437,9 @@ def test_ui_only_materializes_the_resolved_ui_artifact_and_agent_only_does_not(m
     resolved_agent = type("Resolved", (), {"full_sha": "b" * 40})()
     artifact = type("Artifact", (), {"path": tmp_path / "ui.tar.gz", "sha256": "c" * 64})()
     calls = []
-    monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields: (resolved_ui, resolved_agent))
+    monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields, **_kwargs: (resolved_ui, resolved_agent))
     monkeypatch.setattr(dev, "materialize_ui_artifact", lambda sha, **_kwargs: calls.append(sha) or artifact)
+    monkeypatch.setattr(dev, "read_agent_version_from_source", lambda *_args, **_kwargs: "0.2.3")
     base = b"gateway_id=GW1&cloud_url=https%3A%2F%2Fexample.test&admin_api_token=x&cradlepoint_host=10.0.0.1&cradlepoint_password=x&gateway_password=x&ui_password=x"
     ui_request = dev.parse_upgrade_request(base + b"&selected_phases=1")
     assert calls == ["a" * 40] and ui_request.ui_artifact_sha256 == "c" * 64
@@ -450,8 +451,9 @@ def test_ui_only_materializes_the_resolved_ui_artifact_and_agent_only_does_not(m
 def test_manual_update_selected_phase_selection_is_unchanged(monkeypatch):
     resolved = type("Resolved", (), {"full_sha": "a" * 40})()
     artifact = type("Artifact", (), {"path": Path("/tmp/ui.tar.gz"), "sha256": "b" * 64})()
-    monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields: (resolved, resolved))
+    monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields, **_kwargs: (resolved, resolved))
     monkeypatch.setattr(dev, "materialize_ui_artifact", lambda *_args, **_kwargs: artifact)
+    monkeypatch.setattr(dev, "read_agent_version_from_source", lambda *_args, **_kwargs: "0.2.3")
     body = (
         b"gateway_id=GW006&cloud_url=https%3A%2F%2Fexample.test&admin_api_token=x"
         b"&cradlepoint_host=10.0.0.1&cradlepoint_password=x&gateway_password=x&ui_password=x"
@@ -470,17 +472,21 @@ def agent_only_request_body() -> bytes:
     )
 
 
-def test_no_development_agent_override_retains_manifest_authority(monkeypatch):
-    manifest_agent = dev.load_release_definition().agent_source_commit
-    resolved_ui = type("Resolved", (), {"full_sha": "a" * 40})()
-    resolved_agent = type("Resolved", (), {"full_sha": "b" * 40})()
+def test_missing_development_agent_commit_fails_before_gateway_work(monkeypatch):
     monkeypatch.delenv("IOT_EDGE_DEV_AGENT_COMMIT", raising=False)
-    monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields: (resolved_ui, resolved_agent))
-    request = dev.parse_upgrade_request(agent_only_request_body())
-    assert request.edge_agent_commit == manifest_agent
-    assert request.git_ref == manifest_agent
-    assert request.agent_source == "Validated release manifest"
-    assert manifest_agent in "\n".join(command for _label, command, _sudo in dev.repo_commands(request))
+    with pytest.raises(ValueError, match="IOT_EDGE_DEV_AGENT_COMMIT must be set"):
+        dev.parse_upgrade_request(agent_only_request_body())
+
+
+def test_blank_configured_agent_target_fails_before_commit_resolution(monkeypatch):
+    defaults = {
+        "IOT_ADMIN_API_TOKEN": "", "CRADLEPOINT_PASSWORD": "", "GATEWAY_PASSWORD": "",
+        "EDGE_UI_PASSWORD": "", "IOT_EDGE_DEV_UI_COMMIT": "", "IOT_EDGE_DEV_AGENT_COMMIT": "",
+        "IOT_EDGE_DEV_UPDATER_PORT": "8791", "GITHUB_TOKEN": "",
+    }
+    monkeypatch.setattr(dev, "resolve_commit", lambda *_args, **_kwargs: pytest.fail("commit resolution must not start"))
+    with pytest.raises(ValueError, match="IOT_EDGE_DEV_AGENT_COMMIT must be set"):
+        dev.resolve_requested_commits({}, defaults=defaults)
 
 
 def test_development_agent_override_is_the_only_agent_authority(monkeypatch):
@@ -489,13 +495,13 @@ def test_development_agent_override_is_the_only_agent_authority(monkeypatch):
     resolved_ui = type("Resolved", (), {"full_sha": "2adae3adeb339806330db0e481cba3179fff2ff1"})()
     resolved_agent = type("Resolved", (), {"full_sha": pilot})()
     monkeypatch.setenv("IOT_EDGE_DEV_AGENT_COMMIT", pilot)
-    monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields: (resolved_ui, resolved_agent))
+    monkeypatch.setattr(dev, "resolve_requested_commits", lambda _fields, **_kwargs: (resolved_ui, resolved_agent))
     monkeypatch.setattr(dev, "read_agent_version_from_source", lambda commit, **_kwargs: "0.2.3" if commit == pilot else "wrong")
     request = dev.parse_upgrade_request(agent_only_request_body())
     assert request.edge_agent_commit == pilot
     assert request.git_ref == pilot
     assert request.expected_agent_version == "0.2.3"
-    assert request.agent_source == "Development override"
+    assert request.agent_source == "Development environment target"
     repo_text = "\n".join(command for _label, command, _sudo in dev.repo_commands(request))
     install_text = "\n".join(command for _label, command, _sudo in dev.install_agent_commands(request))
     final_text = "\n".join(command for _label, command, _sudo in dev.final_commands(request, pre_restart_timestamp="100"))
@@ -509,6 +515,40 @@ def test_development_agent_override_is_the_only_agent_authority(monkeypatch):
     assert "tunnel_request_timeout_sec" not in final_text
     assert 'test "$trend" != true' not in final_text
     assert "echo LOCAL_EDGE_TRENDS_ENABLED=$trend" in final_text
+
+
+def test_configured_agent_commit_overrides_stale_submitted_release_ref(monkeypatch):
+    target = "d9232758b93fc9954a64235be918724df08238de"
+    stale_release = "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
+    ui = "141de85c5cc6baae045778e61f621fba5e398ef6"
+    defaults = {
+        "IOT_ADMIN_API_TOKEN": "", "CRADLEPOINT_PASSWORD": "", "GATEWAY_PASSWORD": "",
+        "EDGE_UI_PASSWORD": "", "IOT_EDGE_DEV_UI_COMMIT": ui,
+        "IOT_EDGE_DEV_AGENT_COMMIT": target, "IOT_EDGE_DEV_UPDATER_PORT": "8791", "GITHUB_TOKEN": "",
+    }
+    resolved: list[tuple[str, str]] = []
+
+    def resolve(repository, commit, *, token):
+        resolved.append((repository, commit))
+        return type("Resolved", (), {"full_sha": commit})()
+
+    monkeypatch.setattr(dev, "load_env_defaults", lambda: defaults)
+    monkeypatch.setattr(dev, "resolve_commit", resolve)
+    monkeypatch.setattr(dev, "read_agent_version_from_source", lambda commit, **_kwargs: "0.2.3" if commit == target else "wrong")
+    body = (
+        b"gateway_id=GW004&cloud_url=https%3A%2F%2Fexample.test&admin_api_token=x"
+        b"&cradlepoint_host=10.0.0.1&cradlepoint_password=x&gateway_password=x&ui_password=x"
+        + f"&selected_phases=7&edge_agent_commit={stale_release}&git_ref={stale_release}".encode()
+    )
+
+    request = dev.parse_upgrade_request(body)
+    install = "\n".join(command for _label, command, _sudo in dev.install_agent_commands(request))
+    final = "\n".join(command for _label, command, _sudo in dev.final_commands(request, pre_restart_timestamp="100"))
+    assert (dev.EDGE_AGENT_REPOSITORY, target) in resolved
+    assert (dev.EDGE_AGENT_REPOSITORY, stale_release) not in resolved
+    assert request.edge_agent_commit == request.git_ref == target
+    assert target in install and target in final
+    assert stale_release not in install and stale_release not in final
 
 
 def test_same_version_agent_commit_update_always_checks_out_the_exact_target():
