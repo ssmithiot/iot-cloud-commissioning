@@ -484,7 +484,8 @@ def test_no_development_agent_override_retains_manifest_authority(monkeypatch):
 
 
 def test_development_agent_override_is_the_only_agent_authority(monkeypatch):
-    pilot = "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
+    pilot = "d9232758b93fc9954a64235be918724df08238de"
+    prior_agent = "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
     resolved_ui = type("Resolved", (), {"full_sha": "2adae3adeb339806330db0e481cba3179fff2ff1"})()
     resolved_agent = type("Resolved", (), {"full_sha": pilot})()
     monkeypatch.setenv("IOT_EDGE_DEV_AGENT_COMMIT", pilot)
@@ -496,8 +497,10 @@ def test_development_agent_override_is_the_only_agent_authority(monkeypatch):
     assert request.expected_agent_version == "0.2.3"
     assert request.agent_source == "Development override"
     repo_text = "\n".join(command for _label, command, _sudo in dev.repo_commands(request))
+    install_text = "\n".join(command for _label, command, _sudo in dev.install_agent_commands(request))
     final_text = "\n".join(command for _label, command, _sudo in dev.final_commands(request, pre_restart_timestamp="100"))
-    assert pilot in repo_text and pilot in final_text
+    assert pilot in repo_text and pilot in install_text and pilot in final_text
+    assert prior_agent not in install_text
     manifest_agent = dev.load_release_definition().agent_source_commit
     assert manifest_agent != pilot
     assert manifest_agent not in repo_text
@@ -523,6 +526,85 @@ def test_same_version_agent_commit_update_always_checks_out_the_exact_target():
     assert f"git checkout --detach {target}" in commands
     assert previous not in commands
     assert "expected_agent_version" not in commands
+
+
+def test_agent_install_reasserts_development_agent_commit_before_pip_install():
+    previous = "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
+    target = "d9232758b93fc9954a64235be918724df08238de"
+    request = dev.UpgradeRequest(
+        gateway_id="GW017", site_id="GW017", cloud_url="https://example.test", admin_api_token="x",
+        cradlepoint_host="x", cradlepoint_user="x", cradlepoint_password="x", gateway_host="x",
+        gateway_user="x", gateway_password="x", git_ref=previous, remote_repo="/repo",
+        ui_source_folder="x", ui_username="x", ui_password="x", edge_agent_commit=target,
+        expected_agent_version="0.2.3", agent_source="Development override", development_agent_override=True,
+    )
+
+    commands = {label: command for label, command, _sudo in dev.install_agent_commands(request)}
+    checkout = commands["checkout exact Agent source"]
+    install = commands["install agent package"]
+    assert f"expected={target}" in checkout
+    assert 'git checkout --detach "$expected"' in checkout
+    assert "AGENT_INSTALL_SOURCE_COMMIT=$actual" in checkout
+    assert "AGENT_EXACT_CHECKOUT=Failed: unable to checkout requested commit $expected" in checkout
+    assert target not in install and previous not in checkout
+    labels = list(commands)
+    assert labels.index("checkout exact Agent source") < labels.index("install agent package")
+
+
+def test_agent_exact_checkout_fails_early_with_a_clear_message(tmp_path, monkeypatch):
+    target = "d9232758b93fc9954a64235be918724df08238de"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  fetch) exit 0 ;;\n"
+        "  checkout) echo 'simulated missing commit' >&2; exit 1 ;;\n"
+        "  *) echo \"unexpected git command: $1\" >&2; exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    request = dev.UpgradeRequest(
+        gateway_id="GW017", site_id="GW017", cloud_url="https://example.test", admin_api_token="x",
+        cradlepoint_host="x", cradlepoint_user="x", cradlepoint_password="x", gateway_host="x",
+        gateway_user="x", gateway_password="x", git_ref="f77c42b88c5307009c35a2d94e5afbbdb3e4db98",
+        remote_repo=str(repo), ui_source_folder="x", ui_username="x", ui_password="x",
+        edge_agent_commit=target, expected_agent_version="0.2.3", agent_source="Development override",
+        development_agent_override=True,
+    )
+    checkout = dict((label, command) for label, command, _sudo in dev.install_agent_commands(request))["checkout exact Agent source"]
+    result = subprocess.run(
+        ["/bin/sh", "-c", checkout], text=True, capture_output=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+    assert result.returncode != 0
+    assert "AGENT_EXACT_CHECKOUT=Failed: unable to checkout requested commit" in result.stderr
+    assert target in result.stderr
+
+
+def test_final_verification_rejects_f77_when_d923_is_the_requested_agent_commit():
+    expected = "d9232758b93fc9954a64235be918724df08238de"
+    wrong = "f77c42b88c5307009c35a2d94e5afbbdb3e4db98"
+    request = dev.UpgradeRequest(
+        gateway_id="GW017", site_id="GW017", cloud_url="https://example.test", admin_api_token="x",
+        cradlepoint_host="x", cradlepoint_user="x", cradlepoint_password="x", gateway_host="x",
+        gateway_user="x", gateway_password="x", git_ref=wrong, remote_repo="/repo",
+        ui_source_folder="x", ui_username="x", ui_password="x", edge_agent_commit=expected,
+        expected_agent_version="0.2.3", agent_source="Development override", development_agent_override=True,
+    )
+    passed = "\n".join((
+        f"AGENT_RELEASE_COMMIT={expected}", "AGENT_PACKAGE_VERSION=0.2.3",
+        "AGENT_MODULE_VERSION=0.2.3", "AGENT_SERVICE_STATE=active", "AGENT_SERVICE_START=200",
+        "AGENT_NETWORK_TRAFFIC_CLI=Passed",
+    ))
+
+    dev.validate_agent_runtime_output(passed, request, "100")
+    with pytest.raises(RuntimeError, match=wrong):
+        dev.validate_agent_runtime_output(passed.replace(expected, wrong), request, "100")
 
 
 def test_agent_cadence_migration_is_narrow_and_preserves_gateway_config(tmp_path):

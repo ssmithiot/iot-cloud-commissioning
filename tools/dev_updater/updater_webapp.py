@@ -1733,8 +1733,30 @@ def config_commands(request: UpgradeRequest, gateway_token: str, bacnet_default_
 
 def install_agent_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     repo = shell_quote(request.remote_repo)
+    expected_agent = shell_quote(request.edge_agent_commit)
+    exact_checkout_script = f"""set -eu
+cd {repo}
+expected={expected_agent}
+if ! git fetch origin --tags; then
+  echo "AGENT_EXACT_CHECKOUT=Failed: unable to fetch requested commit $expected" >&2
+  exit 1
+fi
+if ! git checkout --detach "$expected"; then
+  echo "AGENT_EXACT_CHECKOUT=Failed: unable to checkout requested commit $expected" >&2
+  exit 1
+fi
+actual=$(git rev-parse HEAD)
+echo "AGENT_INSTALL_SOURCE_COMMIT=$actual"
+if [ "$actual" != "$expected" ]; then
+  echo "AGENT_EXACT_CHECKOUT=Failed: expected $expected, found $actual" >&2
+  exit 1
+fi
+echo "AGENT_EXACT_CHECKOUT=Passed"
+"""
+    exact_checkout = "sh -c " + shell_quote(exact_checkout_script)
     return [
         ("verify venv support", "rm -rf /tmp/iot-cx-venv-check; python3 -m venv /tmp/iot-cx-venv-check >/dev/null 2>&1 || (export DEBIAN_FRONTEND=noninteractive; sudo -S -p '' apt-get update && sudo -n apt-get install -y --no-install-recommends python3-venv python3.10-venv python3-pip); rm -rf /tmp/iot-cx-venv-check", True),
+        ("checkout exact Agent source", exact_checkout, False),
         ("create agent venv", f"cd {repo}/edge-agent && python3 -m venv .venv", False),
         ("upgrade pip", f"cd {repo}/edge-agent && .venv/bin/python -m pip install --upgrade pip", False),
         ("install requirements", f"cd {repo}/edge-agent && .venv/bin/python -m pip install -r requirements.txt", False),
