@@ -485,6 +485,11 @@ def claimed_update_phases(claimed: dict[str, object]) -> tuple[int, ...]:
 def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str]) -> str | None:
     """Process one queued update. Returns 'completed', 'failed', or None when
     the request could not be claimed (not a gateway outcome)."""
+    # The Development Updater's configured Agent target is the sole authority
+    # for Agent source, installation, and runtime verification.  Validate it
+    # before claiming or contacting a gateway so a missing target cannot turn
+    # into a partially-defined gateway update.
+    configured_agent_commit = configured_agent_target(defaults)
     cloud_url = os.environ.get("IOT_CLOUD_API_URL", DEFAULT_CLOUD_URL).rstrip("/")
     admin_api_token = defaults["IOT_ADMIN_API_TOKEN"]
     request_id = str(update["request_id"])
@@ -511,10 +516,13 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
             artifact_path, artifact_sha256 = str(artifact.path), artifact.sha256
 
         agent_selected = selected_phases in (TARGETED_AGENT_ONLY_PHASES, UPDATE_AGENT_PHASES)
-        agent_commit = claimed_release_commit(claimed, "target_agent_commit") if agent_selected else DEFAULT_EDGE_UPDATE_REF
-        expected_agent_version = (
-            claimed_release_version(claimed, "target_agent_version") if agent_selected else DEFAULT_EDGE_RELEASE
-        )
+        if agent_selected:
+            # Preserve validation of the Cloud claim, but do not permit it to
+            # replace the configured Development Updater Agent authority.
+            claimed_release_commit(claimed, "target_agent_commit")
+            claimed_release_version(claimed, "target_agent_version")
+        agent_commit = configured_agent_commit
+        expected_agent_version = read_agent_version_from_source(agent_commit, token=defaults["GITHUB_TOKEN"])
         edge_release = claimed_release_version(
             claimed,
             "target_ui_version" if ui_phases_selected(selected_phases) else "target_agent_version",
@@ -552,7 +560,7 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
         edge_ui_commit=ui_commit,
         edge_agent_commit=agent_commit,
         expected_agent_version=expected_agent_version,
-        agent_source="Cloud claimed target",
+        agent_source="configured IOT_EDGE_DEV_AGENT_COMMIT",
         development_agent_override=agent_selected,
         ui_artifact_path=artifact_path,
         ui_artifact_sha256=artifact_sha256,
@@ -967,7 +975,7 @@ def parse_bool(fields: dict[str, list[str]], key: str) -> bool:
 
 
 def configured_agent_target(defaults: dict[str, str]) -> str:
-    target = defaults["IOT_EDGE_DEV_AGENT_COMMIT"].strip()
+    target = defaults.get("IOT_EDGE_DEV_AGENT_COMMIT", "").strip()
     if not target:
         raise ValueError("IOT_EDGE_DEV_AGENT_COMMIT must be set to an exact Agent commit before gateway work starts.")
     return target
@@ -1070,7 +1078,7 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         edge_ui_commit=edge_ui.full_sha,
         edge_agent_commit=effective_agent_commit,
         expected_agent_version=expected_agent_version,
-        agent_source="Development environment target",
+        agent_source="configured IOT_EDGE_DEV_AGENT_COMMIT",
         development_agent_override=True,
         ui_artifact_path=artifact_path,
         ui_artifact_sha256=artifact_sha256,

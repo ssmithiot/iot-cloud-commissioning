@@ -140,6 +140,8 @@ def cloud_queue_defaults() -> dict[str, str]:
         "GATEWAY_PASSWORD": "gateway-password",
         "EDGE_UI_PASSWORD": "ui-password",
         "GITHUB_TOKEN": "github-token",
+        "IOT_EDGE_UPDATE_REF": "f77c42b88c5307009c35a2d94e5afbbdb3e4db98",
+        "IOT_EDGE_DEV_AGENT_COMMIT": "d9232758b93fc9954a64235be918724df08238de",
     }
 
 
@@ -160,6 +162,7 @@ def claimed_cloud_update(scope: str = "full_non_provisioning") -> dict[str, obje
 
 def test_cloud_full_rollout_materializes_exact_ui_before_starting_shared_engine(monkeypatch, tmp_path):
     claimed = claimed_cloud_update()
+    claimed["target_agent_version"] = "0.2.4"
     artifact = SimpleNamespace(path=tmp_path / "edge-ui-2adae3a.tar.gz", sha256="c" * 64)
     captured: dict[str, object] = {}
 
@@ -179,6 +182,11 @@ def test_cloud_full_rollout_materializes_exact_ui_before_starting_shared_engine(
 
     monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
     monkeypatch.setattr(dev, "materialize_ui_artifact", fake_materialize)
+    monkeypatch.setattr(
+        dev,
+        "read_agent_version_from_source",
+        lambda commit, **_kwargs: "0.2.3" if commit == cloud_queue_defaults()["IOT_EDGE_DEV_AGENT_COMMIT"] else pytest.fail("Cloud claim must not select Agent source"),
+    )
     monkeypatch.setattr(dev, "start_job", fake_start)
     monkeypatch.setattr(dev, "health_gate_enabled", lambda: False)
     try:
@@ -192,8 +200,36 @@ def test_cloud_full_rollout_materializes_exact_ui_before_starting_shared_engine(
     assert request.edge_ui_commit == claimed["target_ui_commit"]
     assert request.ui_artifact_path == str(artifact.path)
     assert request.ui_artifact_sha256 == artifact.sha256
-    assert request.edge_agent_commit == request.git_ref == claimed["target_agent_commit"]
+    assert request.edge_agent_commit == request.git_ref == cloud_queue_defaults()["IOT_EDGE_DEV_AGENT_COMMIT"]
+    assert request.edge_agent_commit != cloud_queue_defaults()["IOT_EDGE_UPDATE_REF"]
     assert request.expected_agent_version == "0.2.3"
+    assert request.agent_source == "configured IOT_EDGE_DEV_AGENT_COMMIT"
+    assert claimed["target_agent_commit"] not in "\n".join(
+        command for _label, command, _sudo in dev.install_agent_commands(request)
+    )
+    assert claimed["target_agent_commit"] not in "\n".join(
+        command for _label, command, _sudo in dev.final_commands(request, pre_restart_timestamp="100")
+    )
+    preflight_job_id = "cloud-configured-agent-preflight"
+    monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path / "updater-data"))
+    with dev.JOBS_LOCK:
+        dev.JOBS[preflight_job_id] = dev.UpgradeJob(request=request)
+    runner = dev.LegacyUpgradeRunner(preflight_job_id, request)
+    try:
+        runner.write_preflight_summary("")
+        with dev.JOBS_LOCK:
+            summary = dev.JOBS[preflight_job_id].summary
+            log = dev.JOBS[preflight_job_id].log
+        assert summary["Resolved Edge Agent commit"] == request.edge_agent_commit
+        assert summary["Edge Agent Target"] == f"0.2.3 / {request.edge_agent_commit}"
+        assert summary["Agent Source"] == "configured IOT_EDGE_DEV_AGENT_COMMIT"
+        assert f"AGENT_SOURCE_COMMIT={request.edge_agent_commit}" in log
+        assert "AGENT_SOURCE=configured IOT_EDGE_DEV_AGENT_COMMIT" in log
+        assert claimed["target_agent_commit"] not in log
+    finally:
+        runner.close()
+        with dev.JOBS_LOCK:
+            dev.JOBS.pop(preflight_job_id, None)
 
 
 @pytest.mark.parametrize("failure", ("missing-commit", "materialization-failed"))
@@ -240,6 +276,7 @@ def test_cloud_agent_only_rollout_does_not_require_or_materialize_ui(monkeypatch
 
     monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
     monkeypatch.setattr(dev, "materialize_ui_artifact", lambda *_args, **_kwargs: pytest.fail("agent-only must not materialize UI"))
+    monkeypatch.setattr(dev, "read_agent_version_from_source", lambda _commit, **_kwargs: "0.2.3")
     monkeypatch.setattr(dev, "start_job", fake_start)
     monkeypatch.setattr(dev, "health_gate_enabled", lambda: False)
     try:
@@ -252,8 +289,18 @@ def test_cloud_agent_only_rollout_does_not_require_or_materialize_ui(monkeypatch
     assert request.selected_phases == dev.TARGETED_AGENT_ONLY_PHASES
     assert request.ui_artifact_path == ""
     assert request.ui_artifact_sha256 == ""
-    assert request.edge_agent_commit == claimed["target_agent_commit"]
+    assert request.edge_agent_commit == cloud_queue_defaults()["IOT_EDGE_DEV_AGENT_COMMIT"]
     assert request.expected_agent_version == "0.2.3"
+
+
+def test_cloud_update_requires_configured_agent_target_before_claiming_or_gateway_work(monkeypatch):
+    defaults = cloud_queue_defaults()
+    defaults["IOT_EDGE_DEV_AGENT_COMMIT"] = ""
+    monkeypatch.setattr(dev, "cloud_json_request", lambda *_args, **_kwargs: pytest.fail("must fail before claiming"))
+    monkeypatch.setattr(dev, "start_job", lambda _request: pytest.fail("must fail before gateway work"))
+
+    with pytest.raises(ValueError, match="IOT_EDGE_DEV_AGENT_COMMIT must be set"):
+        dev.run_queued_gateway_update({"request_id": "request-1"}, defaults)
 
 
 def test_development_audit_log_is_separate_and_redacted(tmp_path, monkeypatch):
@@ -501,7 +548,7 @@ def test_development_agent_override_is_the_only_agent_authority(monkeypatch):
     assert request.edge_agent_commit == pilot
     assert request.git_ref == pilot
     assert request.expected_agent_version == "0.2.3"
-    assert request.agent_source == "Development environment target"
+    assert request.agent_source == "configured IOT_EDGE_DEV_AGENT_COMMIT"
     repo_text = "\n".join(command for _label, command, _sudo in dev.repo_commands(request))
     install_text = "\n".join(command for _label, command, _sudo in dev.install_agent_commands(request))
     final_text = "\n".join(command for _label, command, _sudo in dev.final_commands(request, pre_restart_timestamp="100"))
