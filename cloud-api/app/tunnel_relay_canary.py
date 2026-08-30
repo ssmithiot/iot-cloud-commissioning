@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+from base64 import b64decode, b64encode
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import WebSocket, WebSocketDisconnect
+import httpx
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
@@ -36,7 +39,7 @@ async def _owner_to_public(owner: object, public: WebSocket) -> None:
         else: await public.send_text(frame)
 
 
-async def relay_client(gateway_id: str, public: WebSocket, *, owner_url: str | None, owner_secret: str | None) -> None:
+async def relay_client(gateway_id: str, public: WebSocket, *, owner_url: str | None, owner_secret: str | None, expires_at: str | None = None) -> None:
     """Relay a selected Agent connection, with no legacy-manager fallback."""
     if not owner_url or not owner_secret:
         await _close(public)
@@ -44,6 +47,8 @@ async def relay_client(gateway_id: str, public: WebSocket, *, owner_url: str | N
     try:
         import websockets
         target = f"{owner_url.rstrip('/')}/{gateway_id}"
+        if expires_at:
+            target += f"?expires_at={expires_at}"
         async with websockets.connect(target, additional_headers={"x-iot-relay-owner-auth": owner_secret}, open_timeout=10) as owner:
             tasks = [asyncio.create_task(_public_to_owner(public, owner)), asyncio.create_task(_owner_to_public(owner, public))]
             try:
@@ -54,3 +59,28 @@ async def relay_client(gateway_id: str, public: WebSocket, *, owner_url: str | N
     except Exception:
         pass
     await _close(public)
+
+
+def owner_api_base(owner_url: str) -> str:
+    parsed = urlsplit(owner_url)
+    scheme = "https" if parsed.scheme == "wss" else "http"
+    marker = "/owner"
+    if marker not in parsed.path:
+        raise ValueError("owner URL must end in the private owner path")
+    return urlunsplit((scheme, parsed.netloc, parsed.path.rsplit(marker, 1)[0], "", ""))
+
+
+async def owner_api(owner_url: str | None, owner_secret: str | None, method: str, path: str, payload: dict | None = None) -> dict:
+    if not owner_url or not owner_secret:
+        raise TunnelOwnerUnavailable("Tunnel owner is not configured")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.request(method, owner_api_base(owner_url) + path, headers={"x-iot-relay-owner-auth": owner_secret}, json=payload)
+            response.raise_for_status()
+            return dict(response.json())
+    except (httpx.HTTPError, ValueError) as exc:
+        raise TunnelOwnerUnavailable("Tunnel owner is unavailable") from exc
+
+
+class TunnelOwnerUnavailable(Exception):
+    pass

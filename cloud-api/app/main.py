@@ -1,4 +1,5 @@
 import asyncio
+from base64 import b64decode, b64encode
 import contextlib
 import csv
 import io
@@ -148,7 +149,7 @@ from app.tunnel import (
     tunnel_metrics,
     tunnel_session_manager,
 )
-from app.tunnel_relay_canary import relay_client, selected as relay_canary_selected
+from app.tunnel_relay_canary import TunnelOwnerUnavailable, owner_api, relay_client, selected as relay_canary_selected
 from app.ui import (
     admin_users_html,
     app_html,
@@ -2247,12 +2248,22 @@ def ui_gateway_direct_connect(
 
 
 @app.get("/api/ui/gateways/{gateway_id}/tunnel-status", response_model=TunnelStatusOut)
-def ui_gateway_tunnel_status(
+async def ui_gateway_tunnel_status(
     gateway_id: str,
     auth: AdminAuthContext = Depends(require_operator_auth),
     db: Session = Depends(get_db),
 ) -> TunnelStatusOut:
     _require_gateway_site_access(db, auth, gateway_id)
+    if _relay_canary_selected(gateway_id):
+        request = _active_durable_tunnel_request(db, gateway_id)
+        if request is None:
+            return TunnelStatusOut(connected=False, status="closed")
+        try:
+            connected = bool((await owner_api(settings.iot_tunnel_relay_owner_url, settings.iot_tunnel_relay_owner_secret, "GET", f"/status/{gateway_id}")).get("connected"))
+        except TunnelOwnerUnavailable:
+            connected = False
+        remaining = max(0, int((request.expires_at - utc_now()).total_seconds()))
+        return TunnelStatusOut(connected=connected, status="connected" if connected else "opening", expires_at=request.expires_at, remaining_seconds=remaining)
     expires_at = tunnel_allowlist.expires_at(gateway_id)
     connected = tunnel_manager.is_connected(gateway_id)
     if expires_at is None:
@@ -2342,6 +2353,10 @@ async def ui_close_gateway_tunnel(
             request.state = "closed"
             request.expires_at = utc_now()
             db.commit()
+        try:
+            await owner_api(settings.iot_tunnel_relay_owner_url, settings.iot_tunnel_relay_owner_secret, "POST", f"/close/{gateway_id}")
+        except TunnelOwnerUnavailable:
+            pass
         with job_wait_condition:
             job_wait_condition.notify_all()
         return TunnelStatusOut(connected=False, status="closed")
@@ -2355,16 +2370,22 @@ async def ui_close_gateway_tunnel(
 
 
 @app.post("/api/ui/gateways/{gateway_id}/tunnel-session", response_model=TunnelSessionOut)
-def ui_create_gateway_tunnel_session(
+async def ui_create_gateway_tunnel_session(
     gateway_id: str,
     payload: TunnelSessionCreateIn | None = Body(default=None),
     auth: AdminAuthContext = Depends(require_job_operator_auth),
     db: Session = Depends(get_db),
 ) -> TunnelSessionOut:
     _require_gateway_site_access(db, auth, gateway_id)
+    subject = auth.email or auth.auth_type
+    if _relay_canary_selected(gateway_id):
+        try:
+            owner_session = await owner_api(settings.iot_tunnel_relay_owner_url, settings.iot_tunnel_relay_owner_secret, "POST", f"/session/{gateway_id}", {"subject": subject, "ttl_seconds": (payload.ttl_minutes * 60) if payload else None})
+        except TunnelOwnerUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return TunnelSessionOut(url=f"{_tunnel_session_prefix(gateway_id, str(owner_session['session_id']))}/")
     if not tunnel_manager.is_connected(gateway_id):
         raise HTTPException(status_code=503, detail="Gateway tunnel is not connected")
-    subject = auth.email or auth.auth_type
     session_kwargs = {"gateway_id": gateway_id, "subject": subject}
     if payload is not None:
         session_kwargs["ttl_seconds"] = payload.ttl_minutes * 60
@@ -2445,19 +2466,22 @@ async def edge_tunnel(
         tunnel_metrics.record_auth_duration((time.monotonic() - auth_started_at) * 1000)
         tunnel_auth_gate.release()
 
+    canary_expires_at: datetime | None = None
     if canary_relay:
         durable_db = SessionLocal()
         try:
-            if _active_durable_tunnel_request(durable_db, gateway_id) is None:
+            durable_request = _active_durable_tunnel_request(durable_db, gateway_id)
+            if durable_request is None:
                 tunnel_metrics.record_rejected()
                 await reject(1008)
                 return
+            canary_expires_at = durable_request.expires_at
         finally:
             durable_db.close()
     await websocket.accept()
     tunnel_metrics.record_accepted()
     if canary_relay:
-        await relay_client(gateway_id, websocket, owner_url=settings.iot_tunnel_relay_owner_url, owner_secret=settings.iot_tunnel_relay_owner_secret)
+        await relay_client(gateway_id, websocket, owner_url=settings.iot_tunnel_relay_owner_url, owner_secret=settings.iot_tunnel_relay_owner_secret, expires_at=canary_expires_at.isoformat() if canary_expires_at else None)
         return
     tunnel, replaced_tunnel = tunnel_manager.register(gateway_id, websocket)
     if replaced_tunnel is not None:
@@ -2513,10 +2537,18 @@ async def proxy_gateway_tunnel_session(
 ) -> Response:
     with SessionLocal() as db:
         _get_gateway_or_404(db, gateway_id)
-    try:
-        tunnel_session_manager.get(gateway_id=gateway_id, session_id=session_id)
-    except TunnelUnavailable as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if _relay_canary_selected(gateway_id):
+        try:
+            valid = bool((await owner_api(settings.iot_tunnel_relay_owner_url, settings.iot_tunnel_relay_owner_secret, "POST", f"/session/{gateway_id}/{session_id}/validate")).get("valid"))
+        except TunnelOwnerUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if not valid:
+            raise HTTPException(status_code=403, detail="Tunnel console session is not valid")
+    else:
+        try:
+            tunnel_session_manager.get(gateway_id=gateway_id, session_id=session_id)
+        except TunnelUnavailable as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
     return await _proxy_gateway_tunnel_request(
         gateway_id=gateway_id,
         path=path,
@@ -2575,16 +2607,25 @@ async def _proxy_gateway_tunnel_request(
         rewrite_html_body,
     )
     try:
-        tunnel = tunnel_manager.get(gateway_id)
-        tunnel_response = await tunnel.request(
-            method=request.method,
-            path=upstream_path,
-            query_string=request.url.query,
-            headers=forward_headers,
-            body=request_body,
-            timeout_sec=settings.tunnel_request_timeout_sec,
-        )
+        if _relay_canary_selected(gateway_id):
+            owner_response = await owner_api(settings.iot_tunnel_relay_owner_url, settings.iot_tunnel_relay_owner_secret, "POST", f"/request/{gateway_id}", {
+                "method": request.method, "path": upstream_path, "query_string": request.url.query,
+                "headers": forward_headers, "body_b64": b64encode(request_body).decode("ascii"), "timeout_sec": settings.tunnel_request_timeout_sec,
+            })
+            tunnel_response = TunnelResponse(status_code=int(owner_response["status_code"]), headers={str(k): str(v) for k, v in dict(owner_response["headers"]).items()}, body=b64decode(str(owner_response["body_b64"])))
+        else:
+            tunnel = tunnel_manager.get(gateway_id)
+            tunnel_response = await tunnel.request(
+                method=request.method,
+                path=upstream_path,
+                query_string=request.url.query,
+                headers=forward_headers,
+                body=request_body,
+                timeout_sec=settings.tunnel_request_timeout_sec,
+            )
     except TunnelUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except TunnelOwnerUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except asyncio.TimeoutError as exc:
         raise HTTPException(status_code=504, detail="Gateway tunnel request timed out") from exc

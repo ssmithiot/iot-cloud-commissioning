@@ -48,6 +48,12 @@ variable `IOT_TUNNEL_RELAY_OWNER_URL` to the Render private address including
 that path but excluding `/{gateway_id}`, for example
 `ws://<private-host>:10000/internal/tunnel-relay/owner`.
 
+The owner is not an echo endpoint: it registers the relayed Agent WebSocket in
+the existing `TunnelManager`, resolves the existing JSON response protocol,
+owns `TunnelSessionManager` sessions, and serves authenticated private
+status/session/request/close APIs. Public GW017 status and proxy routes call
+those owner APIs; non-canary gateways retain public Cloud's legacy managers.
+
 ## Durable GW017 canary control plane
 
 When the exact-ID relay gate selects GW017, `tunnel/open` upserts the existing
