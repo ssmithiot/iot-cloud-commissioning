@@ -51,6 +51,8 @@ def reset_database() -> None:
     tunnel_allowlist.clear()
     tunnel_auth_gate.reset()
     tunnel_metrics.reset()
+    with main_module._job_waiters_lock:
+        main_module._job_waiters.clear()
     for task in main_module._tunnel_expiry_tasks.values():
         task.cancel()
     main_module._tunnel_expiry_tasks.clear()
@@ -59,6 +61,8 @@ def reset_database() -> None:
     tunnel_allowlist.clear()
     tunnel_auth_gate.reset()
     tunnel_metrics.reset()
+    with main_module._job_waiters_lock:
+        main_module._job_waiters.clear()
     for task in main_module._tunnel_expiry_tasks.values():
         task.cancel()
     main_module._tunnel_expiry_tasks.clear()
@@ -1523,6 +1527,93 @@ def test_workspace_open_delivers_agent_0_2_3_tunnel_instruction_on_normal_job_po
     idle_again = client.get("/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
     assert idle_again.headers["X-IOT-Tunnel-Lease"] == "none"
     assert "X-IOT-Tunnel-Requested" not in idle_again.headers
+
+
+def test_idle_long_poll_holds_for_its_gateway_despite_unrelated_job_wakes() -> None:
+    raw_token = create_gateway_token("GW001")
+    create_gateway_token("GW002", token_prefix="gw00202")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(
+            client.get,
+            "/api/edge/GW001/jobs/next?wait_seconds=600",
+            headers=auth_headers(raw_token),
+        )
+        time.sleep(0.15)
+        assert not pending.done(), "wait_seconds=600 must not return an idle response immediately"
+
+        unrelated = client.post(
+            "/api/edge/jobs",
+            headers=admin_headers(),
+            json={"gateway_id": "GW002", "job_type": "echo", "request": {}},
+        )
+        assert unrelated.status_code == 200
+        time.sleep(0.15)
+        assert not pending.done(), "a job for another gateway must not end this long poll"
+
+        main_module.wake_gateway_job_waiters("GW001")
+        response = pending.result(timeout=2)
+
+    assert response.status_code == 200
+    assert response.json() is None
+    assert response.headers["X-IOT-Tunnel-Lease"] == "none"
+
+
+def test_idle_long_poll_returns_one_noop_only_after_its_bounded_timeout() -> None:
+    raw_token = create_gateway_token("GW001")
+
+    started = time.monotonic()
+    response = client.get("/api/edge/GW001/jobs/next?wait_seconds=1", headers=auth_headers(raw_token))
+
+    assert response.status_code == 200
+    assert response.json() is None
+    assert time.monotonic() - started >= 0.8
+
+
+def test_pending_job_wakes_held_long_poll_promptly() -> None:
+    raw_token = create_gateway_token("GW001")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(
+            client.get,
+            "/api/edge/GW001/jobs/next?wait_seconds=600",
+            headers=auth_headers(raw_token),
+        )
+        time.sleep(0.15)
+        created = client.post(
+            "/api/edge/jobs",
+            headers=admin_headers(),
+            json={"gateway_id": "GW001", "job_type": "echo", "request": {"source": "long-poll"}},
+        )
+        response = pending.result(timeout=2)
+
+    assert created.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["job_id"] == created.json()["job_id"]
+
+
+def test_pending_tunnel_wakes_held_long_poll_with_existing_headers() -> None:
+    raw_token = create_gateway_token("GW001")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(
+            client.get,
+            "/api/edge/GW001/jobs/next?wait_seconds=600",
+            headers=auth_headers(raw_token),
+        )
+        time.sleep(0.15)
+        opened = client.post(
+            "/api/ui/gateways/GW001/tunnel/open",
+            headers=admin_headers(),
+            json={"duration_minutes": 5},
+        )
+        response = pending.result(timeout=2)
+
+    assert opened.status_code == 200
+    assert response.status_code == 200
+    assert response.json() is None
+    assert response.headers["X-IOT-Tunnel-Requested"] == "true"
+    assert response.headers["X-IOT-Tunnel-Lease"] == "active"
 
 
 def create_open_tunnel_request(gateway_id: str) -> None:

@@ -243,9 +243,47 @@ def _ensure_visible_logging(target: logging.Logger) -> None:
 _ensure_visible_logging(request_logger)
 
 _REQUEST_LOG_EXCLUDED_PATHS = {"/health", "/health/db", "/health/schema"}
-# In-process wake-up for the Agent's bounded command wait. The database remains
-# authoritative; a missed notification merely lets the bounded wait expire.
-job_wait_condition = threading.Condition()
+
+
+class GatewayJobWaiter:
+    """One renewable command-wait signal for one gateway in this process."""
+
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.generation = 0
+
+    def snapshot(self) -> int:
+        with self.condition:
+            return self.generation
+
+    def wake(self) -> None:
+        with self.condition:
+            self.generation += 1
+            self.condition.notify_all()
+
+    def wait_for_change(self, generation: int, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            while self.generation == generation:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self.condition.wait(timeout=remaining)
+            return True
+
+
+_job_waiters_lock = threading.Lock()
+_job_waiters: dict[str, GatewayJobWaiter] = {}
+
+
+def job_waiter_for(gateway_id: str) -> GatewayJobWaiter:
+    """Return the process-local waiter for the current single-worker service."""
+    with _job_waiters_lock:
+        return _job_waiters.setdefault(gateway_id, GatewayJobWaiter())
+
+
+def wake_gateway_job_waiters(gateway_id: str) -> None:
+    job_waiter_for(gateway_id).wake()
 
 
 @app.middleware("http")
@@ -2271,6 +2309,7 @@ async def ui_open_gateway_tunnel(
         maximum=settings.gateway_tunnel_max_active,
     ):
         raise HTTPException(status_code=409, detail="Tunnel capacity reached")
+    wake_gateway_job_waiters(gateway_id)
     _schedule_tunnel_expiry(gateway_id, expires_at)
     return TunnelStatusOut(
         connected=tunnel_manager.is_connected(gateway_id),
@@ -3065,8 +3104,7 @@ def ui_load_device_points(
     db.add(job)
     db.commit()
     db.refresh(job)
-    with job_wait_condition:
-        job_wait_condition.notify_all()
+    wake_gateway_job_waiters(device.gateway_id)
     return job
 
 
@@ -3223,8 +3261,7 @@ def ui_read_saved_points(
         db.add(job)
         job_ids.append(job.job_id)
     db.commit()
-    with job_wait_condition:
-        job_wait_condition.notify_all()
+    wake_gateway_job_waiters(gateway_id)
     return SavedPointsReadOut(
         requested_count=len(payload.point_ids),
         queued_count=len(job_ids),
@@ -3370,6 +3407,7 @@ def ui_approve_saved_point_write(
         )
     db.commit()
     db.refresh(batch)
+    wake_gateway_job_waiters(gateway_id)
     return _write_batch_out(batch)
 
 
@@ -3666,8 +3704,7 @@ def ui_discover_devices(
     db.add(job)
     db.commit()
     db.refresh(job)
-    with job_wait_condition:
-        job_wait_condition.notify_all()
+    wake_gateway_job_waiters(gateway_id)
     return job
 
 
@@ -3988,8 +4025,7 @@ def create_job(
     db.add(job)
     db.commit()
     db.refresh(job)
-    with job_wait_condition:
-        job_wait_condition.notify_all()
+    wake_gateway_job_waiters(payload.gateway_id)
     return job
 
 
@@ -4345,15 +4381,8 @@ def claim_next_job(
     if auth.gateway_id != gateway_id:
         raise HTTPException(status_code=403, detail="Gateway credential does not match requested gateway_id")
 
-    # Reuse the existing in-memory admission lease: no DB lookup or new poll.
-    expires_at = tunnel_allowlist.expires_at(gateway_id)
-    if expires_at is None:
-        response.headers["X-IOT-Tunnel-Lease"] = "none"
-    else:
-        response.headers["X-IOT-Tunnel-Lease"] = "active"
-        response.headers["X-IOT-Tunnel-Lease-Expires-At"] = expires_at.isoformat()
-        response.headers["X-IOT-Tunnel-Requested"] = "true"
-        response.headers["X-IOT-Tunnel-Expires-At"] = expires_at.isoformat()
+    waiter = job_waiter_for(gateway_id)
+    observed_generation = waiter.snapshot()
 
     # Stale-claim recovery: a gateway that dies mid-job leaves the job
     # 'claimed' forever. Requeue this gateway's stale claims at poll time.
@@ -4386,19 +4415,29 @@ def claim_next_job(
         .with_for_update(skip_locked=True)
     )
     if job is None and wait_seconds:
-        # Release the SQLAlchemy connection while the request waits. A create
-        # wakes this condition promptly; timeout preserves the Agent's single
-        # renewable request and bounds every worker/resource commitment.
+        # A signal is scoped to this gateway. Unrelated fleet jobs cannot end
+        # an idle request, and a signal that races the first query is observed
+        # through the waiter generation rather than being lost.
         db.close()
-        with job_wait_condition:
-            job_wait_condition.wait(timeout=wait_seconds)
-        job = db.scalar(
-            select(EdgeJob)
-            .where(EdgeJob.gateway_id == gateway_id, EdgeJob.status == "queued")
-            .order_by(EdgeJob.created_at, EdgeJob.id)
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        )
+        if waiter.wait_for_change(observed_generation, wait_seconds):
+            job = db.scalar(
+                select(EdgeJob)
+                .where(EdgeJob.gateway_id == gateway_id, EdgeJob.status == "queued")
+                .order_by(EdgeJob.created_at, EdgeJob.id)
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+
+    # Evaluate the existing lease headers immediately before returning. A
+    # tunnel can have been opened while this command request was held.
+    expires_at = tunnel_allowlist.expires_at(gateway_id)
+    if expires_at is None:
+        response.headers["X-IOT-Tunnel-Lease"] = "none"
+    else:
+        response.headers["X-IOT-Tunnel-Lease"] = "active"
+        response.headers["X-IOT-Tunnel-Lease-Expires-At"] = expires_at.isoformat()
+        response.headers["X-IOT-Tunnel-Requested"] = "true"
+        response.headers["X-IOT-Tunnel-Expires-At"] = expires_at.isoformat()
     if job is None:
         return None
 
