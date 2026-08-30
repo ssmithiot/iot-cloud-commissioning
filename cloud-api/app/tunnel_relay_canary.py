@@ -1,4 +1,4 @@
-"""Exact-ID, fail-closed Cloud-to-private-owner relay canary."""
+"""Exact-ID canary or fleet-wide Cloud-to-private-owner relay selection."""
 from __future__ import annotations
 
 import asyncio
@@ -12,9 +12,12 @@ import httpx
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
-def selected(gateway_id: str, *, enabled: bool, configured_ids: str) -> bool:
+def selected(gateway_id: str, *, enabled: bool, configured_ids: str | None) -> bool:
+    """Select an eligible gateway without creating a tunnel or relay connection."""
     if not enabled or not _ID.fullmatch(gateway_id):
         return False
+    if not configured_ids:
+        return True
     return gateway_id in {item for item in configured_ids.split(",") if _ID.fullmatch(item)}
 
 

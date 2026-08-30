@@ -1,4 +1,4 @@
-"""Safety properties for the exact-ID production relay canary gate."""
+"""Safety properties for the production relay canary and fleet gates."""
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,16 +12,29 @@ from app.tunnel_relay_owner_service import app as owner_app
 
 
 def test_disabled_relay_never_selects_gateway() -> None:
-    assert not selected("GW017", enabled=False, configured_ids="GW017")
+    for configured_ids in ("GW017", ""):
+        assert not selected("GW017", enabled=False, configured_ids=configured_ids)
+        assert not selected("GW018", enabled=False, configured_ids=configured_ids)
 
 
 def test_only_exact_explicit_canary_id_is_selected() -> None:
     assert selected("GW017", enabled=True, configured_ids="GW017")
     assert not selected("GW018", enabled=True, configured_ids="GW017")
-    assert not selected("GW017", enabled=True, configured_ids="")
     assert not selected("GW017", enabled=True, configured_ids="GW017*")
     assert not selected("GW017 ", enabled=True, configured_ids="GW017")
     assert not selected("unknown gateway", enabled=True, configured_ids="unknown gateway")
+
+
+def test_missing_canary_list_selects_all_valid_gateways() -> None:
+    assert selected("GW017", enabled=True, configured_ids=None)
+    assert selected("GW018", enabled=True, configured_ids=None)
+    assert not selected("unknown gateway", enabled=True, configured_ids=None)
+
+
+def test_empty_canary_list_selects_all_valid_gateways() -> None:
+    assert selected("GW017", enabled=True, configured_ids="")
+    assert selected("GW018", enabled=True, configured_ids="")
+    assert not selected("unknown gateway", enabled=True, configured_ids="")
 
 
 def test_missing_owner_fails_only_selected_gateway_and_never_selects_other() -> None:

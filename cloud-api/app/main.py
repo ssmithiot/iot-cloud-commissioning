@@ -267,7 +267,7 @@ def _active_durable_tunnel_request(db: Session, gateway_id: str) -> GatewayTunne
 
 
 def _set_tunnel_instruction_headers(response: Response, db: Session, gateway_id: str) -> None:
-    """Use durable intent only for the explicitly selected relay canary."""
+    """Use durable intent only when the relay selector chooses this gateway."""
     canary_relay = _relay_canary_selected(gateway_id)
     for header in (
         "X-IOT-Tunnel-Lease-Expires-At",

@@ -110,8 +110,9 @@ class Settings(BaseSettings):
     gateway_tunnel_websockets_disabled: bool = Field(default=False, validation_alias="GATEWAY_TUNNEL_WEBSOCKETS_DISABLED")
     gateway_tunnel_auth_concurrency: int = Field(default=5, ge=1, le=100, validation_alias="GATEWAY_TUNNEL_AUTH_CONCURRENCY")
     gateway_tunnel_max_active: int = Field(default=10, ge=0, le=100, validation_alias="GATEWAY_TUNNEL_MAX_ACTIVE")
-    # Off by default. Exact comma-separated IDs only; no site/version/prefix
-    # selection is supported so a production canary cannot expand implicitly.
+    # Off by default. A non-empty value is an exact comma-separated canary
+    # list; a missing or empty value selects the fleet after relay is enabled.
+    # Site/version/prefix selection is never supported.
     iot_tunnel_relay_enabled: bool = Field(default=False, validation_alias="IOT_TUNNEL_RELAY_ENABLED")
     iot_tunnel_relay_canary_gateways: str = Field(default="", validation_alias="IOT_TUNNEL_RELAY_CANARY_GATEWAYS")
     iot_tunnel_relay_owner_url: str | None = Field(default=None, validation_alias="IOT_TUNNEL_RELAY_OWNER_URL")
