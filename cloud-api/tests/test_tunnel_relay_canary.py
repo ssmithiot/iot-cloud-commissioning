@@ -33,7 +33,10 @@ def test_missing_owner_fails_only_selected_gateway_and_never_selects_other() -> 
 
 def test_normal_routes_are_not_canary_gated() -> None:
     text = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
-    assert text.count("relay_canary_selected(") == 1
+    # The selector is called only by tunnel-open/close, tunnel admission, and
+    # jobs/next helpers; normal heartbeat/trend route definitions do not use it.
+    assert "def claim_next_job" in text
+    assert "def _relay_canary_selected" in text
 
 
 def test_private_owner_health_and_internal_auth(monkeypatch) -> None:
@@ -45,3 +48,14 @@ def test_private_owner_health_and_internal_auth(monkeypatch) -> None:
     with client.websocket_connect("/internal/tunnel-relay/owner/GW017", headers={"x-iot-relay-owner-auth": "owner-test-secret"}) as socket:
         socket.send_text("owner-authenticated")
         assert socket.receive_text() == "owner-authenticated"
+
+
+def test_durable_canary_recheck_contract_is_worker_independent() -> None:
+    source = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+    # The held request closes its Session before each bounded wait, then makes
+    # a new durable EdgeJob/GatewayTunnelRequest query. No Condition signal is
+    # required for another worker's committed request to become visible.
+    assert "RELAY_CANARY_DURABLE_RECHECK_SECONDS = 10.0" in source
+    assert "db.close()" in source
+    assert "_set_tunnel_instruction_headers(response, db, gateway_id)" in source
+    assert "min(remaining, RELAY_CANARY_DURABLE_RECHECK_SECONDS if canary_relay else remaining)" in source

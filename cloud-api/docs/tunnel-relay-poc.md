@@ -47,3 +47,19 @@ WebSocket `/internal/tunnel-relay/owner/{gateway_id}`. Set the public Cloud
 variable `IOT_TUNNEL_RELAY_OWNER_URL` to the Render private address including
 that path but excluding `/{gateway_id}`, for example
 `ws://<private-host>:10000/internal/tunnel-relay/owner`.
+
+## Durable GW017 canary control plane
+
+When the exact-ID relay gate selects GW017, `tunnel/open` upserts the existing
+`GatewayTunnelRequest` primary-key row with state `requested`, operator,
+requested duration, and expiry. `tunnel/close` marks that row `closed` and
+expires it immediately. An active authorization is `requested` with an expiry
+later than server time; expired rows are inactive without cleanup work.
+
+The selected gateway's one held 600-second `/jobs/next` request releases its
+database session before each wait and rechecks this durable row at most every
+10 seconds. This is Cloud-side polling inside the held request, not new Agent
+HTTP traffic. Non-canary gateways retain the original single Condition wait
+and perform zero added durable tunnel rechecks. Production schema verification:
+`cd cloud-api && alembic current` must show revision `0025_gateway_tunnel_requests`
+or later, and the `gateway_tunnel_requests` table must be present.

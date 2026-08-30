@@ -49,6 +49,7 @@ from app.models import (
     GatewayAlertState,
     GatewayCredential,
     GatewayGroup,
+    GatewayTunnelRequest,
     GatewayUpdateRequest,
     MappingTemplate,
     MappingTemplateRule,
@@ -247,6 +248,37 @@ _REQUEST_LOG_EXCLUDED_PATHS = {"/health", "/health/db", "/health/schema"}
 # In-process wake-up for the Agent's bounded command wait. The database remains
 # authoritative; a missed notification merely lets the bounded wait expire.
 job_wait_condition = threading.Condition()
+RELAY_CANARY_DURABLE_RECHECK_SECONDS = 10.0
+
+
+def _relay_canary_selected(gateway_id: str) -> bool:
+    return relay_canary_selected(gateway_id, enabled=settings.iot_tunnel_relay_enabled, configured_ids=settings.iot_tunnel_relay_canary_gateways)
+
+
+def _active_durable_tunnel_request(db: Session, gateway_id: str) -> GatewayTunnelRequest | None:
+    now = utc_now()
+    return db.scalar(select(GatewayTunnelRequest).where(
+        GatewayTunnelRequest.gateway_id == gateway_id,
+        GatewayTunnelRequest.state == "requested",
+        GatewayTunnelRequest.expires_at.is_not(None),
+        GatewayTunnelRequest.expires_at > now,
+    ))
+
+
+def _set_tunnel_instruction_headers(response: Response, db: Session, gateway_id: str) -> None:
+    """Use durable intent only for the explicitly selected relay canary."""
+    if _relay_canary_selected(gateway_id):
+        request = _active_durable_tunnel_request(db, gateway_id)
+        expires_at = request.expires_at if request else None
+    else:
+        expires_at = tunnel_allowlist.expires_at(gateway_id)
+    if expires_at is None:
+        response.headers["X-IOT-Tunnel-Lease"] = "none"
+        return
+    response.headers["X-IOT-Tunnel-Lease"] = "active"
+    response.headers["X-IOT-Tunnel-Lease-Expires-At"] = expires_at.isoformat()
+    response.headers["X-IOT-Tunnel-Requested"] = "true"
+    response.headers["X-IOT-Tunnel-Expires-At"] = expires_at.isoformat()
 
 
 @app.middleware("http")
@@ -2266,6 +2298,22 @@ async def ui_open_gateway_tunnel(
     if settings.gateway_tunnel_websockets_disabled:
         raise HTTPException(status_code=503, detail="Gateway tunnels are currently disabled")
     expires_at = utc_now() + timedelta(minutes=payload.duration_minutes)
+    if _relay_canary_selected(gateway_id):
+        # gateway_id is the primary key: one durable authority row, safely
+        # replaced/extended by repeated operator opens across Cloud workers.
+        request = db.get(GatewayTunnelRequest, gateway_id)
+        if request is None:
+            request = GatewayTunnelRequest(gateway_id=gateway_id)
+            db.add(request)
+        request.requested_duration_minutes = payload.duration_minutes
+        request.requested_at = utc_now()
+        request.expires_at = expires_at
+        request.requested_by = auth.email or auth.auth_type
+        request.state = "requested"
+        db.commit()
+        with job_wait_condition:
+            job_wait_condition.notify_all()
+        return TunnelStatusOut(connected=False, status="opening", expires_at=expires_at, remaining_seconds=max(0, int((expires_at - utc_now()).total_seconds())))
     if not tunnel_allowlist.reserve(
         gateway_id,
         expires_at,
@@ -2288,6 +2336,15 @@ async def ui_close_gateway_tunnel(
     db: Session = Depends(get_db),
 ) -> TunnelStatusOut:
     _require_gateway_site_access(db, auth, gateway_id)
+    if _relay_canary_selected(gateway_id):
+        request = db.get(GatewayTunnelRequest, gateway_id)
+        if request is not None:
+            request.state = "closed"
+            request.expires_at = utc_now()
+            db.commit()
+        with job_wait_condition:
+            job_wait_condition.notify_all()
+        return TunnelStatusOut(connected=False, status="closed")
     task = _tunnel_expiry_tasks.pop(gateway_id, None)
     if task is not None:
         task.cancel()
@@ -2334,10 +2391,11 @@ async def edge_tunnel(
         await reject(1013)
         return
 
+    canary_relay = _relay_canary_selected(gateway_id)
     # This is intentionally before authentication, SQLAlchemy, and the
     # concurrency gate: unattended legacy Agents knock every five seconds.
     # Unrequested gateways must be as cheap as the global kill switch.
-    if not tunnel_allowlist.allows(gateway_id):
+    if not canary_relay and not tunnel_allowlist.allows(gateway_id):
         tunnel_metrics.record_rejected()
         await reject(1008)
         return
@@ -2345,7 +2403,8 @@ async def edge_tunnel(
     # Leases reserve capacity at operator Open time. This check also protects
     # the live registry without involving SQLAlchemy or gateway auth.
     if (
-        not tunnel_manager.is_connected(gateway_id)
+        not canary_relay
+        and not tunnel_manager.is_connected(gateway_id)
         and tunnel_manager.active_count() >= settings.gateway_tunnel_max_active
     ):
         tunnel_metrics.record_rejected()
@@ -2386,13 +2445,18 @@ async def edge_tunnel(
         tunnel_metrics.record_auth_duration((time.monotonic() - auth_started_at) * 1000)
         tunnel_auth_gate.release()
 
+    if canary_relay:
+        durable_db = SessionLocal()
+        try:
+            if _active_durable_tunnel_request(durable_db, gateway_id) is None:
+                tunnel_metrics.record_rejected()
+                await reject(1008)
+                return
+        finally:
+            durable_db.close()
     await websocket.accept()
     tunnel_metrics.record_accepted()
-    if relay_canary_selected(
-        gateway_id,
-        enabled=settings.iot_tunnel_relay_enabled,
-        configured_ids=settings.iot_tunnel_relay_canary_gateways,
-    ):
+    if canary_relay:
         await relay_client(gateway_id, websocket, owner_url=settings.iot_tunnel_relay_owner_url, owner_secret=settings.iot_tunnel_relay_owner_secret)
         return
     tunnel, replaced_tunnel = tunnel_manager.register(gateway_id, websocket)
@@ -4353,15 +4417,8 @@ def claim_next_job(
     if auth.gateway_id != gateway_id:
         raise HTTPException(status_code=403, detail="Gateway credential does not match requested gateway_id")
 
-    # Reuse the existing in-memory admission lease: no DB lookup or new poll.
-    expires_at = tunnel_allowlist.expires_at(gateway_id)
-    if expires_at is None:
-        response.headers["X-IOT-Tunnel-Lease"] = "none"
-    else:
-        response.headers["X-IOT-Tunnel-Lease"] = "active"
-        response.headers["X-IOT-Tunnel-Lease-Expires-At"] = expires_at.isoformat()
-        response.headers["X-IOT-Tunnel-Requested"] = "true"
-        response.headers["X-IOT-Tunnel-Expires-At"] = expires_at.isoformat()
+    canary_relay = _relay_canary_selected(gateway_id)
+    _set_tunnel_instruction_headers(response, db, gateway_id)
 
     # Stale-claim recovery: a gateway that dies mid-job leaves the job
     # 'claimed' forever. Requeue this gateway's stale claims at poll time.
@@ -4397,16 +4454,27 @@ def claim_next_job(
         # Release the SQLAlchemy connection while the request waits. A create
         # wakes this condition promptly; timeout preserves the Agent's single
         # renewable request and bounds every worker/resource commitment.
-        db.close()
-        with job_wait_condition:
-            job_wait_condition.wait(timeout=wait_seconds)
-        job = db.scalar(
-            select(EdgeJob)
-            .where(EdgeJob.gateway_id == gateway_id, EdgeJob.status == "queued")
-            .order_by(EdgeJob.created_at, EdgeJob.id)
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        )
+        deadline = time.monotonic() + wait_seconds
+        while job is None:
+            # Canary-only bounded durable recheck. close() releases the pool
+            # connection before every sleep; this remains one Agent HTTP poll.
+            db.close()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            with job_wait_condition:
+                job_wait_condition.wait(timeout=min(remaining, RELAY_CANARY_DURABLE_RECHECK_SECONDS if canary_relay else remaining))
+            job = db.scalar(
+                select(EdgeJob)
+                .where(EdgeJob.gateway_id == gateway_id, EdgeJob.status == "queued")
+                .order_by(EdgeJob.created_at, EdgeJob.id)
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+            if canary_relay:
+                _set_tunnel_instruction_headers(response, db, gateway_id)
+                if response.headers.get("X-IOT-Tunnel-Requested") == "true":
+                    break
     if job is None:
         return None
 
