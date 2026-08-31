@@ -33,6 +33,7 @@ from app.auth import (
     hash_gateway_token,
     require_admin_or_admin_token_auth,
     require_gateway_auth,
+    require_gateway_auth_short_lived,
     require_job_operator_auth,
     require_known_user_auth,
     require_operator_auth,
@@ -4463,64 +4464,34 @@ def admin_evaluate_alerts(
     }
 
 
-@app.get("/api/edge/{gateway_id}/jobs/next", response_model=EdgeJobClaimOut | None)
-def claim_next_job(
-    gateway_id: str,
-    response: Response,
-    wait_seconds: int = Query(default=0, ge=0, le=600),
-    auth: GatewayAuthContext = Depends(require_gateway_auth),
-    db: Session = Depends(get_db),
-) -> EdgeJobClaimOut | None:
-    if auth.gateway_id != gateway_id:
-        raise HTTPException(status_code=403, detail="Gateway credential does not match requested gateway_id")
-
-    canary_relay = _relay_canary_selected(gateway_id)
-    _set_tunnel_instruction_headers(response, db, gateway_id)
-
+def _claim_next_job_once(gateway_id: str, response: Response) -> EdgeJobClaimOut | None:
+    """Perform one complete jobs/next database pass in a short-lived Session."""
     # Stale-claim recovery: a gateway that dies mid-job leaves the job
     # 'claimed' forever. Requeue this gateway's stale claims at poll time.
     # BACnet write jobs are excluded — a partially executed write must never
     # be re-executed blindly; they stay 'claimed' for manual review (see
     # docs/disaster-recovery-runbook.md, Job recovery).
-    stale_cutoff = utc_now() - timedelta(seconds=settings.job_claim_timeout_sec)
-    stale_jobs = db.scalars(
-        select(EdgeJob).where(
-            EdgeJob.gateway_id == gateway_id,
-            EdgeJob.status == "claimed",
-            EdgeJob.claimed_at < stale_cutoff,
-            EdgeJob.job_type != "bacnet_write_batch",
-        )
-    ).all()
-    if stale_jobs:
-        for stale_job in stale_jobs:
-            stale_job.status = "queued"
-            stale_job.claimed_at = None
-        db.commit()
+    with SessionLocal() as db:
+        try:
+            _set_tunnel_instruction_headers(response, db, gateway_id)
+            stale_cutoff = utc_now() - timedelta(seconds=settings.job_claim_timeout_sec)
+            stale_jobs = db.scalars(
+                select(EdgeJob).where(
+                    EdgeJob.gateway_id == gateway_id,
+                    EdgeJob.status == "claimed",
+                    EdgeJob.claimed_at < stale_cutoff,
+                    EdgeJob.job_type != "bacnet_write_batch",
+                )
+            ).all()
+            if stale_jobs:
+                for stale_job in stale_jobs:
+                    stale_job.status = "queued"
+                    stale_job.claimed_at = None
+                db.commit()
 
-    # Row-level lock with SKIP LOCKED prevents two app workers/instances from
-    # claiming the same job during concurrent polls. SQLite (dev/tests)
-    # ignores FOR UPDATE, preserving existing single-process behavior.
-    job = db.scalar(
-        select(EdgeJob)
-        .where(EdgeJob.gateway_id == gateway_id, EdgeJob.status == "queued")
-        .order_by(EdgeJob.created_at, EdgeJob.id)
-        .limit(1)
-        .with_for_update(skip_locked=True)
-    )
-    if job is None and wait_seconds:
-        # Release the SQLAlchemy connection while the request waits. A create
-        # wakes this condition promptly; timeout preserves the Agent's single
-        # renewable request and bounds every worker/resource commitment.
-        deadline = time.monotonic() + wait_seconds
-        while job is None:
-            # Canary-only bounded durable recheck. close() releases the pool
-            # connection before every sleep; this remains one Agent HTTP poll.
-            db.close()
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            with job_wait_condition:
-                job_wait_condition.wait(timeout=min(remaining, RELAY_CANARY_DURABLE_RECHECK_SECONDS if canary_relay else remaining))
+            # Row-level lock with SKIP LOCKED prevents two app workers/instances
+            # from claiming the same job during concurrent polls. SQLite
+            # (dev/tests) ignores FOR UPDATE, preserving single-process behavior.
             job = db.scalar(
                 select(EdgeJob)
                 .where(EdgeJob.gateway_id == gateway_id, EdgeJob.status == "queued")
@@ -4528,36 +4499,67 @@ def claim_next_job(
                 .limit(1)
                 .with_for_update(skip_locked=True)
             )
-            if canary_relay:
-                _set_tunnel_instruction_headers(response, db, gateway_id)
-                if response.headers.get("X-IOT-Tunnel-Requested") == "true":
-                    break
-    if job is None:
-        return None
+            if job is None:
+                # Explicitly end the read transaction before returning to the
+                # caller's wait loop. The Session context then closes it.
+                db.rollback()
+                return None
 
-    now = utc_now()
-    job.status = "claimed"
-    job.claimed_at = now
-    if job.job_type == "bacnet_write_batch":
-        commands = list(
-            db.scalars(select(BacnetWriteCommand).where(BacnetWriteCommand.edge_job_id == job.job_id)).all()
-        )
-        affected_batch_ids: set[UUID] = set()
-        for command in commands:
-            if command.status == "queued":
-                command.status = "claimed"
-            affected_batch_ids.add(command.batch_id)
-        db.flush()
-        for batch_id in affected_batch_ids:
-            _refresh_write_batch_status(db, batch_id, now)
-    db.commit()
-    db.refresh(job)
-    return EdgeJobClaimOut(
-        job_id=job.job_id,
-        gateway_id=job.gateway_id,
-        job_type=job.job_type,
-        request=job.request_json,
-    )
+            now = utc_now()
+            job.status = "claimed"
+            job.claimed_at = now
+            if job.job_type == "bacnet_write_batch":
+                commands = list(
+                    db.scalars(select(BacnetWriteCommand).where(BacnetWriteCommand.edge_job_id == job.job_id)).all()
+                )
+                affected_batch_ids: set[UUID] = set()
+                for command in commands:
+                    if command.status == "queued":
+                        command.status = "claimed"
+                    affected_batch_ids.add(command.batch_id)
+                db.flush()
+                for batch_id in affected_batch_ids:
+                    _refresh_write_batch_status(db, batch_id, now)
+            db.commit()
+            return EdgeJobClaimOut(
+                job_id=job.job_id,
+                gateway_id=job.gateway_id,
+                job_type=job.job_type,
+                request=job.request_json,
+            )
+        except Exception:
+            db.rollback()
+            raise
+
+
+@app.get("/api/edge/{gateway_id}/jobs/next", response_model=EdgeJobClaimOut | None)
+def claim_next_job(
+    gateway_id: str,
+    response: Response,
+    wait_seconds: int = Query(default=0, ge=0, le=600),
+    auth: GatewayAuthContext = Depends(require_gateway_auth_short_lived),
+) -> EdgeJobClaimOut | None:
+    if auth.gateway_id != gateway_id:
+        raise HTTPException(status_code=403, detail="Gateway credential does not match requested gateway_id")
+
+    canary_relay = _relay_canary_selected(gateway_id)
+    job = _claim_next_job_once(gateway_id, response)
+    if job is not None or not wait_seconds:
+        return job
+
+    # No SQLAlchemy Session or transaction exists across this wait. Every
+    # condition wake re-enters _claim_next_job_once with a fresh short session.
+    deadline = time.monotonic() + wait_seconds
+    while job is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        with job_wait_condition:
+            job_wait_condition.wait(timeout=min(remaining, RELAY_CANARY_DURABLE_RECHECK_SECONDS if canary_relay else remaining))
+        job = _claim_next_job_once(gateway_id, response)
+        if canary_relay and response.headers.get("X-IOT-Tunnel-Requested") == "true":
+            break
+    return job
 
 
 @app.post("/api/edge/jobs/{job_id}/result", response_model=JobOut)

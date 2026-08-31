@@ -93,12 +93,14 @@ def test_unencoded_timezone_offset_is_rejected_before_owner_accept(monkeypatch) 
 
 def test_durable_canary_recheck_contract_is_worker_independent() -> None:
     source = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
-    # The held request closes its Session before each bounded wait, then makes
-    # a new durable EdgeJob/GatewayTunnelRequest query. No Condition signal is
+    # The held request has no Session dependency at all. Each poll pass opens
+    # and closes its own Session before the Condition wait, then rechecks the
+    # durable EdgeJob/GatewayTunnelRequest state. No Condition signal is
     # required for another worker's committed request to become visible.
     assert "RELAY_CANARY_DURABLE_RECHECK_SECONDS = 10.0" in source
-    assert "db.close()" in source
-    assert "_set_tunnel_instruction_headers(response, db, gateway_id)" in source
+    assert "def _claim_next_job_once" in source
+    assert "with SessionLocal() as db:" in source
+    assert "Depends(require_gateway_auth_short_lived)" in source
     assert "min(remaining, RELAY_CANARY_DURABLE_RECHECK_SECONDS if canary_relay else remaining)" in source
 
 

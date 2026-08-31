@@ -1747,6 +1747,78 @@ def test_relay_canary_connected_poll_still_wakes_for_edge_job(monkeypatch: pytes
     assert "X-IOT-Tunnel-Requested" not in response.headers
 
 
+def test_jobs_next_wait_has_no_open_claim_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The long-poll Condition must run after its short claim Session closes."""
+    from app import auth as auth_module
+
+    raw_token = create_gateway_token("GW001")
+    real_session_factory = main_module.SessionLocal
+    state = {"active_sessions": 0, "clock": 0.0}
+    observations: list[bool] = []
+
+    class TrackedSession:
+        def __init__(self) -> None:
+            self._inner = real_session_factory()
+
+        def __enter__(self):
+            state["active_sessions"] += 1
+            return self._inner.__enter__()
+
+        def __exit__(self, *args):
+            state["active_sessions"] -= 1
+            return self._inner.__exit__(*args)
+
+    class WaitProbe:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> bool:
+            observations.append(state["active_sessions"] == 0)
+            state["clock"] = 1.0
+            return False
+
+    monkeypatch.setattr(main_module, "SessionLocal", TrackedSession)
+    monkeypatch.setattr(auth_module, "SessionLocal", TrackedSession)
+    monkeypatch.setattr(main_module, "job_wait_condition", WaitProbe())
+    monkeypatch.setattr(main_module.time, "monotonic", lambda: state["clock"])
+
+    response = client.get("/api/edge/GW001/jobs/next?wait_seconds=1", headers=auth_headers(raw_token))
+
+    assert response.status_code == 200
+    assert response.json() is None
+    assert observations == [True]
+    assert state["active_sessions"] == 0
+
+
+def test_heartbeats_remain_responsive_while_multiple_jobs_polls_wait() -> None:
+    tokens = [create_gateway_token(f"GW{index:03d}") for index in range(1, 5)]
+    with ThreadPoolExecutor(max_workers=len(tokens)) as executor:
+        polls = [
+            executor.submit(
+                client.get,
+                f"/api/edge/GW{index:03d}/jobs/next?wait_seconds=1",
+                headers=auth_headers(token),
+            )
+            for index, token in enumerate(tokens, start=1)
+        ]
+        time.sleep(0.1)
+        heartbeat_started = time.monotonic()
+        heartbeat = client.post(
+            "/api/edge/heartbeat",
+            headers=auth_headers(tokens[0]),
+            json=heartbeat_payload("GW001"),
+        )
+        heartbeat_elapsed = time.monotonic() - heartbeat_started
+        poll_results = [poll.result(timeout=2) for poll in polls]
+
+    assert heartbeat.status_code == 200
+    assert heartbeat_elapsed < 0.5
+    assert all(result.status_code == 200 and result.json() is None for result in poll_results)
+
+
 @pytest.mark.parametrize(
     ("state", "expires_at"),
     (("closed", None), ("requested", utc_now() - timedelta(seconds=1))),

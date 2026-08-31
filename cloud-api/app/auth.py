@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models import GatewayCredential, OperatorUser, utc_now
 
 
@@ -114,10 +114,12 @@ def _telemetry_write_due(last_written_at: datetime | None) -> bool:
     return last_written_at <= utc_now() - timedelta(seconds=interval)
 
 
-def require_gateway_auth(
+def _gateway_auth_context(
     authorization: Annotated[str | None, Header()] = None,
-    db: Session = Depends(get_db),
+    db: Session | None = None,
 ) -> GatewayAuthContext:
+    if db is None:
+        raise RuntimeError("gateway authentication requires a database session")
     if authorization is None:
         raise _unauthorized()
 
@@ -148,6 +150,30 @@ def require_gateway_auth(
         credential_id=str(credential.id),
         scopes=list(credential.scopes or []),
     )
+
+
+def require_gateway_auth(
+    authorization: Annotated[str | None, Header()] = None,
+    db: Session = Depends(get_db),
+) -> GatewayAuthContext:
+    return _gateway_auth_context(authorization=authorization, db=db)
+
+
+def require_gateway_auth_short_lived(
+    authorization: Annotated[str | None, Header()] = None,
+) -> GatewayAuthContext:
+    """Authenticate a request without retaining a Session for its lifetime.
+
+    The bounded edge command poll can remain open for minutes. Its credential
+    check must be complete before that wait starts so a FastAPI yielded
+    ``get_db`` dependency cannot retain a pooled connection for the poll.
+    """
+    with SessionLocal() as db:
+        try:
+            return _gateway_auth_context(authorization=authorization, db=db)
+        except Exception:
+            db.rollback()
+            raise
 
 
 def require_admin_auth(
