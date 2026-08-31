@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from sqlalchemy import String, and_, cast, delete, func, or_, select, text
+from sqlalchemy import String, and_, cast, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
@@ -248,8 +248,77 @@ _ensure_visible_logging(request_logger)
 
 _REQUEST_LOG_EXCLUDED_PATHS = {"/health", "/health/db", "/health/schema"}
 # In-process wake-up for the Agent's bounded command wait. The database remains
-# authoritative; a missed notification merely lets the bounded wait expire.
-job_wait_condition = threading.Condition()
+# authoritative; the generation check means a notification that races with
+# waiter registration causes an immediate durable recheck instead of a miss.
+
+
+class CommandWaitNotifier:
+    """Wake async command polls without retaining a request worker thread."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._generations: dict[str, int] = {}
+        self._next_waiter_id = 0
+        self._waiters: dict[int, tuple[str, asyncio.AbstractEventLoop, asyncio.Event]] = {}
+        self._active_waits = 0
+        self._max_active_waits = 0
+        self._wake_count = 0
+        self._timeout_count = 0
+
+    def generation(self, gateway_id: str) -> int:
+        with self._lock:
+            return self._generations.get(gateway_id, 0)
+
+    def notify(self, gateway_id: str) -> None:
+        """Notify only the affected gateway after its durable state commit."""
+        with self._lock:
+            self._generations[gateway_id] = self._generations.get(gateway_id, 0) + 1
+            waiters = tuple(waiter for waiter in self._waiters.values() if waiter[0] == gateway_id)
+        for _, loop, event in waiters:
+            try:
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                # A shutting-down test/server loop cannot retain a waiter; the
+                # database remains authoritative for all subsequent polls.
+                pass
+
+    async def wait_after(self, gateway_id: str, generation: int, timeout: float) -> bool:
+        """Await a later notification or timeout without blocking a thread."""
+        event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            if self._generations.get(gateway_id, 0) != generation:
+                return True
+            waiter_id = self._next_waiter_id
+            self._next_waiter_id += 1
+            self._waiters[waiter_id] = (gateway_id, loop, event)
+            self._active_waits += 1
+            self._max_active_waits = max(self._max_active_waits, self._active_waits)
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            with self._lock:
+                self._wake_count += 1
+            return True
+        except TimeoutError:
+            with self._lock:
+                self._timeout_count += 1
+            return False
+        finally:
+            with self._lock:
+                self._waiters.pop(waiter_id, None)
+                self._active_waits -= 1
+
+    def snapshot(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "active_waits": self._active_waits,
+                "max_active_waits": self._max_active_waits,
+                "wake_count": self._wake_count,
+                "timeout_count": self._timeout_count,
+            }
+
+
+command_wait_notifier = CommandWaitNotifier()
 RELAY_CANARY_DURABLE_RECHECK_SECONDS = 10.0
 
 
@@ -269,7 +338,6 @@ def _active_durable_tunnel_request(db: Session, gateway_id: str) -> GatewayTunne
 
 def _set_tunnel_instruction_headers(response: Response, db: Session, gateway_id: str) -> None:
     """Use durable intent only when the relay selector chooses this gateway."""
-    canary_relay = _relay_canary_selected(gateway_id)
     for header in (
         "X-IOT-Tunnel-Lease-Expires-At",
         "X-IOT-Tunnel-Requested",
@@ -277,6 +345,12 @@ def _set_tunnel_instruction_headers(response: Response, db: Session, gateway_id:
     ):
         if header in response.headers:
             del response.headers[header]
+    if settings.gateway_tunnel_websockets_disabled:
+        # A global WebSocket stop means no Agent may use a tunnel lease. Avoid
+        # the durable relay lookup on every jobs/next request while it is set.
+        response.headers["X-IOT-Tunnel-Lease"] = "none"
+        return
+    canary_relay = _relay_canary_selected(gateway_id)
     if canary_relay:
         request = _active_durable_tunnel_request(db, gateway_id)
         expires_at = request.expires_at if request else None
@@ -1535,7 +1609,7 @@ def root() -> RedirectResponse:
 
 
 @app.get("/health")
-def health() -> dict[str, str | None]:
+async def health() -> dict[str, str | None]:
     # Environment identity for humans and tooling (staging vs production).
     # Never include secrets, URLs, tokens, or credentials here.
     return {
@@ -1596,6 +1670,9 @@ def admin_cloud_metrics(
             auth_gate_in_use=tunnel_auth_gate.in_use,
             auth_gate_limit=settings.gateway_tunnel_auth_concurrency,
         ),
+        # Bounded process-wide counters only: this makes idle command-poll
+        # pressure observable without exporting a gateway or request identity.
+        "command_polls": command_wait_notifier.snapshot(),
         "schema": schema_revision_status(engine, auto_create_tables=settings.auto_create_tables).as_dict(),
         "render_metrics_url": (settings.render_metrics_url or "").strip() or None,
     }
@@ -2339,8 +2416,7 @@ async def ui_open_gateway_tunnel(
         request.requested_by = auth.email or auth.auth_type
         request.state = "requested"
         db.commit()
-        with job_wait_condition:
-            job_wait_condition.notify_all()
+        command_wait_notifier.notify(gateway_id)
         return TunnelStatusOut(connected=False, status="opening", expires_at=expires_at, remaining_seconds=max(0, int((expires_at - utc_now()).total_seconds())))
     if not tunnel_allowlist.reserve(
         gateway_id,
@@ -2374,8 +2450,7 @@ async def ui_close_gateway_tunnel(
             await owner_api(settings.iot_tunnel_relay_owner_url, settings.iot_tunnel_relay_owner_secret, "POST", f"/close/{gateway_id}")
         except TunnelOwnerUnavailable:
             pass
-        with job_wait_condition:
-            job_wait_condition.notify_all()
+        command_wait_notifier.notify(gateway_id)
         return TunnelStatusOut(connected=False, status="closed")
     task = _tunnel_expiry_tasks.pop(gateway_id, None)
     if task is not None:
@@ -3195,8 +3270,7 @@ def ui_load_device_points(
     db.add(job)
     db.commit()
     db.refresh(job)
-    with job_wait_condition:
-        job_wait_condition.notify_all()
+    command_wait_notifier.notify(device.gateway_id)
     return job
 
 
@@ -3353,8 +3427,7 @@ def ui_read_saved_points(
         db.add(job)
         job_ids.append(job.job_id)
     db.commit()
-    with job_wait_condition:
-        job_wait_condition.notify_all()
+    command_wait_notifier.notify(gateway_id)
     return SavedPointsReadOut(
         requested_count=len(payload.point_ids),
         queued_count=len(job_ids),
@@ -3796,8 +3869,7 @@ def ui_discover_devices(
     db.add(job)
     db.commit()
     db.refresh(job)
-    with job_wait_condition:
-        job_wait_condition.notify_all()
+    command_wait_notifier.notify(gateway_id)
     return job
 
 
@@ -4118,8 +4190,7 @@ def create_job(
     db.add(job)
     db.commit()
     db.refresh(job)
-    with job_wait_condition:
-        job_wait_condition.notify_all()
+    command_wait_notifier.notify(job.gateway_id)
     return job
 
 
@@ -4490,8 +4561,9 @@ def _claim_next_job_once(gateway_id: str, response: Response) -> EdgeJobClaimOut
                 db.commit()
 
             # Row-level lock with SKIP LOCKED prevents two app workers/instances
-            # from claiming the same job during concurrent polls. SQLite
-            # (dev/tests) ignores FOR UPDATE, preserving single-process behavior.
+            # from selecting the same job during concurrent PostgreSQL polls.
+            # The conditional transition below is retained as a second guard
+            # for every dialect, including SQLite which ignores FOR UPDATE.
             job = db.scalar(
                 select(EdgeJob)
                 .where(EdgeJob.gateway_id == gateway_id, EdgeJob.status == "queued")
@@ -4506,8 +4578,17 @@ def _claim_next_job_once(gateway_id: str, response: Response) -> EdgeJobClaimOut
                 return None
 
             now = utc_now()
-            job.status = "claimed"
-            job.claimed_at = now
+            claimed = db.execute(
+                update(EdgeJob)
+                .where(EdgeJob.id == job.id, EdgeJob.status == "queued")
+                .values(status="claimed", claimed_at=now)
+            )
+            if claimed.rowcount != 1:
+                # Another worker claimed it after our selection. Do not return
+                # the stale in-memory row; the next bounded poll pass reads the
+                # durable queue state again.
+                db.rollback()
+                return None
             if job.job_type == "bacnet_write_batch":
                 commands = list(
                     db.scalars(select(BacnetWriteCommand).where(BacnetWriteCommand.edge_job_id == job.job_id)).all()
@@ -4533,7 +4614,7 @@ def _claim_next_job_once(gateway_id: str, response: Response) -> EdgeJobClaimOut
 
 
 @app.get("/api/edge/{gateway_id}/jobs/next", response_model=EdgeJobClaimOut | None)
-def claim_next_job(
+async def claim_next_job(
     gateway_id: str,
     response: Response,
     wait_seconds: int = Query(default=0, ge=0, le=600),
@@ -4543,20 +4624,27 @@ def claim_next_job(
         raise HTTPException(status_code=403, detail="Gateway credential does not match requested gateway_id")
 
     canary_relay = _relay_canary_selected(gateway_id)
-    job = _claim_next_job_once(gateway_id, response)
+    generation = command_wait_notifier.generation(gateway_id)
+    job = await asyncio.to_thread(_claim_next_job_once, gateway_id, response)
     if job is not None or not wait_seconds:
         return job
 
-    # No SQLAlchemy Session or transaction exists across this wait. Every
-    # condition wake re-enters _claim_next_job_once with a fresh short session.
+    # No SQLAlchemy Session, transaction, or FastAPI sync worker exists across
+    # this wait. Every wake re-enters _claim_next_job_once through a fresh
+    # short thread-bound Session; a missed notification remains safe because
+    # the bounded recheck reads authoritative database state.
     deadline = time.monotonic() + wait_seconds
     while job is None:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        with job_wait_condition:
-            job_wait_condition.wait(timeout=min(remaining, RELAY_CANARY_DURABLE_RECHECK_SECONDS if canary_relay else remaining))
-        job = _claim_next_job_once(gateway_id, response)
+        await command_wait_notifier.wait_after(
+            gateway_id,
+            generation,
+            min(remaining, RELAY_CANARY_DURABLE_RECHECK_SECONDS if canary_relay else remaining),
+        )
+        generation = command_wait_notifier.generation(gateway_id)
+        job = await asyncio.to_thread(_claim_next_job_once, gateway_id, response)
         if canary_relay and response.headers.get("X-IOT-Tunnel-Requested") == "true":
             break
     return job

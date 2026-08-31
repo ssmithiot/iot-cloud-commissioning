@@ -335,6 +335,8 @@ def test_admin_cloud_metrics_exposes_safe_pool_health() -> None:
     assert body["tunnels"]["duplicate_replacements_total"] == 0
     assert "auth_duration_avg_ms" in body["tunnels"]
     assert "db_checkout_wait_avg_ms" in body["tunnels"]
+    assert set(body["command_polls"]) == {"active_waits", "max_active_waits", "wake_count", "timeout_count"}
+    assert body["command_polls"]["active_waits"] == 0
     assert "database_url" not in body
 
 
@@ -1748,7 +1750,7 @@ def test_relay_canary_connected_poll_still_wakes_for_edge_job(monkeypatch: pytes
 
 
 def test_jobs_next_wait_has_no_open_claim_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The long-poll Condition must run after its short claim Session closes."""
+    """The long-poll async wait starts only after its short claim Session closes."""
     from app import auth as auth_module
 
     raw_token = create_gateway_token("GW001")
@@ -1769,20 +1771,20 @@ def test_jobs_next_wait_has_no_open_claim_session(monkeypatch: pytest.MonkeyPatc
             return self._inner.__exit__(*args)
 
     class WaitProbe:
-        def __enter__(self):
-            return self
+        def generation(self, gateway_id: str) -> int:
+            assert gateway_id == "GW001"
+            return 0
 
-        def __exit__(self, *args) -> None:
-            return None
-
-        def wait(self, timeout: float | None = None) -> bool:
+        async def wait_after(self, gateway_id: str, generation: int, timeout: float) -> bool:
+            assert gateway_id == "GW001"
+            assert generation == 0
             observations.append(state["active_sessions"] == 0)
             state["clock"] = 1.0
             return False
 
     monkeypatch.setattr(main_module, "SessionLocal", TrackedSession)
     monkeypatch.setattr(auth_module, "SessionLocal", TrackedSession)
-    monkeypatch.setattr(main_module, "job_wait_condition", WaitProbe())
+    monkeypatch.setattr(main_module, "command_wait_notifier", WaitProbe())
     monkeypatch.setattr(main_module.time, "monotonic", lambda: state["clock"])
 
     response = client.get("/api/edge/GW001/jobs/next?wait_seconds=1", headers=auth_headers(raw_token))
@@ -1817,6 +1819,175 @@ def test_heartbeats_remain_responsive_while_multiple_jobs_polls_wait() -> None:
     assert heartbeat.status_code == 200
     assert heartbeat_elapsed < 0.5
     assert all(result.status_code == 200 and result.json() is None for result in poll_results)
+
+
+def test_idle_fleet_long_polls_do_not_starve_health_or_hold_db_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exceed the usual sync-worker capacity while all command waits are idle."""
+    gateway_count = 48
+    monkeypatch.setattr(main_module.settings, "gateway_tunnel_websockets_disabled", True)
+    tokens = [create_gateway_token(f"GW{index:03d}") for index in range(1, gateway_count + 1)]
+    with ThreadPoolExecutor(max_workers=gateway_count) as executor:
+        polls = [
+            executor.submit(
+                client.get,
+                f"/api/edge/GW{index:03d}/jobs/next?wait_seconds=1",
+                headers=auth_headers(token),
+            )
+            for index, token in enumerate(tokens, start=1)
+        ]
+        deadline = time.monotonic() + 0.75
+        while main_module.command_wait_notifier.snapshot()["active_waits"] < gateway_count and time.monotonic() < deadline:
+            time.sleep(0.01)
+        wait_snapshot = main_module.command_wait_notifier.snapshot()
+        health_started = time.monotonic()
+        health = client.get("/health")
+        db_health = client.get("/health/db")
+        schema_health = client.get("/health/schema")
+        health_elapsed = time.monotonic() - health_started
+        pool = engine.pool
+        pool_snapshot = {
+            "checked_out": int(getattr(pool, "checkedout", lambda: 0)()),
+            "idle": int(getattr(pool, "checkedin", lambda: 0)()),
+            "overflow": int(getattr(pool, "overflow", lambda: 0)()),
+            "pool_size": int(getattr(pool, "size", lambda: 0)()),
+            "max_overflow": main_module.settings.db_max_overflow,
+        }
+        results = [poll.result(timeout=2) for poll in polls]
+
+    assert wait_snapshot["active_waits"] >= gateway_count
+    assert health.status_code == db_health.status_code == schema_health.status_code == 200
+    assert health_elapsed < 0.75
+    assert pool_snapshot["checked_out"] == 0
+    assert pool_snapshot["idle"] >= 0
+    assert pool_snapshot["overflow"] <= pool_snapshot["max_overflow"]
+    assert all(result.status_code == 200 and result.json() is None for result in results)
+
+
+def test_missed_command_wake_is_rechecked_against_authoritative_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw_token = create_gateway_token("GW001")
+    original_notify = main_module.command_wait_notifier.notify
+    monkeypatch.setattr(main_module.command_wait_notifier, "notify", lambda *_args: None)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            waiting = executor.submit(client.get, "/api/edge/GW001/jobs/next?wait_seconds=1", headers=auth_headers(raw_token))
+            time.sleep(0.1)
+            created = client.post(
+                "/api/edge/jobs",
+                headers=admin_headers(),
+                json={"gateway_id": "GW001", "job_type": "echo", "request": {"message": "durable-recheck"}},
+            )
+            response = waiting.result(timeout=2)
+    finally:
+        monkeypatch.setattr(main_module.command_wait_notifier, "notify", original_notify)
+
+    assert created.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["job_id"] == created.json()["job_id"]
+
+
+def test_job_wake_rechecks_only_the_affected_gateway() -> None:
+    gw001_token = create_gateway_token("GW001")
+    gw002_token = create_gateway_token("GW002")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        gw001_poll = executor.submit(
+            client.get,
+            "/api/edge/GW001/jobs/next?wait_seconds=2",
+            headers=auth_headers(gw001_token),
+        )
+        gw002_poll = executor.submit(
+            client.get,
+            "/api/edge/GW002/jobs/next?wait_seconds=2",
+            headers=auth_headers(gw002_token),
+        )
+        deadline = time.monotonic() + 0.75
+        while main_module.command_wait_notifier.snapshot()["active_waits"] < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        created = client.post(
+            "/api/edge/jobs",
+            headers=admin_headers(),
+            json={"gateway_id": "GW001", "job_type": "echo", "request": {"message": "targeted-wake"}},
+        )
+        gw001_response = gw001_poll.result(timeout=1)
+        assert gw002_poll.done() is False
+        gw002_response = gw002_poll.result(timeout=3)
+
+    assert created.status_code == 200
+    assert gw001_response.status_code == 200
+    assert gw001_response.json()["job_id"] == created.json()["job_id"]
+    assert gw002_response.status_code == 200
+    assert gw002_response.json() is None
+
+
+def test_tunnel_disable_skips_durable_tunnel_lookup_on_command_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module.settings, "gateway_tunnel_websockets_disabled", True)
+    raw_token = create_gateway_token("GW017", token_prefix="gw01701")
+    _create_active_relay_canary_request("GW017")
+    monkeypatch.setattr(
+        main_module,
+        "_active_durable_tunnel_request",
+        lambda *_args, **_kwargs: pytest.fail("disabled tunnel polls must not query durable tunnel state"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "owner_connection_state",
+        lambda *_args, **_kwargs: pytest.fail("disabled tunnel polls must not query owner state"),
+    )
+
+    response = client.get("/api/edge/GW017/jobs/next", headers=auth_headers(raw_token))
+
+    assert response.status_code == 200
+    assert response.headers["X-IOT-Tunnel-Lease"] == "none"
+    assert "X-IOT-Tunnel-Requested" not in response.headers
+
+
+def test_current_agent_six_hundred_second_command_wait_is_one_bounded_async_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the deployed Agent protocol without making this test wait ten minutes."""
+    raw_token = create_gateway_token("GW001")
+    state = {"clock": 0.0, "timeouts": []}
+
+    class ControlledNotifier:
+        def generation(self, gateway_id: str) -> int:
+            assert gateway_id == "GW001"
+            return 0
+
+        async def wait_after(self, gateway_id: str, generation: int, timeout: float) -> bool:
+            assert gateway_id == "GW001"
+            assert generation == 0
+            state["timeouts"].append(timeout)
+            state["clock"] = 600.0
+            return False
+
+    monkeypatch.setattr(main_module, "command_wait_notifier", ControlledNotifier())
+    monkeypatch.setattr(main_module.time, "monotonic", lambda: state["clock"])
+
+    response = client.get("/api/edge/GW001/jobs/next?wait_seconds=600", headers=auth_headers(raw_token))
+
+    assert response.status_code == 200
+    assert response.json() is None
+    assert state["timeouts"] == [600]
+
+
+def test_competing_command_polls_claim_a_queued_job_only_once() -> None:
+    raw_token = create_gateway_token("GW001")
+    created = client.post(
+        "/api/edge/jobs",
+        headers=admin_headers(),
+        json={"gateway_id": "GW001", "job_type": "echo", "request": {"message": "only-once"}},
+    )
+    assert created.status_code == 200
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        polls = [
+            executor.submit(client.get, "/api/edge/GW001/jobs/next", headers=auth_headers(raw_token))
+            for _ in range(2)
+        ]
+        responses = [poll.result(timeout=2) for poll in polls]
+
+    assert all(response.status_code == 200 for response in responses)
+    claimed_job_ids = [response.json()["job_id"] for response in responses if response.json() is not None]
+    assert claimed_job_ids == [created.json()["job_id"]]
 
 
 @pytest.mark.parametrize(
