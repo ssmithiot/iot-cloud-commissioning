@@ -423,6 +423,25 @@ def test_pre_final_timeout_remains_a_failed_gateway_update(monkeypatch):
             dev.JOBS.pop(job_id, None)
 
 
+def test_pre_final_failure_report_timeout_does_not_mask_the_gateway_failure(monkeypatch, capsys):
+    claimed = claimed_cloud_update()
+    claimed.pop("target_ui_commit")
+
+    def fake_cloud(_url, _token, path, **_kwargs):
+        if path.endswith("/claim"):
+            return claimed
+        raise TimeoutError("The read operation timed out")
+
+    monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
+    monkeypatch.setattr(dev, "materialize_ui_artifact", lambda *_args, **_kwargs: pytest.fail("missing claimed UI commit must fail first"))
+    monkeypatch.setattr(dev, "start_job", lambda _request: pytest.fail("pre-final failure must not start gateway work"))
+
+    assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "failed"
+    output = capsys.readouterr().out
+    assert "Cloud failure-report warning for GW004" in output
+    assert "pre-final gateway failure remains failed" in output
+
+
 @pytest.mark.parametrize("final_error", ("agent service inactive", "UI down", "final verification failed"))
 def test_failure_before_final_verification_remains_failed(monkeypatch, final_error):
     claimed = claimed_cloud_update("agent")
@@ -478,6 +497,103 @@ def test_worker_immediately_advances_after_completed_post_final_warning(monkeypa
             assert dev.WORKER_STATUS["state"] == "polling"
             assert dev.WORKER_STATUS["last_error"] is None
         assert completed_request_ids == ["request-1", "request-2"]
+    finally:
+        with dev.WORKER_STATUS_LOCK:
+            dev.WORKER_STATUS.clear()
+            dev.WORKER_STATUS.update(original_status)
+
+
+def test_cloud_queue_read_timeout_warns_and_backs_off_without_starting_a_gateway(monkeypatch, capsys):
+    class StopWorker(Exception):
+        pass
+
+    original_status = dict(dev.WORKER_STATUS)
+    calls = {"cloud": 0, "gateway": 0}
+    sleeps: list[float] = []
+    monkeypatch.setenv("IOT_EDGE_UPDATE_HALT_AFTER_FAILURES", "1")
+    monkeypatch.setattr(dev, "load_env_defaults", cloud_queue_defaults)
+
+    def timeout_cloud(*_args, **_kwargs):
+        calls["cloud"] += 1
+        raise TimeoutError("The read operation timed out")
+
+    def no_gateway_work(*_args, **_kwargs):
+        calls["gateway"] += 1
+        pytest.fail("claim/read timeout must not start or fail a gateway")
+
+    def record_backoff(seconds: float) -> None:
+        sleeps.append(seconds)
+        raise StopWorker()
+
+    monkeypatch.setattr(dev, "cloud_json_request", timeout_cloud)
+    monkeypatch.setattr(dev, "run_queued_gateway_update", no_gateway_work)
+    monkeypatch.setattr(dev.time, "sleep", record_backoff)
+    with dev.WORKER_STATUS_LOCK:
+        dev.WORKER_STATUS.update({"state": "starting", "last_poll_at": None, "last_success_at": None, "last_error": None})
+    try:
+        with pytest.raises(StopWorker):
+            dev.gateway_update_worker()
+        with dev.WORKER_STATUS_LOCK:
+            assert dev.WORKER_STATUS["state"] == "backing off"
+            assert dev.WORKER_STATUS["last_error"] == "Cloud claim/read timeout; backing off for 30 seconds"
+        assert calls == {"cloud": 1, "gateway": 0}
+        assert sleeps == [30]
+    finally:
+        with dev.WORKER_STATUS_LOCK:
+            dev.WORKER_STATUS.clear()
+            dev.WORKER_STATUS.update(original_status)
+
+    output = capsys.readouterr().out
+    assert "Cloud claim/read timeout; backing off for 30 seconds" in output
+    assert "Cloud update worker error" not in output
+
+
+def test_cloud_claim_timeout_is_transient_before_gateway_work(monkeypatch):
+    defaults = cloud_queue_defaults()
+    monkeypatch.setattr(dev, "cloud_json_request", lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("read timed out")))
+    monkeypatch.setattr(dev, "start_job", lambda _request: pytest.fail("claim timeout must not start a gateway"))
+
+    with pytest.raises(dev.CloudClaimReadTimeout):
+        dev.run_queued_gateway_update({"request_id": "request-1"}, defaults)
+
+
+def test_cloud_worker_backoff_is_bounded_and_resets_after_successful_gateway_update(monkeypatch):
+    class StopWorker(Exception):
+        pass
+
+    original_status = dict(dev.WORKER_STATUS)
+    attempts = iter(("timeout", "gateway", "timeout"))
+    sleeps: list[float] = []
+    completed_request_ids: list[str] = []
+    monkeypatch.setenv("IOT_EDGE_UPDATE_POLL_SECONDS", "5")
+    monkeypatch.setattr(dev, "load_env_defaults", cloud_queue_defaults)
+
+    def cloud_queue(*_args, **_kwargs):
+        attempt = next(attempts)
+        if attempt == "timeout":
+            raise TimeoutError("The read operation timed out")
+        return [{"request_id": "request-1"}]
+
+    def completed_gateway(update, _defaults):
+        completed_request_ids.append(str(update["request_id"]))
+        return "completed"
+
+    def record_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if sleeps == [30, 5, 30]:
+            raise StopWorker()
+
+    monkeypatch.setattr(dev, "cloud_json_request", cloud_queue)
+    monkeypatch.setattr(dev, "run_queued_gateway_update", completed_gateway)
+    monkeypatch.setattr(dev.time, "sleep", record_sleep)
+    with dev.WORKER_STATUS_LOCK:
+        dev.WORKER_STATUS.update({"state": "starting", "last_poll_at": None, "last_success_at": None, "last_error": None})
+    try:
+        with pytest.raises(StopWorker):
+            dev.gateway_update_worker()
+        assert completed_request_ids == ["request-1"]
+        assert sleeps == [30, 5, 30]
+        assert [dev.cloud_worker_backoff_seconds(count) for count in range(1, 7)] == [30, 60, 120, 240, 300, 300]
     finally:
         with dev.WORKER_STATUS_LOCK:
             dev.WORKER_STATUS.clear()

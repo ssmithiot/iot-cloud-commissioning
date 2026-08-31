@@ -114,6 +114,8 @@ STANDARD_REAL_RUN_PHASE_SETS = (
     TARGETED_AGENT_ONLY_PHASES,
     UI_ONLY_PHASES,
 )
+CLOUD_WORKER_BACKOFF_INITIAL_SECONDS = 30
+CLOUD_WORKER_BACKOFF_MAX_SECONDS = 300
 
 
 class PhaseStatus(str, Enum):
@@ -421,6 +423,25 @@ def claimed_update_phases(claimed: dict[str, object]) -> tuple[int, ...]:
     raise ValueError(f"Claimed Cloud job has unsupported update_scope {scope!r}; refusing execution")
 
 
+class CloudClaimReadTimeout(RuntimeError):
+    """A transient Cloud queue read/claim timeout before gateway work starts."""
+
+
+def is_cloud_timeout(exc: BaseException) -> bool:
+    """Recognize direct and urllib-wrapped Cloud timeout failures."""
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, urllib_error.URLError):
+        return is_cloud_timeout(exc.reason) if isinstance(exc.reason, BaseException) else "timed out" in str(exc.reason).lower()
+    return "timed out" in str(exc).lower()
+
+
+def cloud_worker_backoff_seconds(consecutive_timeouts: int) -> int:
+    """Return the bounded exponential delay for one or more Cloud timeouts."""
+    exponent = max(0, consecutive_timeouts - 1)
+    return min(CLOUD_WORKER_BACKOFF_MAX_SECONDS, CLOUD_WORKER_BACKOFF_INITIAL_SECONDS * (2 ** exponent))
+
+
 def _report_post_final_cloud_completion(
     cloud_url: str,
     admin_api_token: str,
@@ -471,6 +492,30 @@ def schedule_post_final_cloud_completion(
         )
 
 
+def report_pre_final_cloud_failure(
+    cloud_url: str,
+    admin_api_token: str,
+    request_id: str,
+    gateway_id: str,
+    error_message: str,
+) -> None:
+    """Report a real pre-final failure without letting a report timeout mask it."""
+    try:
+        cloud_json_request(
+            cloud_url,
+            admin_api_token,
+            f"/api/admin/gateway-updates/{request_id}/complete",
+            method="POST",
+            body={"status": "failed", "error_message": error_message[:1000]},
+        )
+    except (urllib_error.HTTPError, urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
+        print(
+            f"Cloud failure-report warning for {gateway_id}: "
+            f"{type(exc).__name__}: {exc}; pre-final gateway failure remains failed",
+            flush=True,
+        )
+
+
 def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str]) -> str | None:
     """Process one queued update. Returns 'completed', 'failed', or None when
     the request could not be claimed (not a gateway outcome)."""
@@ -489,7 +534,9 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
             f"/api/admin/gateway-updates/{request_id}/claim",
             method="POST",
         )
-    except (urllib_error.HTTPError, urllib_error.URLError, ValueError):
+    except (urllib_error.HTTPError, urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
+        if is_cloud_timeout(exc):
+            raise CloudClaimReadTimeout("Cloud claim/read timeout before gateway work starts") from exc
         return None
 
     if not isinstance(claimed, dict):
@@ -517,12 +564,12 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
             "target_ui_version" if ui_phases_selected(selected_phases) else "target_agent_version",
         )
     except (ValueError, UIArtifactError) as exc:
-        cloud_json_request(
+        report_pre_final_cloud_failure(
             cloud_url,
             admin_api_token,
-            f"/api/admin/gateway-updates/{request_id}/complete",
-            method="POST",
-            body={"status": "failed", "error_message": str(exc)[:1000]},
+            request_id,
+            str(claimed.get("gateway_id") or "unknown"),
+            str(exc),
         )
         return "failed"
     request = UpgradeRequest(
@@ -555,12 +602,12 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
         ui_artifact_sha256=artifact_sha256,
     )
     if not request.cradlepoint_host:
-        cloud_json_request(
+        report_pre_final_cloud_failure(
             cloud_url,
             admin_api_token,
-            f"/api/admin/gateway-updates/{request_id}/complete",
-            method="POST",
-            body={"status": "failed", "error_message": "No Cradlepoint host is configured for this gateway."},
+            request_id,
+            request.gateway_id,
+            "No Cradlepoint host is configured for this gateway.",
         )
         return "failed"
 
@@ -601,6 +648,7 @@ def gateway_update_worker() -> None:
     poll_seconds = max(5, int(os.environ.get("IOT_EDGE_UPDATE_POLL_SECONDS", "10")))
     halt_after = max(1, int(os.environ.get("IOT_EDGE_UPDATE_HALT_AFTER_FAILURES", "2")))
     consecutive_failures = 0
+    consecutive_cloud_timeouts = 0
     halted = False
     while True:
         with WORKER_STATUS_LOCK:
@@ -619,11 +667,21 @@ def gateway_update_worker() -> None:
             if not token:
                 raise RuntimeError("IOT_ADMIN_API_TOKEN is not configured")
             cloud_url = os.environ.get("IOT_CLOUD_API_URL", DEFAULT_CLOUD_URL).rstrip("/")
-            updates = cloud_json_request(cloud_url, token, "/api/admin/gateway-updates?status_filter=queued&limit=10")
+            try:
+                updates = cloud_json_request(cloud_url, token, "/api/admin/gateway-updates?status_filter=queued&limit=10")
+            except (urllib_error.HTTPError, urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
+                if is_cloud_timeout(exc):
+                    raise CloudClaimReadTimeout("Cloud claim/read timeout before gateway work starts") from exc
+                raise
             if isinstance(updates, list):
                 for update in updates:
                     if isinstance(update, dict):
                         outcome = run_queued_gateway_update(update, defaults)
+                        # Any non-None outcome required a successful Cloud
+                        # claim. Reset only Cloud-read backoff; a genuine
+                        # gateway failure still uses its separate guard below.
+                        if outcome is not None:
+                            consecutive_cloud_timeouts = 0
                         if outcome == "failed":
                             consecutive_failures += 1
                             if consecutive_failures >= halt_after:
@@ -639,11 +697,24 @@ def gateway_update_worker() -> None:
                                 break
                         elif outcome == "completed":
                             consecutive_failures = 0
+                            consecutive_cloud_timeouts = 0
             if not halted:
                 with WORKER_STATUS_LOCK:
                     WORKER_STATUS["state"] = "polling"
                     WORKER_STATUS["last_success_at"] = datetime.now(timezone.utc).isoformat()
                     WORKER_STATUS["last_error"] = None
+                if not isinstance(updates, list) or not updates:
+                    consecutive_cloud_timeouts = 0
+        except CloudClaimReadTimeout:
+            consecutive_cloud_timeouts += 1
+            delay = cloud_worker_backoff_seconds(consecutive_cloud_timeouts)
+            message = f"Cloud claim/read timeout; backing off for {delay} seconds"
+            with WORKER_STATUS_LOCK:
+                WORKER_STATUS["state"] = "backing off"
+                WORKER_STATUS["last_error"] = message
+            print(message, flush=True)
+            time.sleep(delay)
+            continue
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             with WORKER_STATUS_LOCK:
