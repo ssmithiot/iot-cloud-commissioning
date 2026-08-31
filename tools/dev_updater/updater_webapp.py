@@ -421,6 +421,56 @@ def claimed_update_phases(claimed: dict[str, object]) -> tuple[int, ...]:
     raise ValueError(f"Claimed Cloud job has unsupported update_scope {scope!r}; refusing execution")
 
 
+def _report_post_final_cloud_completion(
+    cloud_url: str,
+    admin_api_token: str,
+    request_id: str,
+    gateway_id: str,
+) -> None:
+    """Best-effort Cloud completion after strict local final verification.
+
+    The updater has already persisted the local final report and marked the
+    job complete before this runs.  A Cloud read/write timeout is useful
+    telemetry, but cannot retroactively fail or stall that completed gateway.
+    """
+    try:
+        cloud_json_request(
+            cloud_url,
+            admin_api_token,
+            f"/api/admin/gateway-updates/{request_id}/complete",
+            method="POST",
+            body={"status": "completed"},
+        )
+    except (urllib_error.HTTPError, urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
+        print(
+            f"Post-final Cloud completion warning for {gateway_id}: "
+            f"{type(exc).__name__}: {exc}; final verification remains successful",
+            flush=True,
+        )
+
+
+def schedule_post_final_cloud_completion(
+    cloud_url: str,
+    admin_api_token: str,
+    request_id: str,
+    gateway_id: str,
+) -> None:
+    """Never let a post-final Cloud call hold the selected-gateway queue."""
+    try:
+        threading.Thread(
+            target=_report_post_final_cloud_completion,
+            args=(cloud_url, admin_api_token, request_id, gateway_id),
+            name=f"cloud-complete-{gateway_id}",
+            daemon=True,
+        ).start()
+    except RuntimeError as exc:
+        print(
+            f"Post-final Cloud completion warning for {gateway_id}: "
+            f"{type(exc).__name__}: {exc}; final verification remains successful",
+            flush=True,
+        )
+
+
 def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str]) -> str | None:
     """Process one queued update. Returns 'completed', 'failed', or None when
     the request could not be claimed (not a gateway outcome)."""
@@ -526,17 +576,23 @@ def run_queued_gateway_update(update: dict[str, object], defaults: dict[str, str
                 result["error_message"] = error[:1000]
             # A successful (complete) job has persisted its final report and
             # passed strict Final verification.  That is terminal success: no
-            # post-final heartbeat wait, retry, or timeout gate is permitted.
-            try:
-                cloud_json_request(
-                    cloud_url,
-                    admin_api_token,
-                    f"/api/admin/gateway-updates/{request_id}/complete",
-                    method="POST",
-                    body=result,
+            # post-final heartbeat, Cloud read, or completion timeout may
+            # block this queue. Cloud completion is reported asynchronously.
+            if status == "complete":
+                schedule_post_final_cloud_completion(
+                    cloud_url, admin_api_token, request_id, request.gateway_id
                 )
-            except (urllib_error.HTTPError, urllib_error.URLError, ValueError):
-                pass
+            else:
+                try:
+                    cloud_json_request(
+                        cloud_url,
+                        admin_api_token,
+                        f"/api/admin/gateway-updates/{request_id}/complete",
+                        method="POST",
+                        body=result,
+                    )
+                except (urllib_error.HTTPError, urllib_error.URLError, TimeoutError, OSError, ValueError):
+                    pass
             return result["status"]
         time.sleep(2)
 

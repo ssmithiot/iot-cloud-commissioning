@@ -8,6 +8,7 @@ import socket
 import subprocess
 import tarfile
 import textwrap
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -306,7 +307,7 @@ def test_final_verification_success_completes_without_post_final_heartbeat_work(
     claimed = claimed_cloud_update("agent")
     claimed.pop("target_ui_commit")
     claimed.pop("target_ui_version")
-    completed: list[dict[str, object]] = []
+    scheduled: list[tuple[object, ...]] = []
     job_id = "terminal-final-verification-test"
 
     def fake_cloud(_url, _token, path, **kwargs):
@@ -314,8 +315,7 @@ def test_final_verification_success_completes_without_post_final_heartbeat_work(
             return claimed
         if "/api/ui/gateways/" in path:
             pytest.fail(f"post-final {heartbeat_state} heartbeat check must not execute")
-        completed.append(kwargs["body"])
-        return {"ok": True}
+        pytest.fail("completed Final verification must not synchronously call Cloud")
 
     def fake_start(request):
         with dev.JOBS_LOCK:
@@ -328,14 +328,96 @@ def test_final_verification_success_completes_without_post_final_heartbeat_work(
     monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
     monkeypatch.setattr(dev, "read_agent_version_from_source", lambda _commit, **_kwargs: "0.2.3")
     monkeypatch.setattr(dev, "start_job", fake_start)
+    monkeypatch.setattr(
+        dev,
+        "schedule_post_final_cloud_completion",
+        lambda *args: scheduled.append(args),
+    )
     monkeypatch.setattr(dev.time, "sleep", lambda _seconds: pytest.fail("completed Final verification must not sleep"))
     try:
         assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "completed"
         with dev.JOBS_LOCK:
             job = dev.JOBS[job_id]
-        assert completed == [{"status": "completed"}]
+        assert scheduled == [("https://iot-cloud-api-dev.onrender.com", "admin-token", "request-1", "GW004")]
         assert job.summary["Final verification"] == "Passed"
         assert "Phase passed: Final verification" in job.log
+    finally:
+        with dev.JOBS_LOCK:
+            dev.JOBS.pop(job_id, None)
+
+
+def test_post_final_cloud_timeout_is_warning_and_does_not_hold_completed_gateway(monkeypatch, capsys):
+    claimed = claimed_cloud_update("agent")
+    claimed.pop("target_ui_commit")
+    claimed.pop("target_ui_version")
+    job_id = "post-final-cloud-timeout-test"
+    completion_started = threading.Event()
+    release_completion = threading.Event()
+    completion_finished = threading.Event()
+
+    def fake_cloud(_url, _token, path, **_kwargs):
+        if path.endswith("/claim"):
+            return claimed
+        completion_started.set()
+        assert release_completion.wait(timeout=1), "test must release the post-final reporter"
+        completion_finished.set()
+        raise TimeoutError("The read operation timed out")
+
+    def fake_start(request):
+        with dev.JOBS_LOCK:
+            job = dev.UpgradeJob(request=request, status="complete")
+            job.summary["Final verification"] = "Passed"
+            job.log = "Final verification report persisted\nPhase passed: Final verification\n"
+            dev.JOBS[job_id] = job
+        return job_id
+
+    monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
+    monkeypatch.setattr(dev, "read_agent_version_from_source", lambda _commit, **_kwargs: "0.2.3")
+    monkeypatch.setattr(dev, "start_job", fake_start)
+    try:
+        assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "completed"
+        assert completion_started.wait(timeout=0.5)
+        assert not completion_finished.is_set(), "queue must not wait for post-final Cloud completion"
+        release_completion.set()
+        assert completion_finished.wait(timeout=0.5)
+    finally:
+        release_completion.set()
+        with dev.JOBS_LOCK:
+            dev.JOBS.pop(job_id, None)
+
+    output = capsys.readouterr().out
+    assert "Post-final Cloud completion warning for GW004" in output
+    assert "TimeoutError: The read operation timed out" in output
+
+
+def test_pre_final_timeout_remains_a_failed_gateway_update(monkeypatch):
+    claimed = claimed_cloud_update("agent")
+    claimed.pop("target_ui_commit")
+    claimed.pop("target_ui_version")
+    completed: list[dict[str, object]] = []
+    job_id = "pre-final-timeout-test"
+
+    def fake_cloud(_url, _token, path, **kwargs):
+        if path.endswith("/claim"):
+            return claimed
+        completed.append(kwargs["body"])
+        return {"ok": True}
+
+    def fake_start(request):
+        with dev.JOBS_LOCK:
+            dev.JOBS[job_id] = dev.UpgradeJob(
+                request=request,
+                status="failed",
+                error="TimeoutError: pre-final SSH/read operation timed out",
+            )
+        return job_id
+
+    monkeypatch.setattr(dev, "cloud_json_request", fake_cloud)
+    monkeypatch.setattr(dev, "read_agent_version_from_source", lambda _commit, **_kwargs: "0.2.3")
+    monkeypatch.setattr(dev, "start_job", fake_start)
+    try:
+        assert dev.run_queued_gateway_update({"request_id": "request-1"}, cloud_queue_defaults()) == "failed"
+        assert completed == [{"status": "failed", "error_message": "TimeoutError: pre-final SSH/read operation timed out"}]
     finally:
         with dev.JOBS_LOCK:
             dev.JOBS.pop(job_id, None)
@@ -371,7 +453,7 @@ def test_failure_before_final_verification_remains_failed(monkeypatch, final_err
             dev.JOBS.pop(job_id, None)
 
 
-def test_worker_immediately_advances_after_completed_final_verification(monkeypatch):
+def test_worker_immediately_advances_after_completed_post_final_warning(monkeypatch):
     class StopWorker(Exception):
         pass
 
