@@ -701,11 +701,11 @@ def _version_at_least(actual: str | None, required: str) -> tuple[bool, bool]:
 
 def _gateway_release_status(agent_version: str | None, ui_version: str | None) -> dict[str, object]:
     approved_version = _approved_release_version()
-    agent_current, agent_known = _version_at_least(agent_version, approved_version)
-    ui_current, ui_known = _version_at_least(ui_version, approved_version)
+    agent_current = (agent_version or "").strip() == approved_version
+    ui_current = (ui_version or "").strip() == approved_version
     # The normal operator status intentionally answers one question only.
     # Component commits and transition details remain diagnostics, not UI text.
-    current = agent_current and ui_current
+    current = agent_current or ui_current
     reason = approved_version if current else "Update Needed"
     return {
         "gateway_release_status": reason,

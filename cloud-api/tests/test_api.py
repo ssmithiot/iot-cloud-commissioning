@@ -1081,12 +1081,12 @@ def test_gateway_update_explicit_ui_only_recovery_remains_available() -> None:
     [
         ("0.2.0", "0.2.0", "0.2.0", False),
         ("0.2.0", "current", "0.2.0", False),
-        ("0.2.0", "0.1.9", "Update Needed", True),
-        ("0.1.9", "0.2.0", "Update Needed", True),
+        ("0.2.0", "0.1.9", "0.2.0", False),
+        ("0.1.9", "0.2.0", "0.2.0", False),
         ("0.1.9", "0.1.9", "Update Needed", True),
         ("0.1.7", "0.1.7", "Update Needed", True),
-        ("", "0.2.0", "Update Needed", True),
-        ("0.2.0", "", "Update Needed", True),
+        ("", "0.2.0", "0.2.0", False),
+        ("0.2.0", "", "0.2.0", False),
     ],
 )
 def test_gateway_release_status_is_consistent_on_dashboard_refresh(
@@ -1117,6 +1117,41 @@ def test_gateway_release_status_is_consistent_on_dashboard_refresh(
         assert gateway["gateway_release_status"] == expected_status
         assert gateway["gateway_release_reason"] == expected_status
         assert gateway["gateway_update_required"] is update_required
+
+
+@pytest.mark.parametrize(
+    ("agent_version", "ui_version", "expected_status", "update_required"),
+    [
+        ("0.2.4", "current", "0.2.4", False),
+        ("0.2.3", "0.2.4", "0.2.4", False),
+        ("0.2.3", "0.2.3", "Update Needed", True),
+        ("0.2.3", "current", "Update Needed", True),
+        ("", "0.2.4", "0.2.4", False),
+    ],
+)
+def test_gateway_release_status_accepts_either_current_edge_component_version(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_version: str,
+    ui_version: str,
+    expected_status: str,
+    update_required: bool,
+) -> None:
+    monkeypatch.setattr(main_module.settings, "edge_release_version", "0.2.4")
+    create_gateway_token("GW001")
+    with SessionLocal() as db:
+        edge_node = db.scalar(select(EdgeNode).where(EdgeNode.gateway_id == "GW001"))
+        assert edge_node is not None
+        edge_node.agent_version = agent_version
+        edge_node.ui_version = ui_version
+        db.commit()
+
+    gateway = client.get("/api/ui/gateways", headers=admin_headers()).json()[0]
+
+    assert gateway["required_agent_version"] == "0.2.4"
+    assert gateway["required_ui_version"] == "0.2.4"
+    assert gateway["gateway_release_status"] == expected_status
+    assert gateway["gateway_release_reason"] == expected_status
+    assert gateway["gateway_update_required"] is update_required
 
 
 @pytest.mark.parametrize(
