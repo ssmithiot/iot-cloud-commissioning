@@ -54,8 +54,10 @@ DEFAULT_RELEASE_DEFINITION = load_manifest(Path(DEFAULT_RELEASE_MANIFEST))
 DEFAULT_EDGE_UPDATE_REF = DEFAULT_RELEASE_DEFINITION.agent_source_commit
 DEFAULT_EDGE_RELEASE = DEFAULT_RELEASE_DEFINITION.edge_release
 DEFAULT_EDGE_UI_COMMIT = DEFAULT_RELEASE_DEFINITION.edge_ui_tag
-DEFAULT_EDGE_UI_INPUT = "0bab9442c4f736312d41bdeab08b3ef2d8141db0"
-DEFAULT_EDGE_AGENT_INPUT = "40133f2a81390db92a01b33a9c02c48a07363a7e"
+# Development authorities are immutable inputs.  The Agent remains fail-closed
+# unless IOT_EDGE_DEV_AGENT_COMMIT is explicitly configured at launch.
+DEFAULT_EDGE_UI_INPUT = "141de85c5cc6baae045778e61f621fba5e398ef6"
+DEFAULT_EDGE_AGENT_INPUT = "d9232758b93fc9954a64235be918724df08238de"
 DEFAULT_EDGE_UI_DATA_DIR = "/home/swadmin/edge-bacnet-ui-v2/data"
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_UI_ARTIFACT_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.tar.gz"
@@ -126,6 +128,29 @@ class PhaseStatus(str, Enum):
     SKIPPED = "Skipped"
 
 
+class TargetState(str, Enum):
+    """The only deployment modes supported by the unified updater."""
+
+    EXISTING_EDGE = "EXISTING_EDGE"
+    PARTIAL_EDGE = "PARTIAL_EDGE"
+    FRESH_LINUX = "FRESH_LINUX"
+
+
+def classify_target_state(inspect_output: str) -> TargetState:
+    """Classify from probe markers, never from hostnames or supplied versions."""
+    values = dict(
+        line.split("=", 1) for line in inspect_output.splitlines() if line.startswith("IOT_EDGE_PROBE_") and "=" in line
+    )
+    ui = values.get("IOT_EDGE_PROBE_UI_DIR") == "yes"
+    agent = values.get("IOT_EDGE_PROBE_AGENT_CONFIG") == "yes" or values.get("IOT_EDGE_PROBE_AGENT_SERVICE") == "yes"
+    repo = values.get("IOT_EDGE_PROBE_REPO") == "yes"
+    if ui and agent:
+        return TargetState.EXISTING_EDGE
+    if ui or agent or repo:
+        return TargetState.PARTIAL_EDGE
+    return TargetState.FRESH_LINUX
+
+
 @dataclass(frozen=True)
 class UpgradeRequest:
     gateway_id: str
@@ -183,6 +208,7 @@ class UpgradeJob:
     runner: "LegacyUpgradeRunner | None" = None
     pre_upgrade_agent_default_port: str = "47814"
     pre_restart_agent_timestamp: str = ""
+    target_state: TargetState | None = None
 
 
 class Redactor:
@@ -1287,7 +1313,7 @@ def start_sh_update_script(username: str, password: str, path: str = "/home/swad
     return f"""
 from pathlib import Path
 path = Path({path!r})
-text = path.read_text()
+text = path.read_text() if path.exists() else "#!/bin/sh\nexec .venv/bin/python app.py\n"
 settings = {{
     "AUTH_ENABLED": "1",
     "EDGE_UI_USERNAME": {username!r},
@@ -1377,15 +1403,16 @@ for item in optional_files:
 
 def apply_ui_files_command() -> str:
     script = apply_ui_files_script()
-    return "python3 -c " + shell_quote(script)
+    return "sudo -S -p '' -u swadmin python3 -c " + shell_quote(script)
 
 
 def inspect_commands() -> list[tuple[str, str, bool]]:
     return [
+        ("platform and install-state probes", "set -eu; echo IOT_EDGE_PROBE_OS=$( . /etc/os-release 2>/dev/null; echo ${ID:-unknown}-${VERSION_ID:-unknown} ); echo IOT_EDGE_PROBE_ARCH=$(uname -m); echo IOT_EDGE_PROBE_DISK_KB=$(df -Pk / | awk 'NR==2{print $4}'); echo IOT_EDGE_PROBE_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ); test -d /home/swadmin/edge-bacnet-ui-v2 && echo IOT_EDGE_PROBE_UI_DIR=yes || echo IOT_EDGE_PROBE_UI_DIR=no; test -f /etc/iot-cx-agent/agent.yaml && echo IOT_EDGE_PROBE_AGENT_CONFIG=yes || echo IOT_EDGE_PROBE_AGENT_CONFIG=no; systemctl cat iot-cx-agent.service >/dev/null 2>&1 && echo IOT_EDGE_PROBE_AGENT_SERVICE=yes || echo IOT_EDGE_PROBE_AGENT_SERVICE=no; test -d /home/swadmin/iot-cloud-commissioning/.git && echo IOT_EDGE_PROBE_REPO=yes || echo IOT_EDGE_PROBE_REPO=no", False),
         ("hostname", "hostname", False),
         ("network addresses", "ip -br addr", False),
-        ("disk space", "df -h /home/swadmin /tmp | sed -n '1,5p'", False),
-        ("backup path writable", "test -w /home/swadmin && echo BACKUP_PATH_WRITABLE=/home/swadmin", False),
+        ("disk space", "df -h / /tmp /home/swadmin 2>/dev/null | sed -n '1,6p'", False),
+        ("backup path writable", "test -w /home/swadmin && echo BACKUP_PATH_WRITABLE=/home/swadmin || true", False),
         ("sudo available", "sudo -S -p '' -v && echo SUDO_AVAILABLE=yes", True),
         ("legacy UI folder", f'ls -ld {REMOTE_UI_PATH} 2>/dev/null || echo "missing edge-bacnet-ui-v2"', False),
         ("cloud repo folder", f'ls -ld {DEFAULT_REPO_PATH} 2>/dev/null || echo "missing iot-cloud-commissioning"', False),
@@ -1407,6 +1434,21 @@ def inspect_commands() -> list[tuple[str, str, bool]]:
             r"""timeout 5s grep -nE 'BACNET_IP_PORT|BACNET_IP_PORTS|BACNET_PORT_MODE|AUTH_ENABLED|EDGE_UI_USERNAME|EDGE_UI_PASSWORD|RPM_BLOCK_SIZE|RPM_VIEW_BLOCK_SIZE|DEFAULT_SCAN_LIMIT|MAX_OBJECTS' /home/swadmin/edge-bacnet-ui-v2/start.sh | sed -E "s/(EDGE_UI_PASSWORD=).*/\1'***SET***'/" || true""",
             False,
         ),
+    ]
+
+
+def bootstrap_runtime_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
+    """Idempotent substrate for a fresh or repaired Ubuntu target.
+
+    This deliberately installs only Ubuntu packages used by the checked-out
+    approved runtime.  UI/agent source itself is still pinned separately.
+    """
+    runtime_user = "swadmin"
+    return [
+        ("validate supported Linux", ". /etc/os-release; test \"$ID\" = ubuntu; case \"$(uname -m)\" in x86_64|aarch64) ;; *) exit 1;; esac; test \"$(df -Pk / | awk 'NR==2{print $4}')\" -ge 1048576", False),
+        ("create Edge runtime account", f"id -u {runtime_user} >/dev/null 2>&1 || sudo -S -p '' useradd --create-home --shell /bin/bash {runtime_user}", True),
+        ("install approved runtime prerequisites", "export DEBIAN_FRONTEND=noninteractive; sudo -S -p '' apt-get update && sudo -S -p '' apt-get install -y --no-install-recommends git python3 python3-venv python3-pip curl ca-certificates", True),
+        ("create Edge runtime directories", "sudo -S -p '' install -d -m 0755 -o swadmin -g swadmin /home/swadmin/edge-bacnet-ui-v2 /home/swadmin/iot-cloud-commissioning && sudo -S -p '' install -d -m 0755 -o root -g root /etc/iot-cx-agent && sudo -S -p '' install -d -m 0750 -o swadmin -g swadmin /var/lib/iot-cx-agent", True),
     ]
 
 
@@ -1480,14 +1522,18 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         else ("stop edge UI", stop_edge_ui_command(), True)
     )
     return [
+        ("ensure UI runtime directory", "sudo -S -p '' install -d -m 0755 -o swadmin -g swadmin /home/swadmin/edge-bacnet-ui-v2", True),
         ("prepare normalized extraction folder", "rm -rf /tmp/edge-bacnet-ui-v2-update && mkdir -p /tmp/edge-bacnet-ui-v2-update", False),
         ("extract embedded UI artifact", extract, False),
         ("verify normalized templates", r"""test -d /tmp/edge-bacnet-ui-v2-update/templates && ls -lah /tmp/edge-bacnet-ui-v2-update/templates""", False),
         stop_command,
         ("confirm edge UI stopped", "systemctl is-active edge-bacnet-ui.service || true", False),
-        ("apply code-only UI files", apply_ui_files_command(), False),
+        ("apply code-only UI files", apply_ui_files_command(), True),
+        ("create UI Python environment", "sudo -S -p '' -u swadmin sh -c 'cd /home/swadmin/edge-bacnet-ui-v2 && python3 -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -r requirements.txt'", True),
+        ("set UI runtime ownership", "sudo -S -p '' chown -R swadmin:swadmin /home/swadmin/edge-bacnet-ui-v2", True),
+        ("record exact UI authority", f"printf '%s\\n' {shell_quote(request.edge_ui_commit)} > /home/swadmin/edge-bacnet-ui-v2/.iot-edge-ui-commit && chmod 0644 /home/swadmin/edge-bacnet-ui-v2/.iot-edge-ui-commit", False),
         ("verify UI file ownership", "find /home/swadmin/edge-bacnet-ui-v2 -maxdepth 2 \\( ! -user swadmin -o ! -group swadmin \\) -print | head -20 || true", False),
-        ("preserve start.sh executable", "chmod +x /home/swadmin/edge-bacnet-ui-v2/start.sh", False),
+        ("preserve start.sh executable", "sudo -S -p '' -u swadmin chmod +x /home/swadmin/edge-bacnet-ui-v2/start.sh", True),
         ("verify replaced templates", "ls -lah /home/swadmin/edge-bacnet-ui-v2/templates", False),
     ]
 
@@ -1497,15 +1543,15 @@ def auth_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         raise ValueError("A gateway-local edge-agent write token is required.")
     token_b64 = b64(request.edge_agent_write_token + "\n")
     agent_env_script = (
-        "set -eu; tmp=$(mktemp); "
+        "set -eu; install -d -m 0755 -o root -g root /etc/iot-cx-agent; tmp=$(mktemp); "
         "grep -v '^EDGE_AGENT_WRITE_TOKEN=' /etc/iot-cx-agent/edge-agent.env 2>/dev/null > \"$tmp\" || true; "
         f"printf %s {shell_quote(token_b64)} | base64 -d >> \"$tmp\"; "
         "install -m 0600 -o root -g root \"$tmp\" /etc/iot-cx-agent/edge-agent.env; rm -f \"$tmp\""
     )
     return [
-        ("backup start.sh", 'cd /home/swadmin/edge-bacnet-ui-v2 && cp start.sh "start.sh.bak.$(date +%Y%m%d-%H%M%S)"', False),
-        ("preserve existing start.sh or default fresh start.sh", update_start_sh_command(request.ui_username, request.ui_password), False),
-        ("write local edge UI adapter token", f"printf %s {shell_quote(token_b64)} | base64 -d > /home/swadmin/edge-bacnet-ui-v2/.edge-agent-write-token && chmod 600 /home/swadmin/edge-bacnet-ui-v2/.edge-agent-write-token", False),
+        ("backup start.sh", 'test ! -f /home/swadmin/edge-bacnet-ui-v2/start.sh || (cd /home/swadmin/edge-bacnet-ui-v2 && cp start.sh "start.sh.bak.$(date +%Y%m%d-%H%M%S)")', False),
+        ("preserve existing start.sh or default fresh start.sh", "sudo -S -p '' -u swadmin " + update_start_sh_command(request.ui_username, request.ui_password), True),
+        ("write local edge UI adapter token", f"printf %s {shell_quote(token_b64)} | base64 -d | sudo -S -p '' -u swadmin tee /home/swadmin/edge-bacnet-ui-v2/.edge-agent-write-token >/dev/null && sudo -S -p '' -u swadmin chmod 600 /home/swadmin/edge-bacnet-ui-v2/.edge-agent-write-token", True),
         ("write edge agent adapter token", f"sudo -S -p '' sh -c {shell_quote(agent_env_script)}", True),
         (
             "verify safe start.sh auth",
@@ -1517,6 +1563,7 @@ def auth_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
 
 def restart_ui_commands() -> list[tuple[str, str, bool]]:
     return [
+        ("install Edge UI service", "sudo -S -p '' sh -c 'if test -f /home/swadmin/edge-bacnet-ui-v2/deploy/edge-bacnet-ui.service.example; then install -m 0644 /home/swadmin/edge-bacnet-ui-v2/deploy/edge-bacnet-ui.service.example /etc/systemd/system/edge-bacnet-ui.service; else printf \"[Unit]\\nDescription=IOT Edge UI\\nAfter=network.target\\n[Service]\\nType=simple\\nUser=swadmin\\nWorkingDirectory=/home/swadmin/edge-bacnet-ui-v2\\nExecStart=/home/swadmin/edge-bacnet-ui-v2/start.sh\\nRestart=on-failure\\n[Install]\\nWantedBy=multi-user.target\\n\" > /etc/systemd/system/edge-bacnet-ui.service; fi; systemctl daemon-reload; systemctl enable edge-bacnet-ui.service'", True),
         ("start edge UI", "sudo -S -p '' systemctl start --no-block edge-bacnet-ui.service", True),
         ("edge UI active check", "sleep 5 && systemctl is-active edge-bacnet-ui.service", False),
         ("local UI HTTP auth check", "curl -I http://127.0.0.1:5000/", False),
@@ -1602,10 +1649,10 @@ def repo_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         ("verify/install prerequisites", prerequisite_script, True),
         (
             "clone or update cloud repo",
-            f"""cd /home/swadmin && if [ -d {repo}/.git ]; then cd {repo} && git remote set-url origin {shell_quote(REMOTE_REPO_URL)} && git fetch origin --tags; else git clone {shell_quote(REMOTE_REPO_URL)} {repo}; cd {repo}; git fetch origin --tags; fi && git checkout --detach {ref}""",
-            False,
+            f"""sudo -S -p '' -u swadmin sh -c {shell_quote(f'cd /home/swadmin && if [ -d {request.remote_repo}/.git ]; then cd {request.remote_repo} && git remote set-url origin {REMOTE_REPO_URL} && git fetch origin --tags; else git clone {REMOTE_REPO_URL} {request.remote_repo}; cd {request.remote_repo}; git fetch origin --tags; fi && git checkout --detach {request.edge_agent_commit}')}""",
+            True,
         ),
-        ("repo release validation", repo_release_validation_command(request.remote_repo, request.edge_agent_commit), False),
+        ("repo release validation", "sudo -S -p '' -u swadmin sh -c " + shell_quote(repo_release_validation_command(request.remote_repo, request.edge_agent_commit)), True),
     ]
 
 
@@ -1821,14 +1868,14 @@ if [ "$actual" != "$expected" ]; then
 fi
 echo "AGENT_EXACT_CHECKOUT=Passed"
 """
-    exact_checkout = "sh -c " + shell_quote(exact_checkout_script)
+    exact_checkout = "sudo -S -p '' -u swadmin sh -c " + shell_quote(exact_checkout_script)
     return [
         ("verify venv support", "rm -rf /tmp/iot-cx-venv-check; python3 -m venv /tmp/iot-cx-venv-check >/dev/null 2>&1 || (export DEBIAN_FRONTEND=noninteractive; sudo -S -p '' apt-get update && sudo -n apt-get install -y --no-install-recommends python3-venv python3.10-venv python3-pip); rm -rf /tmp/iot-cx-venv-check", True),
-        ("checkout exact Agent source", exact_checkout, False),
-        ("create agent venv", f"cd {repo}/edge-agent && python3 -m venv .venv", False),
-        ("upgrade pip", f"cd {repo}/edge-agent && .venv/bin/python -m pip install --upgrade pip", False),
-        ("install requirements", f"cd {repo}/edge-agent && .venv/bin/python -m pip install -r requirements.txt", False),
-        ("install agent package", f"cd {repo}/edge-agent && .venv/bin/python -m pip install -e .", False),
+        ("checkout exact Agent source", exact_checkout, True),
+        ("create agent venv", f"sudo -S -p '' -u swadmin sh -c 'cd {repo}/edge-agent && python3 -m venv .venv'", True),
+        ("upgrade pip", f"sudo -S -p '' -u swadmin sh -c 'cd {repo}/edge-agent && .venv/bin/python -m pip install --upgrade pip'", True),
+        ("install requirements", f"sudo -S -p '' -u swadmin sh -c 'cd {repo}/edge-agent && .venv/bin/python -m pip install -r requirements.txt'", True),
+        ("install agent package", f"sudo -S -p '' -u swadmin sh -c 'cd {repo}/edge-agent && .venv/bin/python -m pip install -e .'", True),
         ("migrate platform-owned Agent cadence defaults", agent_cadence_migration_command(), True),
         ("skip data folder ownership check", "echo 'data folder ownership check skipped in legacy nested SSH mode'", False),
     ]
@@ -1852,6 +1899,7 @@ def final_commands(request: UpgradeRequest, expected_bacnet_default_port: str = 
     expected_port = shell_quote(expected_bacnet_default_port if expected_bacnet_default_port.isdigit() else "47814")
     expected_agent = shell_quote(request.edge_agent_commit)
     expected_version = shell_quote(request.expected_agent_version)
+    expected_ui = shell_quote(request.edge_ui_commit)
     expected_before = shell_quote(pre_restart_timestamp)
     repo = shell_quote(request.remote_repo)
     return [
@@ -1859,6 +1907,8 @@ def final_commands(request: UpgradeRequest, expected_bacnet_default_port: str = 
         ("agent active", "systemctl is-active iot-cx-agent.service", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service", False),
         ("local UI HTTP auth check", "curl -I http://127.0.0.1:5000/", False),
+        ("verify exact UI authority", f"test \"$(cat /home/swadmin/edge-bacnet-ui-v2/.iot-edge-ui-commit)\" = {expected_ui} && echo UI_EXACT_AUTHORITY=Passed", False),
+        ("verify secure agent runtime files", "test -d /etc/iot-cx-agent && test \"$(stat -c %a /etc/iot-cx-agent/edge-agent.env)\" = 600 && test \"$(stat -c %U:%G /etc/iot-cx-agent/edge-agent.env)\" = root:root && test -f /etc/iot-cx-agent/agent.yaml && echo AGENT_RUNTIME_FILES=Passed", False),
         ("verify supported BACnet tools", "command -v /home/swadmin/bacnet-stack/bin/bacrp && command -v /home/swadmin/bacnet-stack/bin/bacrpm && echo 'bacrp and bacrpm available'", False),
         ("verify BACnet config preservation", f"pre={expected_port}; post=$(awk '/^bacnet_default_port:/{{print $2; exit}}' /etc/iot-cx-agent/agent.yaml); grep -E 'bacnet_default_port:|default_port:|bacrp_path:|bacrpm_path:' /etc/iot-cx-agent/agent.yaml; echo \"BACNET_CONFIG_PRESERVATION=Passed\"; echo \"PRE_UPGRADE_AGENT_DEFAULT_PORT=$pre\"; echo \"POST_UPGRADE_AGENT_DEFAULT_PORT=$post\"; echo \"BACNET_PORTS_CHANGED=No\"; echo \"BACNET_ROUTES_CHANGED=No\"; echo \"ROUTE_SETTINGS_CHANGED=No\"; test \"$post\" = \"$pre\"", False),
         (
@@ -2173,6 +2223,15 @@ class LegacyUpgradeRunner:
                     output = self.run_commands(inspect_commands(), stop_on_failure=False)
                 self.validate_inspection(output)
             elif index == 1:
+                if JOBS[self.job_id].target_state == TargetState.FRESH_LINUX:
+                    with JOBS_LOCK:
+                        job = JOBS[self.job_id]
+                        job.phases[index].status = PhaseStatus.SKIPPED
+                        job.phases[index].detail = "Fresh installation: no pre-existing Edge state to restore"
+                        job.current_phase = index + 1
+                        job.status = "waiting"
+                    self.log.append("\nFresh installation: no pre-existing Edge state to restore. Checkpoint skipped.\n")
+                    return
                 output = self.run_commands(backup_commands(self.request.edge_release))
                 backup = self.extract_latest_backup(output)
                 with JOBS_LOCK:
@@ -2190,6 +2249,8 @@ class LegacyUpgradeRunner:
                     return
                 self.build_upload_zip()
             elif index == 3:
+                if JOBS[self.job_id].target_state in {TargetState.FRESH_LINUX, TargetState.PARTIAL_EDGE}:
+                    self.run_commands(bootstrap_runtime_commands(self.request))
                 self.run_commands(apply_ui_commands(self.request))
             elif index == 4:
                 self.run_commands(auth_commands(self.request))
@@ -2248,18 +2309,11 @@ class LegacyUpgradeRunner:
             raise
 
     def validate_inspection(self, output: str) -> None:
-        if self.request.dry_run:
-            self.write_preflight_summary(output)
-            return
-        lower = output.lower()
-        if "missing edge-bacnet-ui-v2" in lower:
-            raise RuntimeError("/home/swadmin/edge-bacnet-ui-v2 is missing. Stop; this is not a legacy UI candidate.")
-        if "one or more bacnet tools missing" in lower:
-            raise RuntimeError("One or more BACnet tools are missing. Continue only after explicit field approval.")
-        if "not a git repository" not in lower and "fatal:" not in lower:
-            raise RuntimeError("edge-bacnet-ui-v2 appears to be a git repo. Do not use copied-folder legacy path without approval.")
+        state = classify_target_state(output)
+        with JOBS_LOCK:
+            JOBS[self.job_id].target_state = state
         self.write_preflight_summary(output)
-        self.log.append("\nCheckpoint summary:\nLegacy edge-only candidate: YES\nProceed with copied-folder update path: YES\n")
+        self.log.append(f"\nTarget state: {state.value}. Deployment is idempotent; retry is safe after a failed phase.\n")
 
     def write_preflight_summary(self, output: str) -> None:
         agent_version = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("EDGE_AGENT_VERSION=")), "unknown")
@@ -2282,6 +2336,7 @@ class LegacyUpgradeRunner:
                 {
                     "Updater": f"{identity.PRODUCT_NAME} {identity.APP_VERSION}",
                     "Selected target gateway": self.request.gateway_id,
+                    "Detected Edge state": job.target_state.value if job.target_state else "not detected",
                     "Resolved Edge UI commit": self.request.edge_ui_commit,
                     "Resolved Edge Agent commit": self.request.edge_agent_commit,
                     "SSH route and host": f"{self.request.cradlepoint_user}@{self.request.cradlepoint_host} -> {self.request.gateway_user}@{self.request.gateway_host}",
@@ -2312,9 +2367,9 @@ class LegacyUpgradeRunner:
                     "router services": "Not changed",
                     "Pre-upgrade agent default port": job.pre_upgrade_agent_default_port,
                     "Package/manifest checksum status": release_package_status(self.request.release_manifest_path),
-                    "Pre-upgrade backup status and path": backup_path,
+                    "Pre-upgrade backup status and path": "Fresh installation — no pre-existing Edge state to restore" if job.target_state == TargetState.FRESH_LINUX else backup_path,
                     "Sudo available": sudo_state,
-                    "Rollback action": "Use Restore legacy full backup or Restore code-only checkpoint after backup phase",
+                    "Rollback action": "Fresh installation — no pre-existing Edge state to restore" if job.target_state == TargetState.FRESH_LINUX else "Use Restore legacy full backup or Restore code-only checkpoint after backup phase",
                 }
             )
         self.log.append("\nPreflight validation checklist:\n")
