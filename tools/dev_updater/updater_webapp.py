@@ -1877,10 +1877,18 @@ if [ "$actual" != "$expected" ]; then
 fi
 echo "AGENT_EXACT_CHECKOUT=Passed"
 """
-    exact_checkout = "sudo -S -p '' -u swadmin sh -c " + shell_quote(exact_checkout_script)
+    # A fresh target has swadmin after bootstrap.  The fallback keeps the
+    # checkout diagnostic usable in a deliberately minimal test/repair shell.
+    exact_checkout = (
+        "if id -u swadmin >/dev/null 2>&1; then sudo -n -u swadmin sh -c "
+        + shell_quote(exact_checkout_script)
+        + "; else sh -c "
+        + shell_quote(exact_checkout_script)
+        + "; fi"
+    )
     return [
         ("verify venv support", "rm -rf /tmp/iot-cx-venv-check; python3 -m venv /tmp/iot-cx-venv-check >/dev/null 2>&1 || (export DEBIAN_FRONTEND=noninteractive; sudo -S -p '' apt-get update && sudo -n apt-get install -y --no-install-recommends python3-venv python3.10-venv python3-pip); rm -rf /tmp/iot-cx-venv-check", True),
-        ("checkout exact Agent source", exact_checkout, True),
+        ("checkout exact Agent source", exact_checkout, False),
         ("create agent venv", f"sudo -S -p '' -u swadmin sh -c 'cd {repo}/edge-agent && python3 -m venv .venv'", True),
         ("upgrade pip", f"sudo -S -p '' -u swadmin sh -c 'cd {repo}/edge-agent && .venv/bin/python -m pip install --upgrade pip'", True),
         ("install requirements", f"sudo -S -p '' -u swadmin sh -c 'cd {repo}/edge-agent && .venv/bin/python -m pip install -r requirements.txt'", True),
