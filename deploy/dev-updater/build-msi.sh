@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO"
 OUT_DIR="${1:-$REPO/dist}"
 VERSION="$(python3 -c "from tools.dev_updater.identity import MSI_PRODUCT_VERSION; print(MSI_PRODUCT_VERSION)")"
 APP=IOTEdgeDevUpdater
