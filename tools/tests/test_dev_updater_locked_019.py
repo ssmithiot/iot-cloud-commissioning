@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LEGACY = ROOT / "tools/legacy_edge_upgrade_webapp.py"
 DEV = ROOT / "tools/dev_updater/updater_webapp.py"
 BASELINE = {
-    "tools/legacy_edge_upgrade_webapp.py": "9d28b971d9f0445d5694476dd08b6c1e620a0b94fc5f1e2a8a72ff4b6250c0d3",
+    "tools/legacy_edge_upgrade_webapp.py": "5b843bf9c5bc246eee78237db619e65588cb5ad090e014cd8d40fac855465ce6",
     "tools/start-legacy-edge-upgrade-webapp.cmd": "4117769e55c2b7a0680e1f91453dee56a123d585ae3fcebf167623a8d26ff6a7",
     "tools/gateway-update-requirements.txt": "68adc66b9c7a2d58ef8db894fd37cd5ae465d597ae7eb0f3cb14789316038dfa",
     "tools/releases/manifests/edge-0.1.9.json": "dffbb61a800917eee26a3b1711d3f6fce7c23b82c442af66bcf1214f5199efa0",
@@ -56,8 +56,8 @@ def test_identity_isolated_and_version_mapping_is_explicit(monkeypatch):
     monkeypatch.setenv("ProgramData", r"C:\ProgramData")
     assert identity.DEFAULT_PORT == 8791
     assert identity.LEGACY_PORT == 8766
-    assert identity.APP_VERSION == "0.2.0-dev.8"
-    assert identity.MSI_PRODUCT_VERSION == "0.2.8"
+    assert identity.APP_VERSION == "0.2.0-dev.9"
+    assert identity.MSI_PRODUCT_VERSION == "0.2.9"
     assert identity.SOURCE_COMMIT == "4920a96ecc7c5486bc3b323ce16dd4a4766a83ed"
     assert identity.UPGRADE_CODE == "AECCDF45-A1D2-43A5-9142-32E6A984A66E"
     assert identity.env_path().name == ".env"
@@ -75,7 +75,7 @@ def test_msi_upgrade_preserves_programdata_env_and_uses_new_product_version():
 def test_form_keeps_the_original_phase_values_and_displays_commit_controls(tmp_path, monkeypatch):
     monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
     page = dev.form_page().decode()
-    assert "Updater Version 0.2.0-dev.8" in page
+    assert "Updater Version 0.2.0-dev.9" in page
     assert "Source commit: <code>4920a96ecc7c5486bc3b323ce16dd4a4766a83ed</code>" in page
     assert page.count('type="checkbox" name="selected_phases"') == len(dev.PHASES)
     for index, phase in enumerate(dev.PHASES):

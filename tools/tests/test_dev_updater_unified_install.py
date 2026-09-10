@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import re
 import uuid
 
 from tools.dev_updater import updater_webapp as updater
@@ -98,6 +100,39 @@ def test_gw007_ansi_prompt_without_completion_marker_fails_quickly() -> None:
         raise AssertionError("an idle ANSI Ubuntu prompt without the marker must fail immediately")
 
 
+def test_gw007_real_osc_ansi_idle_prompt_without_marker_fails_quickly() -> None:
+    """GW007 emits an OSC title update between bracketed-paste controls and its prompt."""
+    class GatewayShell:
+        def __init__(self): self.pending = True
+        def recv_ready(self): return self.pending
+        def recv(self, _size):
+            self.pending = False
+            return b"\x1b[?2004h\x1b]0;swadmin@switch128gbssd: ~\x07swadmin@switch128gbssd:~$ \r\n"
+    try:
+        updater.wait_for_shell_marker(GatewayShell(), "LEGACY_UPGRADE_gw007_osc", timeout_sec=0.01)
+    except RuntimeError as exc:
+        assert "returned before completion marker" in str(exc)
+    else:
+        raise AssertionError("a real GW007 OSC/ANSI idle prompt without the marker must fail immediately")
+
+
+def test_gw007_osc_prompt_split_across_chunks_with_trailing_newline_fails_quickly() -> None:
+    class GatewayShell:
+        def __init__(self):
+            self.pending = [
+                b"\x1b[?2004h\x1b]0;swadmin@switch128gbssd: ~\x07swadmin@switch",
+                b"128gbssd:~$ \x1b[?2004h\r\n",
+            ]
+        def recv_ready(self): return bool(self.pending)
+        def recv(self, _size): return self.pending.pop(0)
+    try:
+        updater.wait_for_shell_marker(GatewayShell(), "LEGACY_UPGRADE_split", timeout_sec=1)
+    except RuntimeError as exc:
+        assert "REMOTE_COMPLETION_MARKER_MISSING" in str(exc)
+    else:
+        raise AssertionError("a split GW007 idle prompt must fail the completion protocol promptly")
+
+
 def test_marker_exit_codes_and_active_output_are_not_misread_as_prompts() -> None:
     class Shell:
         def __init__(self, text): self.pending = [text.encode()]
@@ -132,11 +167,15 @@ def test_nested_wrapper_preserves_compound_sudo_apt_and_emits_marker(monkeypatch
         runner.close()
     wrapped = "".join(shell.sent)
     assert code == 0
-    assert "(\n" in wrapped and "__iot_upgrade_rc=$?" in wrapped
+    assert "\n" not in wrapped.rstrip("\n")
+    assert "bash -c" in wrapped and "__iot_upgrade_rc=$?" in wrapped
     assert "LEGACY_UPGRADE_1:%s" in wrapped
-    assert "NEEDRESTART_MODE=a" in wrapped and "DEBIAN_FRONTEND=noninteractive" in wrapped
-    assert "sudo -n env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install" in wrapped
-    assert "gateway-password" in wrapped
+    assert "gateway-password" not in wrapped
+    encoded = re.search(r"printf %s ([A-Za-z0-9+/=]+) \| base64 -d", wrapped).group(1)
+    decoded = base64.b64decode(encoded).decode()
+    assert "NEEDRESTART_MODE=a" in decoded and "DEBIAN_FRONTEND=noninteractive" in decoded
+    assert "sudo -n env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install" in decoded
+    assert "gateway-password" in decoded
 
 
 def test_nested_ansi_marker_failure_does_not_send_ctrl_c_or_return_124(monkeypatch) -> None:

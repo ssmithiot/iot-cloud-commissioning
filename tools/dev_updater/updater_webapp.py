@@ -1359,10 +1359,12 @@ def send_shell_command(shell, command: str) -> None:
 
 def _looks_like_idle_ubuntu_prompt(output: str) -> bool:
     """Recognize the final nested Ubuntu prompt, not arbitrary $/# command text."""
-    # Bracketed-paste mode toggles arrive after the prompt on GW007.  Strip CSI
-    # controls before inspecting only the terminal's final visual line.
+    # GW007 emits bracketed-paste CSI controls and an OSC title update around
+    # every prompt.  Strip both terminal-control families before inspecting the
+    # final nonblank visual line; a trailing CR/LF must not hide the prompt.
     clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
-    final_line = re.split(r"[\r\n]", clean)[-1]
+    clean = re.sub(r"\x1b\][^\x1b\x07]*(?:\x07|\x1b\\\\)", "", clean)
+    final_line = next((line for line in reversed(re.split(r"[\r\n]", clean)) if line.strip()), "")
     return bool(re.fullmatch(r"\s*[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+(?::[^\s#$]+)?[#$]\s*", final_line))
 
 
@@ -1391,6 +1393,22 @@ def shell_quote(value: str) -> str:
 
 def b64(text: str) -> str:
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def nested_shell_command_wrapper(command: str, marker: str) -> str:
+    """Submit a nested-shell payload as one physical interactive line.
+
+    Passing a multiline wrapper through an interactive Cradlepoint SSH session
+    creates continuation-prompt framing.  Base64 preserves the exact payload
+    while the outer Ubuntu shell receives one atomic line and always prints the
+    completion marker after the child Bash exits.
+    """
+    encoded = b64(command)
+    return (
+        f"bash -c \"$(printf %s {shell_quote(encoded)} | base64 -d)\"; "
+        f"__iot_upgrade_rc=$?; "
+        f"printf '\\n{marker}:%s\\n' \"$__iot_upgrade_rc\""
+    )
 
 
 def sudo_systemctl_timeout(action: str, service: str, timeout_sec: int = 30) -> str:
@@ -2310,9 +2328,10 @@ class LegacyUpgradeRunner:
             command_to_send = command_to_send.replace(sudo_prefix, placeholder, 1)
             command_to_send = command_to_send.replace(sudo_prefix, "sudo -n")
             command_to_send = command_to_send.replace(placeholder, password_pipe, 1)
-        # Run the payload in a subshell so an `exit`, `set -e`, or failed
-        # compound command cannot suppress the marker emitted by the parent.
-        command_wrapper = f"(\n{command_to_send}\n)\n__iot_upgrade_rc=$?\nprintf '\\n{marker}:%s\\n' \"$__iot_upgrade_rc\""
+        # A child Bash contains `exit`/`set -e` in the payload while the parent
+        # prints the marker.  Encode the payload so this is one physical line
+        # in the interactive Cradlepoint -> GW007 channel.
+        command_wrapper = nested_shell_command_wrapper(command_to_send, marker)
         send_shell_command(shell, command_wrapper)
         try:
             output, exit_text = wait_for_shell_marker(
