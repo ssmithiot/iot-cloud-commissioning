@@ -1354,7 +1354,18 @@ def wait_for_shell_text(shell, needles: tuple[str, ...], timeout_sec: float = 45
 
 
 def send_shell_command(shell, command: str) -> None:
-    shell.send(command + "\n")
+    """Write an entire command even when Paramiko accepts only a partial frame."""
+    pending = command + "\n"
+    offset = 0
+    while offset < len(pending):
+        written = shell.send(pending[offset:])
+        # Lightweight test shells historically returned None; Paramiko returns
+        # the actual byte count and must be drained until the payload is whole.
+        if written is None:
+            return
+        if written <= 0:
+            raise RuntimeError("Nested SSH channel closed while sending command")
+        offset += written
 
 
 def _looks_like_idle_ubuntu_prompt(output: str) -> bool:

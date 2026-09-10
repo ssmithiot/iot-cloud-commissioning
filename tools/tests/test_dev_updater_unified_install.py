@@ -178,6 +178,18 @@ def test_nested_wrapper_preserves_compound_sudo_apt_and_emits_marker(monkeypatch
     assert "gateway-password" in decoded
 
 
+def test_send_shell_command_retries_paramiko_partial_writes() -> None:
+    class ShortWriteShell:
+        def __init__(self): self.sent = ""
+        def send(self, text):
+            part = text[:7]
+            self.sent += part
+            return len(part)
+    shell = ShortWriteShell()
+    updater.send_shell_command(shell, "x" * 5000)
+    assert shell.sent == "x" * 5000 + "\n"
+
+
 def test_nested_ansi_marker_failure_does_not_send_ctrl_c_or_return_124(monkeypatch) -> None:
     class Shell:
         def __init__(self): self.sent = []; self.pending = []
