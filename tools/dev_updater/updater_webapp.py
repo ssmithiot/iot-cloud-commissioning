@@ -58,6 +58,8 @@ DEFAULT_EDGE_UI_COMMIT = DEFAULT_RELEASE_DEFINITION.edge_ui_tag
 # unless IOT_EDGE_DEV_AGENT_COMMIT is explicitly configured at launch.
 DEFAULT_EDGE_UI_INPUT = "fcab55cb575d6d6816e3de0822f390eeec23a9af"
 DEFAULT_EDGE_AGENT_INPUT = "4920a96ecc7c5486bc3b323ce16dd4a4766a83ed"
+BACNET_STACK_REPOSITORY = "https://github.com/bacnet-stack/bacnet-stack.git"
+BACNET_STACK_COMMIT = "66e1844cdc26a7172ba4216f85be55a07af70a6f"
 DEFAULT_EDGE_UI_DATA_DIR = "/home/swadmin/edge-bacnet-ui-v2/data"
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_UI_ARTIFACT_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.tar.gz"
@@ -201,6 +203,8 @@ class UpgradeRequest:
     ui_artifact_path: str = ""
     ui_artifact_sha256: str = ""
     install_mode: InstallMode = InstallMode.AUTO
+    bacnet_lan_interface: str = ""
+    bacnet_router_address: str = ""
 
 
 @dataclass
@@ -317,6 +321,22 @@ def validate_embedded_ui_artifact_contents(artifact: Path) -> None:
     )
     if forbidden:
         raise ValueError(f"UI artifact contains forbidden runtime item(s): {', '.join(forbidden[:10])}")
+
+
+def validate_full_ui_artifact_contents(artifact: Path) -> None:
+    """Full install must never fall back to the stale bundled router payload."""
+    required = {
+        "deploy/install-edge-router-runtime.sh",
+        "deploy/iot-cx-edge-router-control.py",
+        "deploy/iot-cx-edge-router.sudoers",
+        "deploy/router-mstp-nat-advertisement.patch",
+        "deploy/edge-bacnet-ui.service.example",
+    }
+    with tarfile.open(artifact, "r:gz") as archive:
+        names = set(archive.getnames())
+    missing = sorted(required - names)
+    if missing:
+        raise ValueError("Full installation requires router-runtime files from the resolved UI artifact: " + ", ".join(missing))
 
 
 def embedded_ui_artifact_summary(release_manifest_path: str) -> dict[str, str]:
@@ -866,6 +886,12 @@ def form_page(message: str = "") -> bytes:
   <label>Gateway LAN IP
     <input name="gateway_host" value="192.168.1.200" required>
   </label>
+  <label>BACnet LAN interface (Full Install)
+    <input name="bacnet_lan_interface" placeholder="e.g. enp1s0">
+  </label>
+  <label>BACnet router/BBMD IPv4 (Full Install)
+    <input name="bacnet_router_address" placeholder="e.g. 192.168.1.200">
+  </label>
   <label>Gateway user
     <input name="gateway_user" value="swadmin" required>
   </label>
@@ -1139,6 +1165,8 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
     if final_update_confirmed and not parse_bool(fields, "commit_resolution_confirmed"):
         raise ValueError("Resolve both commit IDs, review the full SHAs, and check the commit confirmation box before execution.")
     dry_run = parse_bool(fields, "dry_run") or not final_update_confirmed
+    if install_mode == InstallMode.FULL and selected_phases != tuple(range(len(PHASES))):
+        raise ValueError("Full installation requires every deployment phase; select all phases before execution.")
     if final_update_confirmed and selected_phases and selected_phases not in STANDARD_REAL_RUN_PHASE_SETS:
         invalid_targeted_phases = sorted(set(selected_phases) - set(TARGETED_REAL_RUN_PHASES))
         if invalid_targeted_phases:
@@ -1152,6 +1180,8 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         except UIArtifactError as exc:
             raise ValueError(f"UI artifact creation failed closed: {exc}") from exc
         artifact_path, artifact_sha256 = str(artifact.path), artifact.sha256
+        if install_mode == InstallMode.FULL:
+            validate_full_ui_artifact_contents(artifact.path)
     manifest_path = value(fields, "release_manifest_path") or DEFAULT_RELEASE_MANIFEST
     manifest = load_manifest(Path(manifest_path))
     effective_agent_commit = edge_agent.full_sha
@@ -1188,6 +1218,8 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         ui_artifact_path=artifact_path,
         ui_artifact_sha256=artifact_sha256,
         install_mode=install_mode,
+        bacnet_lan_interface=value(fields, "bacnet_lan_interface"),
+        bacnet_router_address=value(fields, "bacnet_router_address"),
     )
     required = [
         ("Gateway number", request.gateway_id),
@@ -1203,6 +1235,11 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         raise ValueError(f"Missing required field(s): {', '.join(missing)}")
     if request.edge_release != manifest.edge_release:
         raise ValueError(f"Edge Release {request.edge_release} does not match manifest Edge Release {manifest.edge_release}")
+    if request.install_mode == InstallMode.FULL:
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", request.bacnet_lan_interface):
+            raise ValueError("Full installation requires a selected BACnet LAN interface from Preflight.")
+        if not re.fullmatch(r"(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}", request.bacnet_router_address):
+            raise ValueError("Full installation requires a validated BACnet router/BBMD IPv4 address from Preflight.")
     return request
 
 
@@ -1491,9 +1528,11 @@ def full_install_commands() -> list[tuple[str, str, bool]]:
 def full_router_runtime_commands() -> list[tuple[str, str, bool]]:
     return [
         ("require authoritative router runtime payload", "test -x /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh && test -f /home/swadmin/edge-bacnet-ui-v2/deploy/iot-cx-edge-router.sudoers && test -f /home/swadmin/edge-bacnet-ui-v2/deploy/router-mstp-nat-advertisement.patch", False),
+        ("checkout pinned bacnet-stack", f"sudo -S -p '' -u swadmin sh -c 'if test -d /home/swadmin/bacnet-stack/.git; then cd /home/swadmin/bacnet-stack && git remote set-url origin {BACNET_STACK_REPOSITORY} && git fetch origin --tags; else git clone {BACNET_STACK_REPOSITORY} /home/swadmin/bacnet-stack && cd /home/swadmin/bacnet-stack && git fetch origin --tags; fi && git checkout --detach {BACNET_STACK_COMMIT} && test \"$(git rev-parse HEAD)\" = {BACNET_STACK_COMMIT}'", True),
+        ("build pinned router-mstp", "sudo -S -p '' -u swadmin sh -c 'cd /home/swadmin/bacnet-stack && make router-mstp && test -x bin/router-mstp'", True),
         ("install full router runtime", "sudo -S -p '' bash /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh", True),
         ("validate router helper authorization", "sudo -S -p '' visudo -cf /etc/sudoers.d/iot-cx-edge-router && sudo -n /usr/local/sbin/iot-cx-edge-router-control status", True),
-        ("validate router build and boot persistence", "test -x /home/swadmin/bacnet-stack/bin/router-mstp && systemctl is-enabled iot-cx-mstp-router.service && systemctl is-active iot-cx-mstp-router.service", False),
+        ("validate router build and boot persistence", f"test \"$(git -C /home/swadmin/bacnet-stack rev-parse HEAD)\" = {BACNET_STACK_COMMIT} && test -x /home/swadmin/bacnet-stack/bin/router-mstp && systemctl is-enabled iot-cx-mstp-router.service && systemctl is-active iot-cx-mstp-router.service", False),
     ]
 
 
@@ -1728,7 +1767,7 @@ bacnet:
   # for the Agent's FDR client while the Edge router owns 47809.
   router_profile: edge-router-fdr
   default_port: {port}
-  bbmd_address: 192.168.1.200
+  bbmd_address: {request.bacnet_router_address or "192.168.1.200"}
   bbmd_port: 47809
   bacwi_path: /home/swadmin/bacnet-stack/bin/bacwi
   bacrp_path: /home/swadmin/bacnet-stack/bin/bacrp
@@ -1961,7 +2000,7 @@ def final_commands(request: UpgradeRequest, expected_bacnet_default_port: str = 
     expected_ui = shell_quote(request.edge_ui_commit)
     expected_before = shell_quote(pre_restart_timestamp)
     repo = shell_quote(request.remote_repo)
-    return [
+    commands = [
         ("hostname", "hostname", False),
         ("agent active", "systemctl is-active iot-cx-agent.service", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service", False),
@@ -1977,6 +2016,16 @@ def final_commands(request: UpgradeRequest, expected_bacnet_default_port: str = 
         ),
         ("agent final logs", "journalctl -u iot-cx-agent -n 60 --no-pager -l || true", False),
     ]
+    if request.install_mode == InstallMode.FULL:
+        commands.extend(
+            [
+                ("verify full router authority and service", f"test \"$(git -C /home/swadmin/bacnet-stack rev-parse HEAD)\" = {BACNET_STACK_COMMIT} && test -x /home/swadmin/bacnet-stack/bin/router-mstp && systemctl is-enabled iot-cx-mstp-router.service && systemctl is-active iot-cx-mstp-router.service", False),
+                ("verify firewall baseline", "sudo -S -p '' ufw status | grep -F '22/tcp' && sudo -S -p '' ufw status | grep -F '5000/tcp' && sudo -S -p '' ufw status | grep -F '47808/udp' && sudo -S -p '' ufw status | grep -F '47809/udp' && sudo -S -p '' ufw status | grep -F '47814/udp'", True),
+                ("verify full router helper", "sudo -S -p '' visudo -cf /etc/sudoers.d/iot-cx-edge-router && sudo -n /usr/local/sbin/iot-cx-edge-router-control status", True),
+                ("verify selected BACnet interface", f"ip -4 addr show {shell_quote(request.bacnet_lan_interface)} | grep -F {shell_quote(request.bacnet_router_address)}", False),
+            ]
+        )
+    return commands
 
 
 def validate_agent_runtime_output(output: str, request: UpgradeRequest, pre_restart_timestamp: str) -> None:

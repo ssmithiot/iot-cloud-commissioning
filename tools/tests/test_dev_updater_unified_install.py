@@ -54,6 +54,17 @@ def test_full_install_includes_firewall_router_boot_and_noninteractive_baselines
     assert "47816/udp" not in commands and "47817/udp" not in commands and "47825" not in commands
     assert "NEEDRESTART_MODE=a" in commands
     assert "router-mstp" in commands and "visudo -cf" in commands
+    assert updater.BACNET_STACK_COMMIT in commands
+
+
+def test_full_agent_config_uses_selected_router_address_not_legacy_hard_code() -> None:
+    request = _request()
+    request = updater.replace(request, install_mode=updater.InstallMode.FULL, bacnet_lan_interface="enp1s0", bacnet_router_address="10.8.9.10")
+    config = updater.agent_config_text(request)
+    assert "bbmd_address: 10.8.9.10" in config
+    assert "bbmd_address: 192.168.1.200" not in config
+    final = "\n".join(command for _, command, _ in updater.final_commands(request))
+    assert updater.BACNET_STACK_COMMIT in final and "ufw status" in final
 
 
 def test_missing_nested_marker_after_shell_prompt_fails_immediately() -> None:
