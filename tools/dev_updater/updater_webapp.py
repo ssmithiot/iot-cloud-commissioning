@@ -1357,8 +1357,18 @@ def send_shell_command(shell, command: str) -> None:
     shell.send(command + "\n")
 
 
-def wait_for_shell_marker(shell, marker: str, timeout_sec: float = 600.0) -> tuple[str, str]:
+def _looks_like_idle_ubuntu_prompt(output: str) -> bool:
+    """Recognize the final nested Ubuntu prompt, not arbitrary $/# command text."""
+    # Bracketed-paste mode toggles arrive after the prompt on GW007.  Strip CSI
+    # controls before inspecting only the terminal's final visual line.
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+    final_line = re.split(r"[\r\n]", clean)[-1]
+    return bool(re.fullmatch(r"\s*[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+(?::[^\s#$]+)?[#$]\s*", final_line))
+
+
+def wait_for_shell_marker(shell, marker: str, timeout_sec: float = 600.0, *, on_progress=None, progress_interval_sec: float = 30.0) -> tuple[str, str]:
     deadline = time.time() + timeout_sec
+    next_progress = time.time() + progress_interval_sec
     output = ""
     marker_prefix = f"{marker}:"
     while time.time() < deadline:
@@ -1367,8 +1377,11 @@ def wait_for_shell_marker(shell, marker: str, timeout_sec: float = 600.0) -> tup
             stripped = line.strip()
             if stripped.startswith(marker_prefix):
                 return output, stripped.partition(":")[2].strip()
-        if re.search(r"(?:^|\n)[^\n]*[#$]\s*$", output):
-            raise RuntimeError(f"Remote shell returned without completion marker {marker}")
+        if _looks_like_idle_ubuntu_prompt(output):
+            raise RuntimeError(f"REMOTE_COMPLETION_MARKER_MISSING: Remote shell returned before completion marker was received ({marker})")
+        if on_progress is not None and time.time() >= next_progress:
+            on_progress()
+            next_progress = time.time() + progress_interval_sec
     raise RuntimeError(f"Timed out waiting for command marker: {marker}")
 
 
@@ -2297,10 +2310,21 @@ class LegacyUpgradeRunner:
             command_to_send = command_to_send.replace(sudo_prefix, placeholder, 1)
             command_to_send = command_to_send.replace(sudo_prefix, "sudo -n")
             command_to_send = command_to_send.replace(placeholder, password_pipe, 1)
-        send_shell_command(shell, f"{command_to_send}\nprintf '\\n{marker}:%s\\n' $?")
+        # Run the payload in a subshell so an `exit`, `set -e`, or failed
+        # compound command cannot suppress the marker emitted by the parent.
+        command_wrapper = f"(\n{command_to_send}\n)\n__iot_upgrade_rc=$?\nprintf '\\n{marker}:%s\\n' \"$__iot_upgrade_rc\""
+        send_shell_command(shell, command_wrapper)
         try:
-            output, exit_text = wait_for_shell_marker(shell, marker, timeout_sec=self.command_timeout(label))
-        except Exception:
+            output, exit_text = wait_for_shell_marker(
+                shell,
+                marker,
+                timeout_sec=self.command_timeout(label),
+                on_progress=lambda: self.log.append(f"{label} still running; waiting for completion marker.\n"),
+            )
+        except RuntimeError as exc:
+            if str(exc).startswith("REMOTE_COMPLETION_MARKER_MISSING:"):
+                self.log.append(f"{label} failed: {exc}\n")
+                raise
             self.log.append(f"{label} timed out; sending Ctrl-C and collecting shell output.\n")
             shell.send("\x03")
             time.sleep(1)

@@ -77,9 +77,90 @@ def test_missing_nested_marker_after_shell_prompt_fails_immediately() -> None:
     try:
         updater.wait_for_shell_marker(PromptShell(), "MARKER", timeout_sec=1)
     except RuntimeError as exc:
-        assert "without completion marker" in str(exc)
+        assert "REMOTE_COMPLETION_MARKER_MISSING" in str(exc)
     else:
         raise AssertionError("shell prompt without marker must fail")
+
+
+def test_gw007_ansi_prompt_without_completion_marker_fails_quickly() -> None:
+    """GW007 returns bracketed-paste control bytes after the idle Ubuntu prompt."""
+    class GatewayShell:
+        def __init__(self): self.pending = True
+        def recv_ready(self): return self.pending
+        def recv(self, _size):
+            self.pending = False
+            return b"\x1b[?2004h\x1b[?2004lswadmin@switch128gbssd:~/edge-bacnet-ui-v2$ \x1b[?2004h"
+    try:
+        updater.wait_for_shell_marker(GatewayShell(), "LEGACY_UPGRADE_gw007", timeout_sec=0.01)
+    except RuntimeError as exc:
+        assert "returned before completion marker" in str(exc)
+    else:
+        raise AssertionError("an idle ANSI Ubuntu prompt without the marker must fail immediately")
+
+
+def test_marker_exit_codes_and_active_output_are_not_misread_as_prompts() -> None:
+    class Shell:
+        def __init__(self, text): self.pending = [text.encode()]
+        def recv_ready(self): return bool(self.pending)
+        def recv(self, _size): return self.pending.pop(0)
+    output, code = updater.wait_for_shell_marker(Shell("apt still active: price is $5 # no prompt\nLEGACY_UPGRADE_ok:0\n"), "LEGACY_UPGRADE_ok", timeout_sec=1)
+    assert code == "0" and "price is $5" in output
+    _output, code = updater.wait_for_shell_marker(Shell("building #42\nLEGACY_UPGRADE_bad:17\n"), "LEGACY_UPGRADE_bad", timeout_sec=1)
+    assert code == "17"
+
+
+def test_nested_wrapper_preserves_compound_sudo_apt_and_emits_marker(monkeypatch) -> None:
+    class Shell:
+        def __init__(self): self.sent = []; self.pending = []
+        def send(self, text):
+            self.sent.append(text)
+            self.pending.append(b"apt work complete\nLEGACY_UPGRADE_1:0\n")
+        def recv_ready(self): return bool(self.pending)
+        def recv(self, _size): return self.pending.pop(0)
+    request = updater.replace(_request(), dry_run=False)
+    runner = updater.LegacyUpgradeRunner("nested-wrapper", request)
+    shell = Shell()
+    monkeypatch.setattr(runner, "ensure_gateway_shell", lambda: shell)
+    try:
+        code, _output = runner.run_nested_command(
+            "install approved runtime prerequisites",
+            "export DEBIAN_FRONTEND=noninteractive; export NEEDRESTART_MODE=a; sudo -S -p '' env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update && sudo -S -p '' env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y git",
+            "LEGACY_UPGRADE_1",
+            sudo_password="gateway-password",
+        )
+    finally:
+        runner.close()
+    wrapped = "".join(shell.sent)
+    assert code == 0
+    assert "(\n" in wrapped and "__iot_upgrade_rc=$?" in wrapped
+    assert "LEGACY_UPGRADE_1:%s" in wrapped
+    assert "NEEDRESTART_MODE=a" in wrapped and "DEBIAN_FRONTEND=noninteractive" in wrapped
+    assert "sudo -n env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install" in wrapped
+    assert "gateway-password" in wrapped
+
+
+def test_nested_ansi_marker_failure_does_not_send_ctrl_c_or_return_124(monkeypatch) -> None:
+    class Shell:
+        def __init__(self): self.sent = []; self.pending = []
+        def send(self, text):
+            self.sent.append(text)
+            self.pending.append(b"\x1b[?2004lswadmin@switch128gbssd:~/edge-bacnet-ui-v2$ \x1b[?2004h")
+        def recv_ready(self): return bool(self.pending)
+        def recv(self, _size): return self.pending.pop(0)
+    request = updater.replace(_request(), dry_run=False)
+    runner = updater.LegacyUpgradeRunner("nested-marker-missing", request)
+    shell = Shell()
+    monkeypatch.setattr(runner, "ensure_gateway_shell", lambda: shell)
+    try:
+        try:
+            runner.run_nested_command("install approved runtime prerequisites", "true", "LEGACY_UPGRADE_missing")
+        except RuntimeError as exc:
+            assert "REMOTE_COMPLETION_MARKER_MISSING" in str(exc)
+        else:
+            raise AssertionError("missing marker must not become a generic timeout result")
+    finally:
+        runner.close()
+    assert "\x03" not in "".join(shell.sent)
 
 
 def test_bootstrap_creates_runtime_account_directories_and_only_pinned_runtime_prerequisites() -> None:
