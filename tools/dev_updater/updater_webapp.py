@@ -56,8 +56,8 @@ DEFAULT_EDGE_RELEASE = DEFAULT_RELEASE_DEFINITION.edge_release
 DEFAULT_EDGE_UI_COMMIT = DEFAULT_RELEASE_DEFINITION.edge_ui_tag
 # Development authorities are immutable inputs.  The Agent remains fail-closed
 # unless IOT_EDGE_DEV_AGENT_COMMIT is explicitly configured at launch.
-DEFAULT_EDGE_UI_INPUT = "141de85c5cc6baae045778e61f621fba5e398ef6"
-DEFAULT_EDGE_AGENT_INPUT = "d9232758b93fc9954a64235be918724df08238de"
+DEFAULT_EDGE_UI_INPUT = "fcab55cb575d6d6816e3de0822f390eeec23a9af"
+DEFAULT_EDGE_AGENT_INPUT = "4920a96ecc7c5486bc3b323ce16dd4a4766a83ed"
 DEFAULT_EDGE_UI_DATA_DIR = "/home/swadmin/edge-bacnet-ui-v2/data"
 REMOTE_UI_PATH = "/home/swadmin/edge-bacnet-ui-v2"
 REMOTE_UI_ARTIFACT_PATH = "/home/swadmin/edge-bacnet-ui-v2-update.tar.gz"
@@ -810,7 +810,7 @@ def form_page(message: str = "") -> bytes:
         identity.PRODUCT_NAME,
         f"""
 <h1>{identity.PRODUCT_NAME}</h1>
-<p><b>Updater Version {identity.APP_VERSION}</b> (MSI ProductVersion {identity.MSI_PRODUCT_VERSION})</p>
+<p><b>Updater Version {identity.APP_VERSION}</b> (MSI ProductVersion {identity.MSI_PRODUCT_VERSION})<br>Source commit: <code>{identity.SOURCE_COMMIT}</code></p>
 <p>Upgrade older edge-only gateways through the Cradlepoint jump host. This is separate from IOTGWCFG and starts in preflight mode.</p>
 {warning}
 <section class="panel wide">

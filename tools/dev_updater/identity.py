@@ -6,10 +6,11 @@ from pathlib import Path
 
 PRODUCT_NAME = "IOT Edge Development Updater"
 APP_NAME = "IOTEdgeDevUpdater"
-APP_VERSION = "0.2.0-dev.2"
+APP_VERSION = "0.2.0-dev.4"
 # Windows Installer accepts numeric versions only. This maps the displayed
 # prerelease version above to the product version used for upgrades.
-MSI_PRODUCT_VERSION = "0.2.2"
+MSI_PRODUCT_VERSION = "0.2.4"
+SOURCE_COMMIT = "4920a96ecc7c5486bc3b323ce16dd4a4766a83ed"
 DEFAULT_PORT = 8791
 LEGACY_PORT = 8766
 DEFAULT_HOST = "127.0.0.1"

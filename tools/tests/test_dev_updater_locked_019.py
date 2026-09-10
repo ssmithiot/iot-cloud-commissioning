@@ -56,8 +56,9 @@ def test_identity_isolated_and_version_mapping_is_explicit(monkeypatch):
     monkeypatch.setenv("ProgramData", r"C:\ProgramData")
     assert identity.DEFAULT_PORT == 8791
     assert identity.LEGACY_PORT == 8766
-    assert identity.APP_VERSION == "0.2.0-dev.2"
-    assert identity.MSI_PRODUCT_VERSION == "0.2.2"
+    assert identity.APP_VERSION == "0.2.0-dev.4"
+    assert identity.MSI_PRODUCT_VERSION == "0.2.4"
+    assert identity.SOURCE_COMMIT == "4920a96ecc7c5486bc3b323ce16dd4a4766a83ed"
     assert identity.UPGRADE_CODE == "AECCDF45-A1D2-43A5-9142-32E6A984A66E"
     assert identity.env_path().name == ".env"
     assert "EdgeDevUpdater" in str(identity.env_path())
@@ -65,7 +66,7 @@ def test_identity_isolated_and_version_mapping_is_explicit(monkeypatch):
 
 def test_msi_upgrade_preserves_programdata_env_and_uses_new_product_version():
     build = (ROOT / "deploy/dev-updater/build-msi.sh").read_text(encoding="utf-8")
-    assert 'MSI="$OUT_DIR/$APP-0.2.0-dev.2-x64.msi"' in build
+    assert 'MSI="$OUT_DIR/$APP-$DISPLAY_VERSION-x64.msi"' in build
     assert 'UPGRADE_CODE=\'AECCDF45-A1D2-43A5-9142-32E6A984A66E\'' in build
     assert 'Version="$VERSION"' in build and 'RemoveExistingProducts After="InstallInitialize"' in build
     assert 'cp "$REPO"/deploy/dev-updater/requirements.txt "$REPO"/deploy/dev-updater/.env.example "$STAGE/"' in build
@@ -74,7 +75,8 @@ def test_msi_upgrade_preserves_programdata_env_and_uses_new_product_version():
 def test_form_keeps_the_original_phase_values_and_displays_commit_controls(tmp_path, monkeypatch):
     monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
     page = dev.form_page().decode()
-    assert "Updater Version 0.2.0-dev.2" in page
+    assert "Updater Version 0.2.0-dev.4" in page
+    assert "Source commit: <code>4920a96ecc7c5486bc3b323ce16dd4a4766a83ed</code>" in page
     assert page.count('type="checkbox" name="selected_phases"') == len(dev.PHASES)
     for index, phase in enumerate(dev.PHASES):
         assert f'value="{index}" checked> {phase}' in page
