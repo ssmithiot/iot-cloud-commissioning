@@ -30,6 +30,11 @@ def test_fresh_linux_has_no_false_rollback_requirement() -> None:
     assert updater.classify_target_state(probe()) is updater.TargetState.FRESH_LINUX
 
 
+def test_partial_agent_only_target_has_no_false_ui_checkpoint() -> None:
+    assert updater.classify_target_state(probe(config=True)) is updater.TargetState.PARTIAL_EDGE
+    assert "IOT_EDGE_PROBE_UI_DIR=yes" not in probe(config=True)
+
+
 def test_bootstrap_creates_runtime_account_directories_and_only_pinned_runtime_prerequisites() -> None:
     commands = "\n".join(command for _, command, _ in updater.bootstrap_runtime_commands(_request()))
     assert "useradd --create-home" in commands

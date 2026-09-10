@@ -212,6 +212,7 @@ class UpgradeJob:
     pre_upgrade_agent_default_port: str = "47809"
     pre_restart_agent_timestamp: str = ""
     target_state: TargetState | None = None
+    has_existing_ui: bool = False
 
 
 class Redactor:
@@ -2240,14 +2241,14 @@ class LegacyUpgradeRunner:
                     output = self.run_commands(inspect_commands(), stop_on_failure=False)
                 self.validate_inspection(output)
             elif index == 1:
-                if JOBS[self.job_id].target_state == TargetState.FRESH_LINUX:
+                if JOBS[self.job_id].target_state == TargetState.FRESH_LINUX or not JOBS[self.job_id].has_existing_ui:
                     with JOBS_LOCK:
                         job = JOBS[self.job_id]
                         job.phases[index].status = PhaseStatus.SKIPPED
-                        job.phases[index].detail = "Fresh installation: no pre-existing Edge state to restore"
+                        job.phases[index].detail = "No pre-existing UI tree to checkpoint"
                         job.current_phase = index + 1
                         job.status = "waiting"
-                    self.log.append("\nFresh installation: no pre-existing Edge state to restore. Checkpoint skipped.\n")
+                    self.log.append("\nNo pre-existing UI tree to checkpoint. Checkpoint skipped; deployment will repair/install it.\n")
                     return
                 output = self.run_commands(backup_commands(self.request.edge_release))
                 backup = self.extract_latest_backup(output)
@@ -2329,6 +2330,7 @@ class LegacyUpgradeRunner:
         state = classify_target_state(output)
         with JOBS_LOCK:
             JOBS[self.job_id].target_state = state
+            JOBS[self.job_id].has_existing_ui = "IOT_EDGE_PROBE_UI_DIR=yes" in output
         self.write_preflight_summary(output)
         self.log.append(f"\nTarget state: {state.value}. Deployment is idempotent; retry is safe after a failed phase.\n")
 
