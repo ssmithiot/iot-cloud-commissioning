@@ -107,7 +107,7 @@ PHASES = [
     "Apply UI update",
     "Confirm UI auth",
     "Restart local UI",
-    "Provision cloud gateway",
+    "Cloud gateway identity",
     "Clone/update cloud repo",
     "Write cloud config/token",
     "Install Python agent",
@@ -931,7 +931,7 @@ def form_page(message: str = "") -> bytes:
     <input type="password" name="ui_password" value="{ui_password}" autocomplete="off" required>
   </label>
   <div class="wide checks">
-    <label><input type="checkbox" name="full_install" value="1"> Full installation / rebuild gateway runtime</label>
+    <label><input id="full-install" type="checkbox" name="full_install" value="1"> Full installation / rebuild gateway runtime</label>
     <label><input type="checkbox" name="provision_new_cloud_gateway" value="1"> Provision new Cloud gateway identity</label>
     <label><input type="checkbox" name="dry_run" value="1" checked> Dry run / Preflight</label>
     <label><input type="checkbox" name="reuse_uploaded_zip" value="1"> Reuse uploaded UI artifact</label>
@@ -951,7 +951,7 @@ def form_page(message: str = "") -> bytes:
     <div class="phase-options">
       {''.join(f'<label><input type="checkbox" name="selected_phases" value="{i}" checked> {escape(name)}</label>' for i, name in enumerate(PHASES))}
     </div>
-    <span class="hint">All processes are selected by default. Use this for targeted reruns only.</span>
+    <span id="phase-selection-hint" class="hint">All processes are selected by default. Use this for targeted reruns only. Full Install always runs the complete phase set.</span>
   </div>
   <div class="wide">
     <button id="resolve-commits-button" type="button">Resolve commits</button>
@@ -988,8 +988,24 @@ const checkpointListButton = document.getElementById("checkpoint-list-button");
 const disableAgentButton = document.getElementById("disable-agent-button");
 const log = document.getElementById("log");
 const phaseChecks = () => [...document.querySelectorAll('input[name="selected_phases"]')];
-document.getElementById("select-all-phases").addEventListener("click", () => phaseChecks().forEach((input) => input.checked = true));
-document.getElementById("clear-all-phases").addEventListener("click", () => phaseChecks().forEach((input) => input.checked = false));
+const fullInstall = document.getElementById("full-install");
+const selectAllPhases = document.getElementById("select-all-phases");
+const clearAllPhases = document.getElementById("clear-all-phases");
+const phaseSelectionHint = document.getElementById("phase-selection-hint");
+function syncFullInstallPhases() {{
+  const locked = fullInstall.checked;
+  if (locked) phaseChecks().forEach((input) => input.checked = true);
+  selectAllPhases.disabled = locked;
+  clearAllPhases.disabled = locked;
+  phaseSelectionHint.textContent = locked
+    ? "Full Install always runs the complete phase set; individual phases cannot be deselected."
+    : "All processes are selected by default. Use this for targeted reruns only. Full Install always runs the complete phase set.";
+}}
+selectAllPhases.addEventListener("click", () => phaseChecks().forEach((input) => input.checked = true));
+clearAllPhases.addEventListener("click", () => phaseChecks().forEach((input) => input.checked = false));
+fullInstall.addEventListener("change", syncFullInstallPhases);
+phaseChecks().forEach((input) => input.addEventListener("change", () => {{ if (fullInstall.checked) input.checked = true; }}));
+syncFullInstallPhases();
 const phases = document.getElementById("phases");
 const summary = document.getElementById("summary");
 let pollTimer = null;
@@ -2527,7 +2543,8 @@ class LegacyUpgradeRunner:
                     "Selected target gateway": self.request.gateway_id,
                     "INSTALL MODE": self.request.install_mode.value.upper(),
                     "Cloud gateway identity": "NEW" if self.request.provision_new_cloud_gateway else "EXISTING",
-                    "Provision Cloud gateway": "WILL PROVISION" if self.request.provision_new_cloud_gateway else "SKIP",
+                    "Provision new gateway": "YES" if self.request.provision_new_cloud_gateway else "NO",
+                    "Existing token": "NEW TOKEN WILL BE ISSUED" if self.request.provision_new_cloud_gateway else "PRESERVE / VALIDATE",
                     "Gateway token": "PRESENT (operator supplied)" if self.request.gateway_api_token else "MISSING (gateway-local token will be checked)",
                     "Gateway token identity match": "NOT CHECKED (preflight)" if self.request.dry_run else "PENDING",
                     "Detected Edge state": job.target_state.value if job.target_state else "not detected",

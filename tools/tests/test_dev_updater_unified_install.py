@@ -128,6 +128,9 @@ def test_form_exposes_separate_existing_token_and_new_identity_controls() -> Non
     assert 'name="provision_new_cloud_gateway"' in page
     assert "Full installation / rebuild gateway runtime" in page
     assert "Provision new Cloud gateway identity" in page
+    assert "Full Install always runs the complete phase set" in page
+    assert "syncFullInstallPhases" in page
+    assert updater.PHASES[6] == "Cloud gateway identity"
 
 
 def test_cloud_provision_phase_is_skipped_for_existing_identity_and_only_opted_in_when_selected(monkeypatch) -> None:
@@ -172,7 +175,8 @@ def test_preflight_reports_existing_cloud_identity_token_status_without_heartbea
         with updater.JOBS_LOCK:
             summary = updater.JOBS[job_id].summary
         assert summary["Cloud gateway identity"] == "EXISTING"
-        assert summary["Provision Cloud gateway"] == "SKIP"
+        assert summary["Provision new gateway"] == "NO"
+        assert summary["Existing token"] == "PRESERVE / VALIDATE"
         assert summary["Gateway token"] .startswith("MISSING")
         assert summary["Gateway token identity match"] == "NOT CHECKED (preflight)"
     finally:

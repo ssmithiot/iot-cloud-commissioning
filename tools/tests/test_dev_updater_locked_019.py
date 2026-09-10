@@ -56,8 +56,8 @@ def test_identity_isolated_and_version_mapping_is_explicit(monkeypatch):
     monkeypatch.setenv("ProgramData", r"C:\ProgramData")
     assert identity.DEFAULT_PORT == 8791
     assert identity.LEGACY_PORT == 8766
-    assert identity.APP_VERSION == "0.2.0-dev.6"
-    assert identity.MSI_PRODUCT_VERSION == "0.2.6"
+    assert identity.APP_VERSION == "0.2.0-dev.7"
+    assert identity.MSI_PRODUCT_VERSION == "0.2.7"
     assert identity.SOURCE_COMMIT == "4920a96ecc7c5486bc3b323ce16dd4a4766a83ed"
     assert identity.UPGRADE_CODE == "AECCDF45-A1D2-43A5-9142-32E6A984A66E"
     assert identity.env_path().name == ".env"
@@ -75,7 +75,7 @@ def test_msi_upgrade_preserves_programdata_env_and_uses_new_product_version():
 def test_form_keeps_the_original_phase_values_and_displays_commit_controls(tmp_path, monkeypatch):
     monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
     page = dev.form_page().decode()
-    assert "Updater Version 0.2.0-dev.6" in page
+    assert "Updater Version 0.2.0-dev.7" in page
     assert "Source commit: <code>4920a96ecc7c5486bc3b323ce16dd4a4766a83ed</code>" in page
     assert page.count('type="checkbox" name="selected_phases"') == len(dev.PHASES)
     for index, phase in enumerate(dev.PHASES):
