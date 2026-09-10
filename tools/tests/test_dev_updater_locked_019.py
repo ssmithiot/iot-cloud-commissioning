@@ -56,8 +56,8 @@ def test_identity_isolated_and_version_mapping_is_explicit(monkeypatch):
     monkeypatch.setenv("ProgramData", r"C:\ProgramData")
     assert identity.DEFAULT_PORT == 8791
     assert identity.LEGACY_PORT == 8766
-    assert identity.APP_VERSION == "0.2.0-dev.4"
-    assert identity.MSI_PRODUCT_VERSION == "0.2.4"
+    assert identity.APP_VERSION == "0.2.0-dev.5"
+    assert identity.MSI_PRODUCT_VERSION == "0.2.5"
     assert identity.SOURCE_COMMIT == "4920a96ecc7c5486bc3b323ce16dd4a4766a83ed"
     assert identity.UPGRADE_CODE == "AECCDF45-A1D2-43A5-9142-32E6A984A66E"
     assert identity.env_path().name == ".env"
@@ -75,7 +75,7 @@ def test_msi_upgrade_preserves_programdata_env_and_uses_new_product_version():
 def test_form_keeps_the_original_phase_values_and_displays_commit_controls(tmp_path, monkeypatch):
     monkeypatch.setenv(identity.DATA_DIR_ENV_VAR, str(tmp_path))
     page = dev.form_page().decode()
-    assert "Updater Version 0.2.0-dev.4" in page
+    assert "Updater Version 0.2.0-dev.5" in page
     assert "Source commit: <code>4920a96ecc7c5486bc3b323ce16dd4a4766a83ed</code>" in page
     assert page.count('type="checkbox" name="selected_phases"') == len(dev.PHASES)
     for index, phase in enumerate(dev.PHASES):
@@ -750,6 +750,13 @@ def ui_checkout(root: Path, *, include_required: bool = True) -> tuple[Path, str
         (root / name).write_text(name)
     for directory in ui_artifact.REQUIRED_DIRS:
         (root / directory).mkdir(); (root / directory / "asset.txt").write_text(directory)
+    for name in ui_artifact.REQUIRED_DEPLOY_FILES:
+        destination = root / name
+        destination.parent.mkdir(exist_ok=True)
+        destination.write_text(name)
+    for name in ui_artifact.OPTIONAL_DEPLOY_FILES:
+        destination = root / name
+        destination.write_text(name)
     (root / ".env").write_text("SECRET=value")
     (root / "tests").mkdir(); (root / "tests" / "bad.py").write_text("bad")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
@@ -765,6 +772,37 @@ def test_ui_artifact_is_built_from_the_exact_clean_commit_and_is_allowlisted(tmp
     with tarfile.open(built.path, "r:gz") as archive:
         names = archive.getnames()
     assert ".env" not in names and not any(name.startswith("tests/") for name in names)
+    assert set(ui_artifact.REQUIRED_DEPLOY_FILES).issubset(names)
+    assert set(ui_artifact.OPTIONAL_DEPLOY_FILES).issubset(names)
+
+def test_ui_artifact_rejects_unapproved_deploy_content_and_remains_deterministic(tmp_path):
+    source, commit = ui_checkout(tmp_path / "source")
+    (source / "deploy" / "unapproved.sh").write_text("not runtime")
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "unapproved deploy"], check=True)
+    commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    first = ui_artifact.build_from_checkout(source, commit, tmp_path / "one.tar.gz")
+    second = ui_artifact.build_from_checkout(source, commit, tmp_path / "two.tar.gz")
+    assert first.sha256 == second.sha256
+    with tarfile.open(first.path, "r:gz") as archive:
+        assert "deploy/unapproved.sh" not in archive.getnames()
+
+def test_stale_cached_ui_artifact_without_deploy_payload_is_rebuilt(tmp_path, monkeypatch):
+    source, commit = ui_checkout(tmp_path / "source")
+    cache = tmp_path / "cache"; cache.mkdir()
+    stale = cache / f"edge-ui-{commit}.tar.gz"
+    # Simulate the old builder: it contains the former UI allowlist only.
+    with tarfile.open(stale, "w:gz") as archive:
+        for name in ui_artifact.REQUIRED_FILES:
+            archive.add(source / name, arcname=name)
+        for directory in ui_artifact.REQUIRED_DIRS:
+            archive.add(source / directory, arcname=directory)
+    stale.with_suffix(".json").write_text(json.dumps({"repository": ui_artifact.EDGE_UI_REPOSITORY, "commit": commit, "sha256": ui_artifact.sha256(stale)}, sort_keys=True))
+    monkeypatch.setattr(ui_artifact, "REPOSITORY_URL", str(source))
+    rebuilt = ui_artifact.materialize(commit, root=cache)
+    ui_artifact.verify_contents(rebuilt.path)
+    with tarfile.open(rebuilt.path, "r:gz") as archive:
+        assert set(ui_artifact.REQUIRED_DEPLOY_FILES).issubset(archive.getnames())
 
 def test_ui_artifact_rejects_missing_runtime_file_and_hash_tampering(tmp_path):
     source, commit = ui_checkout(tmp_path / "source", include_required=False)

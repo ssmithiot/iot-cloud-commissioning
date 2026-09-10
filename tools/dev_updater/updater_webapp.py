@@ -325,13 +325,8 @@ def validate_embedded_ui_artifact_contents(artifact: Path) -> None:
 
 def validate_full_ui_artifact_contents(artifact: Path) -> None:
     """Full install must never fall back to the stale bundled router payload."""
-    required = {
-        "deploy/install-edge-router-runtime.sh",
-        "deploy/iot-cx-edge-router-control.py",
-        "deploy/iot-cx-edge-router.sudoers",
-        "deploy/router-mstp-nat-advertisement.patch",
-        "deploy/edge-bacnet-ui.service.example",
-    }
+    from tools.dev_updater.ui_artifact import REQUIRED_DEPLOY_FILES
+    required = set(REQUIRED_DEPLOY_FILES)
     with tarfile.open(artifact, "r:gz") as archive:
         names = set(archive.getnames())
     missing = sorted(required - names)
