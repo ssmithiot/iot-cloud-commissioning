@@ -40,7 +40,21 @@ def test_bootstrap_creates_runtime_account_directories_and_only_pinned_runtime_p
     assert "useradd --create-home" in commands
     assert "/etc/iot-cx-agent" in commands
     assert "python3-venv" in commands
+    assert "NEEDRESTART_MODE=a" in commands
+    assert "env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install" in commands
     assert "apt-get upgrade" not in commands
+
+
+def test_all_prerequisite_install_paths_disable_needrestart_interaction() -> None:
+    request = _request()
+    commands = [
+        *updater.bootstrap_runtime_commands(request),
+        *updater.repo_commands(request),
+        *updater.install_agent_commands(request),
+    ]
+    for label, command, _ in commands:
+        if "apt-get" in command:
+            assert "NEEDRESTART_MODE=a" in command, label
 
 
 def test_token_write_creates_missing_directory_replaces_once_and_keeps_unrelated_env() -> None:

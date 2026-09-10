@@ -1451,7 +1451,7 @@ def bootstrap_runtime_commands(request: UpgradeRequest) -> list[tuple[str, str, 
     return [
         ("validate supported Linux", ". /etc/os-release; test \"$ID\" = ubuntu; case \"$(uname -m)\" in x86_64|aarch64) ;; *) exit 1;; esac; test \"$(df -Pk / | awk 'NR==2{print $4}')\" -ge 1048576", False),
         ("create Edge runtime account", f"id -u {runtime_user} >/dev/null 2>&1 || sudo -S -p '' useradd --create-home --shell /bin/bash {runtime_user}", True),
-        ("install approved runtime prerequisites", "export DEBIAN_FRONTEND=noninteractive; sudo -S -p '' apt-get update && sudo -S -p '' apt-get install -y --no-install-recommends git python3 python3-venv python3-pip curl ca-certificates make patch", True),
+        ("install approved runtime prerequisites", "export DEBIAN_FRONTEND=noninteractive; export NEEDRESTART_MODE=a; sudo -S -p '' env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update && sudo -S -p '' env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y --no-install-recommends git python3 python3-venv python3-pip curl ca-certificates make patch", True),
         ("create Edge runtime directories", "sudo -S -p '' install -d -m 0755 -o swadmin -g swadmin /home/swadmin/edge-bacnet-ui-v2 /home/swadmin/iot-cloud-commissioning && sudo -S -p '' install -d -m 0755 -o root -g root /etc/iot-cx-agent && sudo -S -p '' install -d -m 0750 -o swadmin -g swadmin /var/lib/iot-cx-agent", True),
     ]
 
@@ -1645,9 +1645,9 @@ def repo_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         "echo 'prerequisites already present'; "
         "else "
         "rm -rf /tmp/iot-cx-venv-check; "
-        "export DEBIAN_FRONTEND=noninteractive; "
-        "timeout -k 10s 240s sudo -S -p '' apt-get update "
-        "&& timeout -k 10s 300s sudo -n apt-get install -y --no-install-recommends git python3-venv python3.10-venv; "
+        "export DEBIAN_FRONTEND=noninteractive; export NEEDRESTART_MODE=a; "
+        "timeout -k 10s 240s sudo -S -p '' env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update "
+        "&& timeout -k 10s 300s sudo -n env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y --no-install-recommends git python3-venv python3.10-venv; "
         "fi"
     )
     return [
@@ -1888,7 +1888,7 @@ echo "AGENT_EXACT_CHECKOUT=Passed"
         + "; fi"
     )
     return [
-        ("verify venv support", "rm -rf /tmp/iot-cx-venv-check; python3 -m venv /tmp/iot-cx-venv-check >/dev/null 2>&1 || (export DEBIAN_FRONTEND=noninteractive; sudo -S -p '' apt-get update && sudo -n apt-get install -y --no-install-recommends python3-venv python3.10-venv python3-pip); rm -rf /tmp/iot-cx-venv-check", True),
+        ("verify venv support", "rm -rf /tmp/iot-cx-venv-check; python3 -m venv /tmp/iot-cx-venv-check >/dev/null 2>&1 || (export DEBIAN_FRONTEND=noninteractive; export NEEDRESTART_MODE=a; sudo -S -p '' env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update && sudo -n env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y --no-install-recommends python3-venv python3.10-venv python3-pip); rm -rf /tmp/iot-cx-venv-check", True),
         ("checkout exact Agent source", exact_checkout, False),
         ("create agent venv", f"sudo -S -p '' -u swadmin sh -c 'cd {repo}/edge-agent && python3 -m venv .venv'", True),
         ("upgrade pip", f"sudo -S -p '' -u swadmin sh -c 'cd {repo}/edge-agent && .venv/bin/python -m pip install --upgrade pip'", True),

@@ -8,7 +8,7 @@ APP=IOTEdgeDevUpdater
 PRODUCT='IOT Edge Development Updater'
 UPGRADE_CODE='AECCDF45-A1D2-43A5-9142-32E6A984A66E'
 DISPLAY_VERSION="$(python3 -c "from tools.dev_updater.identity import APP_VERSION; print(APP_VERSION)")"
-SOURCE_COMMIT="$(python3 -c "from tools.dev_updater.identity import SOURCE_COMMIT; print(SOURCE_COMMIT)")"
+SOURCE_COMMIT="$(git -C "$REPO" rev-parse HEAD)"
 MSI="$OUT_DIR/$APP-$DISPLAY_VERSION-x64.msi"
 command -v wixl >/dev/null
 command -v wixl-heat >/dev/null
