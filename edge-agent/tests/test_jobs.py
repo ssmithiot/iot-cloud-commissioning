@@ -142,7 +142,7 @@ def test_bacnet_read_deferred_when_lock_is_held(tmp_path: Path, monkeypatch) -> 
     assert result is not None
     assert result["status"] == "deferred"
     assert result["error"] == "bacnet_runtime_busy"
-    assert result["message"] == "BACnet runtime is busy. Another local BACnet command is already using UDP 47814."
+    assert result["message"] == "BACnet runtime is busy. Another local BACnet command is already using UDP 47809."
 
 
 def test_agent_config_keeps_jobs_on_cloud_api_and_local_sqlite(tmp_path: Path) -> None:

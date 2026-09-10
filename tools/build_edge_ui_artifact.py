@@ -33,6 +33,9 @@ REQUIRED_FILES = (
 REQUIRED_DIRS = ("templates", "static")
 OPTIONAL_FILES = (
     "deploy/iot-cx-edge-router-control.py",
+    "deploy/iot-cx-edge-router.sudoers",
+    "deploy/install-edge-router-runtime.sh",
+    "deploy/router-mstp-nat-advertisement.patch",
     "deploy/edge-bacnet-ui.service.example",
     "deploy/iot-cx-bacnet-router.service.example",
 )

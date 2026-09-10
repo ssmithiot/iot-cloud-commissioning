@@ -75,6 +75,9 @@ UI_PACKAGE_FILES = (
 UI_PACKAGE_DIRS = ("templates", "static")
 UI_OPTIONAL_PACKAGE_FILES = (
     "deploy/iot-cx-edge-router-control.py",
+    "deploy/iot-cx-edge-router.sudoers",
+    "deploy/install-edge-router-runtime.sh",
+    "deploy/router-mstp-nat-advertisement.patch",
     "deploy/edge-bacnet-ui.service.example",
     "deploy/iot-cx-bacnet-router.service.example",
 )
@@ -206,7 +209,7 @@ class UpgradeJob:
     error: str = ""
     summary: dict[str, str] = field(default_factory=dict)
     runner: "LegacyUpgradeRunner | None" = None
-    pre_upgrade_agent_default_port: str = "47814"
+    pre_upgrade_agent_default_port: str = "47809"
     pre_restart_agent_timestamp: str = ""
     target_state: TargetState | None = None
 
@@ -817,7 +820,7 @@ def form_page(message: str = "") -> bytes:
     <div><b>Target UI version</b><span>{DEFAULT_EDGE_RELEASE}</span></div>
     <div><b>Target agent version</b><span>{agent_target_label}</span></div>
     <div><b>Package / manifest checksum</b><span>{escape(package_status)}</span></div>
-    <div><b>BACnet route policy</b><span>Existing route settings are preserved; unconfigured installs default to external router UDP 47814 with internal Edge router disabled.</span></div>
+    <div><b>BACnet route policy</b><span>Existing route settings are preserved; the general BACnet default is UDP 47809, while explicit Edge Router/FDR mode uses Agent source UDP 47814.</span></div>
     <div><b>Dry run / preflight</b><span>Default action. Shows target identity, SSH route, versions, route decision, files installed, preserved data, restarted services, backup and rollback scope.</span></div>
     <div><b>Final Update/Deploy</b><span>Disabled until the operator checks the final confirmation box after reviewing preflight output.</span></div>
   </div>
@@ -1320,7 +1323,7 @@ settings = {{
     "EDGE_UI_PASSWORD": {password!r},
 }}
 route_defaults = [
-    "export BACNET_IP_PORT=47814",
+    "export BACNET_IP_PORT=47809",
     "export BACNET_PORT_MODE=external",
 ]
 route_markers = (
@@ -1418,7 +1421,7 @@ def inspect_commands() -> list[tuple[str, str, bool]]:
         ("cloud repo folder", f'ls -ld {DEFAULT_REPO_PATH} 2>/dev/null || echo "missing iot-cloud-commissioning"', False),
         ("current Edge UI version", "grep -R \"Edge Release\\|Edge BACnet\" -n /home/swadmin/edge-bacnet-ui-v2/README.md /home/swadmin/edge-bacnet-ui-v2/templates/base.html 2>/dev/null | head -20 || true", False),
         ("current edge agent version", "/home/swadmin/iot-cloud-commissioning/edge-agent/.venv/bin/python -c 'import iot_cx_agent; print(\"EDGE_AGENT_VERSION=\" + getattr(iot_cx_agent, \"__version__\", \"unknown\"))' 2>/dev/null || python3 -c 'import iot_cx_agent; print(\"EDGE_AGENT_VERSION=\" + getattr(iot_cx_agent, \"__version__\", \"unknown\"))' 2>/dev/null || echo EDGE_AGENT_VERSION=unknown", False),
-        ("pre-upgrade agent BACnet default port", "awk '/^bacnet_default_port:/{print \"PRE_UPGRADE_AGENT_DEFAULT_PORT=\" $2; found=1; exit} END{if (!found) print \"PRE_UPGRADE_AGENT_DEFAULT_PORT=47814\"}' /etc/iot-cx-agent/agent.yaml 2>/dev/null || echo PRE_UPGRADE_AGENT_DEFAULT_PORT=47814", False),
+        ("pre-upgrade agent BACnet default port", "awk '/^bacnet_default_port:/{print \"PRE_UPGRADE_AGENT_DEFAULT_PORT=\" $2; found=1; exit} END{if (!found) print \"PRE_UPGRADE_AGENT_DEFAULT_PORT=47809\"}' /etc/iot-cx-agent/agent.yaml 2>/dev/null || echo PRE_UPGRADE_AGENT_DEFAULT_PORT=47809", False),
         ("edge UI active", "systemctl is-active edge-bacnet-ui.service 2>/dev/null || true", False),
         ("edge UI enabled", "systemctl is-enabled edge-bacnet-ui.service 2>/dev/null || true", False),
         (
@@ -1447,7 +1450,7 @@ def bootstrap_runtime_commands(request: UpgradeRequest) -> list[tuple[str, str, 
     return [
         ("validate supported Linux", ". /etc/os-release; test \"$ID\" = ubuntu; case \"$(uname -m)\" in x86_64|aarch64) ;; *) exit 1;; esac; test \"$(df -Pk / | awk 'NR==2{print $4}')\" -ge 1048576", False),
         ("create Edge runtime account", f"id -u {runtime_user} >/dev/null 2>&1 || sudo -S -p '' useradd --create-home --shell /bin/bash {runtime_user}", True),
-        ("install approved runtime prerequisites", "export DEBIAN_FRONTEND=noninteractive; sudo -S -p '' apt-get update && sudo -S -p '' apt-get install -y --no-install-recommends git python3 python3-venv python3-pip curl ca-certificates", True),
+        ("install approved runtime prerequisites", "export DEBIAN_FRONTEND=noninteractive; sudo -S -p '' apt-get update && sudo -S -p '' apt-get install -y --no-install-recommends git python3 python3-venv python3-pip curl ca-certificates make patch", True),
         ("create Edge runtime directories", "sudo -S -p '' install -d -m 0755 -o swadmin -g swadmin /home/swadmin/edge-bacnet-ui-v2 /home/swadmin/iot-cloud-commissioning && sudo -S -p '' install -d -m 0755 -o root -g root /etc/iot-cx-agent && sudo -S -p '' install -d -m 0750 -o swadmin -g swadmin /var/lib/iot-cx-agent", True),
     ]
 
@@ -1529,6 +1532,7 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         stop_command,
         ("confirm edge UI stopped", "systemctl is-active edge-bacnet-ui.service || true", False),
         ("apply code-only UI files", apply_ui_files_command(), True),
+        ("provision Edge router runtime", "sudo -S -p '' bash /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh", True),
         ("create UI Python environment", "sudo -S -p '' -u swadmin sh -c 'cd /home/swadmin/edge-bacnet-ui-v2 && python3 -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -r requirements.txt'", True),
         ("set UI runtime ownership", "sudo -S -p '' chown -R swadmin:swadmin /home/swadmin/edge-bacnet-ui-v2", True),
         ("record exact UI authority", f"printf '%s\\n' {shell_quote(request.edge_ui_commit)} > /home/swadmin/edge-bacnet-ui-v2/.iot-edge-ui-commit && chmod 0644 /home/swadmin/edge-bacnet-ui-v2/.iot-edge-ui-commit", False),
@@ -1656,8 +1660,8 @@ def repo_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     ]
 
 
-def agent_config_text(request: UpgradeRequest, bacnet_default_port: str = "47814") -> str:
-    port = bacnet_default_port if bacnet_default_port.isdigit() else "47814"
+def agent_config_text(request: UpgradeRequest, bacnet_default_port: str = "47809") -> str:
+    port = bacnet_default_port if bacnet_default_port.isdigit() else "47809"
     return f"""gateway_id: {request.gateway_id}
 site_id: {request.site_id}
 cloud_url: {request.cloud_url}
@@ -1678,7 +1682,12 @@ agent_version: current
 ui_version: current
 
 bacnet:
+  # The general default stays on 47809. This explicit profile reserves 47814
+  # for the Agent's FDR client while the Edge router owns 47809.
+  router_profile: edge-router-fdr
   default_port: {port}
+  bbmd_address: 192.168.1.200
+  bbmd_port: 47809
   bacwi_path: /home/swadmin/bacnet-stack/bin/bacwi
   bacrp_path: /home/swadmin/bacnet-stack/bin/bacrp
   bacrpm_path: /home/swadmin/bacnet-stack/bin/bacrpm
@@ -1830,7 +1839,7 @@ echo "EDGE_UI_DATA_DIR_VALIDATION=Passed"
     )
 
 
-def config_commands(request: UpgradeRequest, gateway_token: str, bacnet_default_port: str = "47814") -> list[tuple[str, str, bool]]:
+def config_commands(request: UpgradeRequest, gateway_token: str, bacnet_default_port: str = "47809") -> list[tuple[str, str, bool]]:
     agent_b64 = b64(agent_config_text(request, bacnet_default_port))
     env_b64 = b64(f"GATEWAY_API_TOKEN={gateway_token}\n")
     gw = shell_quote(request.gateway_id)
@@ -1895,8 +1904,8 @@ def service_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
     ]
 
 
-def final_commands(request: UpgradeRequest, expected_bacnet_default_port: str = "47814", pre_restart_timestamp: str = "") -> list[tuple[str, str, bool]]:
-    expected_port = shell_quote(expected_bacnet_default_port if expected_bacnet_default_port.isdigit() else "47814")
+def final_commands(request: UpgradeRequest, expected_bacnet_default_port: str = "47809", pre_restart_timestamp: str = "") -> list[tuple[str, str, bool]]:
+    expected_port = shell_quote(expected_bacnet_default_port if expected_bacnet_default_port.isdigit() else "47809")
     expected_agent = shell_quote(request.edge_agent_commit)
     expected_version = shell_quote(request.expected_agent_version)
     expected_ui = shell_quote(request.edge_ui_commit)
@@ -1976,7 +1985,7 @@ def provision_cloud_gateway(request: UpgradeRequest, log: LiveLog, redactor: Red
         "site_id": request.site_id,
         "hostname": request.gateway_id,
         "lan_ip": request.gateway_host,
-        "bacnet_port": 47814,
+        "bacnet_port": 47809,
         "agent_version": "current",
         "ui_version": "current",
     }
@@ -2008,7 +2017,7 @@ def provision_cloud_gateway(request: UpgradeRequest, log: LiveLog, redactor: Red
     log.append(f"site_id: {body.get('site_id', request.site_id)}\n")
     log.append(f"hostname: {body.get('hostname', request.gateway_id)}\n")
     log.append(f"lan_ip: {body.get('lan_ip', request.gateway_host)}\n")
-    log.append(f"bacnet_port: {body.get('bacnet_port', 47814)}\n")
+    log.append(f"bacnet_port: {body.get('bacnet_port', 47809)}\n")
     log.append(f"token_prefix: {token_prefix}...\n")
     log.append(f"gateway token length: {len(gateway_token)}\n")
     return gateway_token
@@ -2317,7 +2326,7 @@ class LegacyUpgradeRunner:
 
     def write_preflight_summary(self, output: str) -> None:
         agent_version = next((line.split("=", 1)[1] for line in output.splitlines() if line.startswith("EDGE_AGENT_VERSION=")), "unknown")
-        pre_port = next((line.split("=", 1)[1].strip() for line in output.splitlines() if line.startswith("PRE_UPGRADE_AGENT_DEFAULT_PORT=")), "47814")
+        pre_port = next((line.split("=", 1)[1].strip() for line in output.splitlines() if line.startswith("PRE_UPGRADE_AGENT_DEFAULT_PORT=")), "47809")
         sudo_state = "yes" if "SUDO_AVAILABLE=yes" in output else "not confirmed"
         backup_path = "/home/swadmin" if "BACKUP_PATH_WRITABLE=/home/swadmin" in output else "not confirmed"
         source_summary = {
@@ -2331,7 +2340,7 @@ class LegacyUpgradeRunner:
         release = load_release_definition(self.request.release_manifest_path)
         with JOBS_LOCK:
             job = JOBS[self.job_id]
-            job.pre_upgrade_agent_default_port = pre_port if pre_port.isdigit() else "47814"
+            job.pre_upgrade_agent_default_port = pre_port if pre_port.isdigit() else "47809"
             job.summary.update(
                 {
                     "Updater": f"{identity.PRODUCT_NAME} {identity.APP_VERSION}",
@@ -2423,7 +2432,7 @@ class LegacyUpgradeRunner:
             self.log.append(f"[dry-run] Required contents: {', '.join([*UI_PACKAGE_FILES, *(item + '/' for item in UI_PACKAGE_DIRS)])}\n")
             self.log.append("[dry-run] Preserved: data/, .env, start.sh, databases, saved devices/templates, programs, trends, timed overrides, credentials, gateway identity, cloud identity, BACnet route settings.\n")
             self.log.append("[dry-run] Services that would restart: edge-bacnet-ui.service; iot-cx-agent.service only when agent phases are selected.\n")
-            self.log.append("[dry-run] BACnet defaults apply only when no usable BACnet route settings exist: external router, UDP 47814, internal Edge router disabled.\n")
+            self.log.append("[dry-run] BACnet defaults apply only when no usable route settings exist: general UDP 47809; explicit Edge Router/FDR Agent source UDP 47814.\n")
             self.log.append("[dry-run] Rollback scope: full pre-upgrade folder backup plus release-named code-only checkpoint.\n")
             return
         self.log.append(f"Using resolved UI artifact: {artifact_path.name} ({self.request.ui_artifact_sha256})\n")
