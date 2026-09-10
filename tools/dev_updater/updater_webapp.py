@@ -23,7 +23,7 @@ import time
 import uuid
 from urllib import error as urllib_error
 from urllib import request as urllib_request
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -205,6 +205,8 @@ class UpgradeRequest:
     install_mode: InstallMode = InstallMode.AUTO
     bacnet_lan_interface: str = ""
     bacnet_router_address: str = ""
+    gateway_api_token: str = ""
+    provision_new_cloud_gateway: bool = False
 
 
 @dataclass
@@ -867,7 +869,12 @@ def form_page(message: str = "") -> bytes:
     <input name="cloud_url" value="{DEFAULT_CLOUD_URL}" required>
   </label>
   <label class="wide">Render / cloud admin token
-    <input type="password" name="admin_api_token" value="{admin_token}" autocomplete="off" required>
+    <input type="password" name="admin_api_token" value="{admin_token}" autocomplete="off">
+    <span class="hint">Required only when provisioning a genuinely new Cloud gateway identity.</span>
+  </label>
+  <label class="wide">Existing gateway API token
+    <input type="password" name="gateway_api_token" autocomplete="off">
+    <span class="hint">Required for a blank replacement gateway using an existing Cloud identity. If omitted, Full Install preserves and validates a gateway-local token when one exists.</span>
   </label>
   <label>Cradlepoint IP
     <input name="cradlepoint_host" placeholder="10.xx.xx.xx" required>
@@ -925,6 +932,7 @@ def form_page(message: str = "") -> bytes:
   </label>
   <div class="wide checks">
     <label><input type="checkbox" name="full_install" value="1"> Full installation / rebuild gateway runtime</label>
+    <label><input type="checkbox" name="provision_new_cloud_gateway" value="1"> Provision new Cloud gateway identity</label>
     <label><input type="checkbox" name="dry_run" value="1" checked> Dry run / Preflight</label>
     <label><input type="checkbox" name="reuse_uploaded_zip" value="1"> Reuse uploaded UI artifact</label>
     <label><input type="checkbox" name="skip_edge_ui_stop" value="1"> Edge UI already stopped / skip stop</label>
@@ -938,7 +946,7 @@ def form_page(message: str = "") -> bytes:
     <button type="button" id="clear-all-phases">Clear all</button>
     <div class="phase-groups">
       <div><b>1. UI Update</b><span>Back up, upload, apply, authenticate, and restart the local BACnet UI.</span></div>
-      <div><b>2. Provision + Agent Update</b><span>Provision the gateway, pull the selected Git release, install Python, and restart the cloud agent.</span></div>
+      <div><b>2. Cloud Identity + Agent Update</b><span>Provision only when explicitly selected; otherwise preserve the existing identity/token, then install the selected agent release.</span></div>
     </div>
     <div class="phase-options">
       {''.join(f'<label><input type="checkbox" name="selected_phases" value="{i}" checked> {escape(name)}</label>' for i, name in enumerate(PHASES))}
@@ -1160,6 +1168,7 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
     if final_update_confirmed and not parse_bool(fields, "commit_resolution_confirmed"):
         raise ValueError("Resolve both commit IDs, review the full SHAs, and check the commit confirmation box before execution.")
     dry_run = parse_bool(fields, "dry_run") or not final_update_confirmed
+    provision_new_cloud_gateway = parse_bool(fields, "provision_new_cloud_gateway")
     if install_mode == InstallMode.FULL and selected_phases != tuple(range(len(PHASES))):
         raise ValueError("Full installation requires every deployment phase; select all phases before execution.")
     if final_update_confirmed and selected_phases and selected_phases not in STANDARD_REAL_RUN_PHASE_SETS:
@@ -1215,16 +1224,19 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         install_mode=install_mode,
         bacnet_lan_interface=value(fields, "bacnet_lan_interface"),
         bacnet_router_address=value(fields, "bacnet_router_address"),
+        gateway_api_token=value(fields, "gateway_api_token"),
+        provision_new_cloud_gateway=provision_new_cloud_gateway,
     )
     required = [
         ("Gateway number", request.gateway_id),
         ("Cloud API URL", request.cloud_url),
-        ("Render / cloud admin token", request.admin_api_token),
         ("Cradlepoint IP", request.cradlepoint_host),
         ("Cradlepoint password", request.cradlepoint_password),
         ("Gateway password", request.gateway_password),
         ("Local BACnet UI password", request.ui_password),
     ]
+    if request.provision_new_cloud_gateway:
+        required.append(("Render / cloud admin token", request.admin_api_token))
     missing = [name for name, field_value in required if not field_value]
     if missing:
         raise ValueError(f"Missing required field(s): {', '.join(missing)}")
@@ -1917,18 +1929,60 @@ echo "EDGE_UI_DATA_DIR_VALIDATION=Passed"
 
 def config_commands(request: UpgradeRequest, gateway_token: str, bacnet_default_port: str = "47809") -> list[tuple[str, str, bool]]:
     agent_b64 = b64(agent_config_text(request, bacnet_default_port))
-    env_b64 = b64(f"GATEWAY_API_TOKEN={gateway_token}\n")
     gw = shell_quote(request.gateway_id)
-    return [
+    commands = [
         ("set hostname", f"sudo -S -p '' hostnamectl set-hostname {gw}", True),
         ("create agent folders", "sudo -S -p '' mkdir -p /etc/iot-cx-agent /var/lib/iot-cx-agent", True),
         ("backup existing agent config", 'if [ -f /etc/iot-cx-agent/agent.yaml ]; then sudo -S -p \'\' cp /etc/iot-cx-agent/agent.yaml "/etc/iot-cx-agent/agent.yaml.bak.$(date +%Y%m%d-%H%M%S)"; fi', True),
-        ("backup existing token env", 'if [ -f /etc/iot-cx-agent/edge-agent.env ]; then sudo -S -p \'\' cp /etc/iot-cx-agent/edge-agent.env "/etc/iot-cx-agent/edge-agent.env.bak.$(date +%Y%m%d-%H%M%S)"; fi', True),
         ("write agent.yaml", f"printf %s {shell_quote(agent_b64)} | base64 -d > /tmp/agent.yaml && sudo -S -p '' install -m 0644 -o root -g root /tmp/agent.yaml /etc/iot-cx-agent/agent.yaml && rm -f /tmp/agent.yaml", True),
-        ("write edge-agent.env", f"printf %s {shell_quote(env_b64)} | base64 -d > /tmp/edge-agent.env && sudo -S -p '' install -m 0600 -o root -g root /tmp/edge-agent.env /etc/iot-cx-agent/edge-agent.env && rm -f /tmp/edge-agent.env", True),
+    ]
+    if gateway_token:
+        env_b64 = b64(f"GATEWAY_API_TOKEN={gateway_token}\n")
+        commands.extend([
+            ("backup existing token env", 'if [ -f /etc/iot-cx-agent/edge-agent.env ]; then sudo -S -p \'\' cp /etc/iot-cx-agent/edge-agent.env "/etc/iot-cx-agent/edge-agent.env.bak.$(date +%Y%m%d-%H%M%S)"; fi', True),
+            ("write edge-agent.env", f"printf %s {shell_quote(env_b64)} | base64 -d > /tmp/edge-agent.env && sudo -S -p '' install -m 0600 -o root -g root /tmp/edge-agent.env /etc/iot-cx-agent/edge-agent.env && rm -f /tmp/edge-agent.env", True),
+        ])
+    else:
+        commands.append(("preserve validated gateway token", "sudo -S -p '' test -s /etc/iot-cx-agent/edge-agent.env && sudo -S -p '' grep -q '^GATEWAY_API_TOKEN=.' /etc/iot-cx-agent/edge-agent.env", True))
+    commands.extend([
         ("fix agent data ownership", "sudo -S -p '' install -d -m 0750 -o swadmin -g swadmin /var/lib/iot-cx-agent", True),
         ("safe config verification", "grep -E 'gateway_id:|site_id:|cloud_url:|local_ui_url:|local_edge_trends_enabled:|bacnet_default_port:' /etc/iot-cx-agent/agent.yaml && sudo -S -p '' test -s /etc/iot-cx-agent/edge-agent.env && echo 'GATEWAY_API_TOKEN=***SET***' && ls -ld /var/lib/iot-cx-agent", True),
-    ]
+    ])
+    return commands
+
+
+def validate_gateway_token(request: UpgradeRequest, token: str) -> None:
+    """Use a read-only, gateway-scoped endpoint; never use heartbeat as validation."""
+    url = f"{request.cloud_url}/api/edge/{quote(request.gateway_id, safe='')}/trend-configs"
+    http_request = urllib_request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+    try:
+        with urllib_request.urlopen(http_request, timeout=20) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Gateway token validation returned HTTP {response.status}")
+            json.loads(response.read().decode("utf-8"))
+    except urllib_error.HTTPError as exc:
+        if exc.code == 403:
+            raise RuntimeError(f"Gateway token identity match FAIL: token is not authorized for {request.gateway_id}.") from exc
+        if exc.code == 401:
+            raise RuntimeError("Gateway token validation failed: token is missing, revoked, expired, or invalid.") from exc
+        raise RuntimeError(f"Gateway token validation failed with HTTP {exc.code}.") from exc
+    except (urllib_error.URLError, TimeoutError, ValueError) as exc:
+        raise RuntimeError(f"Gateway token validation could not reach the Cloud: {exc}") from exc
+
+
+def validate_preserved_gateway_token_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
+    endpoint = shell_quote(f"{request.cloud_url}/api/edge/{quote(request.gateway_id, safe='')}/trend-configs")
+    script = f'''set -eu
+token=$(sudo -S -p '' sed -n 's/^GATEWAY_API_TOKEN=//p' /etc/iot-cx-agent/edge-agent.env | head -n 1)
+test -n "$token" || {{ echo 'GATEWAY_TOKEN_IDENTITY_MATCH=FAIL token missing'; exit 1; }}
+status=$(curl --silent --show-error --output /dev/null --write-out '%{{http_code}}' --connect-timeout 10 --max-time 20 -H "Authorization: Bearer $token" {endpoint})
+case "$status" in
+  200) echo 'GATEWAY_TOKEN_IDENTITY_MATCH=PASS gateway_id={request.gateway_id}' ;;
+  401) echo 'GATEWAY_TOKEN_IDENTITY_MATCH=FAIL token invalid'; exit 1 ;;
+  403) echo 'GATEWAY_TOKEN_IDENTITY_MATCH=FAIL gateway_id mismatch expected={request.gateway_id}'; exit 1 ;;
+  *) echo "GATEWAY_TOKEN_IDENTITY_MATCH=FAIL HTTP=$status"; exit 1 ;;
+esac'''
+    return [("validate preserved gateway token identity", "sudo -S -p '' sh -c " + shell_quote(script), True)]
 
 
 def install_agent_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
@@ -2365,6 +2419,28 @@ class LegacyUpgradeRunner:
                 output = self.run_commands(restart_ui_commands())
                 self.validate_ui_restart(output)
             elif index == 6:
+                if not self.request.provision_new_cloud_gateway:
+                    if self.request.gateway_api_token:
+                        self.redactor.add(self.request.gateway_api_token)
+                        if self.request.dry_run:
+                            self.log.append("[dry-run] Existing operator-supplied gateway token is present; its gateway identity will be validated with read-only trend-config access on execution.\n")
+                        else:
+                            validate_gateway_token(self.request, self.request.gateway_api_token)
+                            self.log.append(f"Gateway token identity match: PASS ({self.request.gateway_id})\n")
+                        with JOBS_LOCK:
+                            JOBS[self.job_id].gateway_token = self.request.gateway_api_token
+                    elif self.request.dry_run:
+                        self.log.append("[dry-run] No operator token supplied; execution will preserve and validate the existing gateway-local GATEWAY_API_TOKEN.\n")
+                    else:
+                        self.run_commands(validate_preserved_gateway_token_commands(self.request))
+                    with JOBS_LOCK:
+                        job = JOBS[self.job_id]
+                        job.phases[index].status = PhaseStatus.SKIPPED
+                        job.phases[index].detail = "Skipped; existing Cloud gateway identity retained"
+                        job.current_phase = index + 1
+                        job.status = "waiting"
+                    self.log.append("\nProvision Cloud gateway: SKIPPED (existing identity retained)\n")
+                    return
                 if self.request.dry_run:
                     self.log.append("[dry-run] Would POST /api/admin/gateways/provision and capture gateway token.\n")
                     token = "iotcc_gw_dryrun_example-token"
@@ -2377,8 +2453,8 @@ class LegacyUpgradeRunner:
                 self.run_commands(repo_commands(self.request))
             elif index == 8:
                 token = JOBS[self.job_id].gateway_token
-                if not token:
-                    raise RuntimeError("No gateway token is available. Run cloud provisioning first.")
+                if not token and self.request.provision_new_cloud_gateway:
+                    raise RuntimeError("New cloud gateway provisioning did not return a gateway token.")
                 self.run_commands(config_commands(self.request, token, JOBS[self.job_id].pre_upgrade_agent_default_port))
             elif index == 9:
                 output = self.run_commands(install_agent_commands(self.request))
@@ -2450,6 +2526,10 @@ class LegacyUpgradeRunner:
                     "Updater": f"{identity.PRODUCT_NAME} {identity.APP_VERSION}",
                     "Selected target gateway": self.request.gateway_id,
                     "INSTALL MODE": self.request.install_mode.value.upper(),
+                    "Cloud gateway identity": "NEW" if self.request.provision_new_cloud_gateway else "EXISTING",
+                    "Provision Cloud gateway": "WILL PROVISION" if self.request.provision_new_cloud_gateway else "SKIP",
+                    "Gateway token": "PRESENT (operator supplied)" if self.request.gateway_api_token else "MISSING (gateway-local token will be checked)",
+                    "Gateway token identity match": "NOT CHECKED (preflight)" if self.request.dry_run else "PENDING",
                     "Detected Edge state": job.target_state.value if job.target_state else "not detected",
                     "Resolved Edge UI commit": self.request.edge_ui_commit,
                     "Resolved Edge Agent commit": self.request.edge_agent_commit,

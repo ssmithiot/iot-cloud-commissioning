@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from tools.dev_updater import updater_webapp as updater
 
 
@@ -107,6 +109,76 @@ def test_token_write_creates_missing_directory_replaces_once_and_keeps_unrelated
     assert "install -d -m 0755 -o root -g root /etc/iot-cx-agent" in command
     assert "grep -v" in command and "EDGE_AGENT_WRITE_TOKEN" in command
     assert "install -m 0600 -o root -g root" in command
+
+
+def test_full_install_does_not_imply_cloud_provisioning_and_preserves_existing_token() -> None:
+    request = updater.replace(_request(), install_mode=updater.InstallMode.FULL, dry_run=True)
+    assert not request.provision_new_cloud_gateway
+    commands = "\n".join(command for _, command, _ in updater.config_commands(request, ""))
+    assert "preserve validated gateway token" in "\n".join(label for label, _, _ in updater.config_commands(request, ""))
+    assert "write edge-agent.env" not in commands
+    validation = "\n".join(command for _, command, _ in updater.validate_preserved_gateway_token_commands(request))
+    assert "/trend-configs" in validation
+    assert "/heartbeat" not in validation
+
+
+def test_form_exposes_separate_existing_token_and_new_identity_controls() -> None:
+    page = updater.form_page().decode()
+    assert 'name="gateway_api_token"' in page
+    assert 'name="provision_new_cloud_gateway"' in page
+    assert "Full installation / rebuild gateway runtime" in page
+    assert "Provision new Cloud gateway identity" in page
+
+
+def test_cloud_provision_phase_is_skipped_for_existing_identity_and_only_opted_in_when_selected(monkeypatch) -> None:
+    job_id = uuid.uuid4().hex
+    existing = updater.replace(_request(), dry_run=True, provision_new_cloud_gateway=False)
+    with updater.JOBS_LOCK:
+        updater.JOBS[job_id] = updater.UpgradeJob(request=existing)
+    try:
+        runner = updater.LegacyUpgradeRunner(job_id, existing)
+        runner.run_phase(6)
+        with updater.JOBS_LOCK:
+            assert updater.JOBS[job_id].phases[6].status is updater.PhaseStatus.SKIPPED
+            assert "existing Cloud gateway identity retained" in updater.JOBS[job_id].phases[6].detail
+    finally:
+        runner.close()
+        with updater.JOBS_LOCK:
+            updater.JOBS.pop(job_id, None)
+
+    provisioned = updater.replace(_request(), dry_run=False, provision_new_cloud_gateway=True)
+    calls = []
+    monkeypatch.setattr(updater, "provision_cloud_gateway", lambda request, log, redactor: calls.append(request.gateway_id) or "new-token")
+    with updater.JOBS_LOCK:
+        updater.JOBS[job_id] = updater.UpgradeJob(request=provisioned)
+    try:
+        runner = updater.LegacyUpgradeRunner(job_id, provisioned)
+        runner.run_phase(6)
+        assert calls == ["GW001"]
+    finally:
+        runner.close()
+        with updater.JOBS_LOCK:
+            updater.JOBS.pop(job_id, None)
+
+
+def test_preflight_reports_existing_cloud_identity_token_status_without_heartbeat() -> None:
+    job_id = uuid.uuid4().hex
+    request = updater.replace(_request(), install_mode=updater.InstallMode.FULL, dry_run=True)
+    with updater.JOBS_LOCK:
+        updater.JOBS[job_id] = updater.UpgradeJob(request=request, target_state=updater.TargetState.FRESH_LINUX)
+    try:
+        runner = updater.LegacyUpgradeRunner(job_id, request)
+        runner.write_preflight_summary("")
+        with updater.JOBS_LOCK:
+            summary = updater.JOBS[job_id].summary
+        assert summary["Cloud gateway identity"] == "EXISTING"
+        assert summary["Provision Cloud gateway"] == "SKIP"
+        assert summary["Gateway token"] .startswith("MISSING")
+        assert summary["Gateway token identity match"] == "NOT CHECKED (preflight)"
+    finally:
+        runner.close()
+        with updater.JOBS_LOCK:
+            updater.JOBS.pop(job_id, None)
 
 
 def test_missing_ui_agent_services_are_installed_idempotently() -> None:
