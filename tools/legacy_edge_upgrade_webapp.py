@@ -1016,6 +1016,8 @@ def wait_for_shell_marker(shell, marker: str, timeout_sec: float = 600.0) -> tup
             stripped = line.strip()
             if stripped.startswith(marker_prefix):
                 return output, stripped.partition(":")[2].strip()
+        if re.search(r"(?:^|\n)[^\n]*[#$]\s*$", output):
+            raise RuntimeError(f"Remote shell returned without completion marker {marker}")
     raise RuntimeError(f"Timed out waiting for command marker: {marker}")
 
 

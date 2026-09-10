@@ -139,6 +139,19 @@ class TargetState(str, Enum):
     FRESH_LINUX = "FRESH_LINUX"
 
 
+class InstallMode(str, Enum):
+    AUTO = "auto"
+    UPDATE = "update"
+    FULL = "full"
+
+
+def selected_install_mode(value: str | None) -> InstallMode:
+    try:
+        return InstallMode((value or "auto").strip().lower())
+    except ValueError as exc:
+        raise ValueError("IOT_EDGE_INSTALL_MODE must be auto, update, or full") from exc
+
+
 def classify_target_state(inspect_output: str) -> TargetState:
     """Classify from probe markers, never from hostnames or supplied versions."""
     values = dict(
@@ -187,6 +200,7 @@ class UpgradeRequest:
     development_agent_override: bool = False
     ui_artifact_path: str = ""
     ui_artifact_sha256: str = ""
+    install_mode: InstallMode = InstallMode.AUTO
 
 
 @dataclass
@@ -374,6 +388,7 @@ def load_env_defaults() -> dict[str, str]:
         "IOT_EDGE_DEV_UI_COMMIT": os.environ.get("IOT_EDGE_DEV_UI_COMMIT", ""),
         "IOT_EDGE_DEV_AGENT_COMMIT": os.environ.get("IOT_EDGE_DEV_AGENT_COMMIT", ""),
         "IOT_EDGE_DEV_UPDATER_PORT": os.environ.get("IOT_EDGE_DEV_UPDATER_PORT", ""),
+        "IOT_EDGE_INSTALL_MODE": os.environ.get("IOT_EDGE_INSTALL_MODE", "auto"),
         "GITHUB_TOKEN": os.environ.get("GITHUB_TOKEN", ""),
     }
     env_path = identity.env_path()
@@ -822,7 +837,7 @@ def form_page(message: str = "") -> bytes:
     <div><b>Target agent version</b><span>{agent_target_label}</span></div>
     <div><b>Package / manifest checksum</b><span>{escape(package_status)}</span></div>
     <div><b>BACnet route policy</b><span>Existing route settings are preserved; the general BACnet default is UDP 47809, while explicit Edge Router/FDR mode uses Agent source UDP 47814.</span></div>
-    <div><b>Dry run / preflight</b><span>Default action. Shows target identity, SSH route, versions, route decision, files installed, preserved data, restarted services, backup and rollback scope.</span></div>
+    <div><b>Install mode</b><span>Auto detects state. Full establishes the complete IOT-owned runtime without erasing unrelated Linux/customer configuration.</span></div>
     <div><b>Final Update/Deploy</b><span>Disabled until the operator checks the final confirmation box after reviewing preflight output.</span></div>
   </div>
 </section>
@@ -888,6 +903,7 @@ def form_page(message: str = "") -> bytes:
     <input type="password" name="ui_password" value="{ui_password}" autocomplete="off" required>
   </label>
   <div class="wide checks">
+    <label><input type="checkbox" name="full_install" value="1"> Full installation / rebuild gateway runtime</label>
     <label><input type="checkbox" name="dry_run" value="1" checked> Dry run / Preflight</label>
     <label><input type="checkbox" name="reuse_uploaded_zip" value="1"> Reuse uploaded UI artifact</label>
     <label><input type="checkbox" name="skip_edge_ui_stop" value="1"> Edge UI already stopped / skip stop</label>
@@ -1113,6 +1129,9 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         raise ValueError("Local BACnet UI password cannot contain a single quote for this legacy update flow.")
     final_update_confirmed = parse_bool(fields, "final_update_confirmed")
     defaults = load_env_defaults()
+    install_mode = InstallMode.FULL if parse_bool(fields, "full_install") else selected_install_mode(
+        value(fields, "install_mode") or defaults.get("IOT_EDGE_INSTALL_MODE", "auto")
+    )
     try:
         edge_ui, edge_agent = resolve_requested_commits(fields, defaults=defaults)
     except CommitResolutionError as exc:
@@ -1168,6 +1187,7 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         development_agent_override=True,
         ui_artifact_path=artifact_path,
         ui_artifact_sha256=artifact_sha256,
+        install_mode=install_mode,
     )
     required = [
         ("Gateway number", request.gateway_id),
@@ -1287,6 +1307,8 @@ def wait_for_shell_marker(shell, marker: str, timeout_sec: float = 600.0) -> tup
             stripped = line.strip()
             if stripped.startswith(marker_prefix):
                 return output, stripped.partition(":")[2].strip()
+        if re.search(r"(?:^|\n)[^\n]*[#$]\s*$", output):
+            raise RuntimeError(f"Remote shell returned without completion marker {marker}")
     raise RuntimeError(f"Timed out waiting for command marker: {marker}")
 
 
@@ -1453,6 +1475,25 @@ def bootstrap_runtime_commands(request: UpgradeRequest) -> list[tuple[str, str, 
         ("create Edge runtime account", f"id -u {runtime_user} >/dev/null 2>&1 || sudo -S -p '' useradd --create-home --shell /bin/bash {runtime_user}", True),
         ("install approved runtime prerequisites", "export DEBIAN_FRONTEND=noninteractive; export NEEDRESTART_MODE=a; sudo -S -p '' env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update && sudo -S -p '' env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y --no-install-recommends git python3 python3-venv python3-pip curl ca-certificates make patch", True),
         ("create Edge runtime directories", "sudo -S -p '' install -d -m 0755 -o swadmin -g swadmin /home/swadmin/edge-bacnet-ui-v2 /home/swadmin/iot-cloud-commissioning && sudo -S -p '' install -d -m 0755 -o root -g root /etc/iot-cx-agent && sudo -S -p '' install -d -m 0750 -o swadmin -g swadmin /var/lib/iot-cx-agent", True),
+    ]
+
+
+def full_install_commands() -> list[tuple[str, str, bool]]:
+    """IOT-owned machine baseline; never rewrites customer interface addressing."""
+    return [
+        ("validate apt and dpkg health", "sudo -S -p '' dpkg --audit; sudo -S -p '' dpkg --configure -a", True),
+        ("report network and serial hardware", "hostname; ip -br addr; ip route; ls -l /dev/serial/by-id 2>/dev/null || true; ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true", False),
+        ("create full runtime directories", "sudo -S -p '' install -d -m 0755 -o swadmin -g swadmin /home/swadmin/edge-bacnet-ui-v2/data /home/swadmin/iot-cloud-commissioning /home/swadmin/bacnet-stack && sudo -S -p '' install -d -m 0755 -o root -g root /etc/iot-cx-agent /etc/iot-cx-edge-router && sudo -S -p '' install -d -m 0750 -o swadmin -g swadmin /var/lib/iot-cx-agent /var/log/iot-cx-edge-router", True),
+        ("configure IOT firewall baseline", "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a; command -v ufw >/dev/null 2>&1 || (sudo -S -p '' env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update && sudo -S -p '' env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y --no-install-recommends ufw); sudo -S -p '' ufw allow 22/tcp; sudo -S -p '' ufw allow 5000/tcp; sudo -S -p '' ufw allow 47808/udp; sudo -S -p '' ufw allow 47809/udp; sudo -S -p '' ufw allow 47814/udp; sudo -S -p '' ufw --force enable; sudo -S -p '' ufw status numbered", True),
+    ]
+
+
+def full_router_runtime_commands() -> list[tuple[str, str, bool]]:
+    return [
+        ("require authoritative router runtime payload", "test -x /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh && test -f /home/swadmin/edge-bacnet-ui-v2/deploy/iot-cx-edge-router.sudoers && test -f /home/swadmin/edge-bacnet-ui-v2/deploy/router-mstp-nat-advertisement.patch", False),
+        ("install full router runtime", "sudo -S -p '' bash /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh", True),
+        ("validate router helper authorization", "sudo -S -p '' visudo -cf /etc/sudoers.d/iot-cx-edge-router && sudo -n /usr/local/sbin/iot-cx-edge-router-control status", True),
+        ("validate router build and boot persistence", "test -x /home/swadmin/bacnet-stack/bin/router-mstp && systemctl is-enabled iot-cx-mstp-router.service && systemctl is-active iot-cx-mstp-router.service", False),
     ]
 
 
@@ -2267,9 +2308,13 @@ class LegacyUpgradeRunner:
                     return
                 self.build_upload_zip()
             elif index == 3:
-                if JOBS[self.job_id].target_state in {TargetState.FRESH_LINUX, TargetState.PARTIAL_EDGE}:
+                if self.request.install_mode == InstallMode.FULL or JOBS[self.job_id].target_state in {TargetState.FRESH_LINUX, TargetState.PARTIAL_EDGE}:
                     self.run_commands(bootstrap_runtime_commands(self.request))
+                if self.request.install_mode == InstallMode.FULL:
+                    self.run_commands(full_install_commands())
                 self.run_commands(apply_ui_commands(self.request))
+                if self.request.install_mode == InstallMode.FULL:
+                    self.run_commands(full_router_runtime_commands())
             elif index == 4:
                 self.run_commands(auth_commands(self.request))
             elif index == 5:
@@ -2328,6 +2373,11 @@ class LegacyUpgradeRunner:
 
     def validate_inspection(self, output: str) -> None:
         state = classify_target_state(output)
+        if self.request.install_mode == InstallMode.UPDATE and state != TargetState.EXISTING_EDGE:
+            raise RuntimeError(
+                f"Update mode requires a complete existing IOT Edge baseline; detected {state.value}. "
+                "Select Full installation / rebuild gateway runtime instead."
+            )
         with JOBS_LOCK:
             JOBS[self.job_id].target_state = state
             JOBS[self.job_id].has_existing_ui = "IOT_EDGE_PROBE_UI_DIR=yes" in output
@@ -2355,6 +2405,7 @@ class LegacyUpgradeRunner:
                 {
                     "Updater": f"{identity.PRODUCT_NAME} {identity.APP_VERSION}",
                     "Selected target gateway": self.request.gateway_id,
+                    "INSTALL MODE": self.request.install_mode.value.upper(),
                     "Detected Edge state": job.target_state.value if job.target_state else "not detected",
                     "Resolved Edge UI commit": self.request.edge_ui_commit,
                     "Resolved Edge Agent commit": self.request.edge_agent_commit,

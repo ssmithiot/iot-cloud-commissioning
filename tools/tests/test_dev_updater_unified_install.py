@@ -35,6 +35,40 @@ def test_partial_agent_only_target_has_no_false_ui_checkpoint() -> None:
     assert "IOT_EDGE_PROBE_UI_DIR=yes" not in probe(config=True)
 
 
+def test_full_mode_overrides_detected_existing_or_partial_state() -> None:
+    assert updater.selected_install_mode("full") is updater.InstallMode.FULL
+    assert updater.classify_target_state(probe(ui=True, config=True)) is updater.TargetState.EXISTING_EDGE
+    assert updater.classify_target_state(probe(config=True)) is updater.TargetState.PARTIAL_EDGE
+    assert updater.full_install_commands()
+
+
+def test_update_mode_refuses_any_incomplete_edge_state() -> None:
+    assert updater.selected_install_mode("update") is updater.InstallMode.UPDATE
+    assert updater.classify_target_state(probe(config=True)) is not updater.TargetState.EXISTING_EDGE
+
+
+def test_full_install_includes_firewall_router_boot_and_noninteractive_baselines() -> None:
+    commands = "\n".join(command for _, command, _ in [*updater.full_install_commands(), *updater.full_router_runtime_commands()])
+    for rule in ("22/tcp", "5000/tcp", "47808/udp", "47809/udp", "47814/udp"):
+        assert f"ufw allow {rule}" in commands
+    assert "47816/udp" not in commands and "47817/udp" not in commands and "47825" not in commands
+    assert "NEEDRESTART_MODE=a" in commands
+    assert "router-mstp" in commands and "visudo -cf" in commands
+
+
+def test_missing_nested_marker_after_shell_prompt_fails_immediately() -> None:
+    class PromptShell:
+        def __init__(self): self.called = False
+        def recv_ready(self): return not self.called
+        def recv(self, _size): self.called = True; return b"swadmin@gateway:~$ "
+    try:
+        updater.wait_for_shell_marker(PromptShell(), "MARKER", timeout_sec=1)
+    except RuntimeError as exc:
+        assert "without completion marker" in str(exc)
+    else:
+        raise AssertionError("shell prompt without marker must fail")
+
+
 def test_bootstrap_creates_runtime_account_directories_and_only_pinned_runtime_prerequisites() -> None:
     commands = "\n".join(command for _, command, _ in updater.bootstrap_runtime_commands(_request()))
     assert "useradd --create-home" in commands

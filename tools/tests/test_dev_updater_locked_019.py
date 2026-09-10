@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 LEGACY = ROOT / "tools/legacy_edge_upgrade_webapp.py"
 DEV = ROOT / "tools/dev_updater/updater_webapp.py"
 BASELINE = {
-    "tools/legacy_edge_upgrade_webapp.py": "317b9850093bafe9253db9a5845a828f43f16d0884993836143113218084cd8c",
+    "tools/legacy_edge_upgrade_webapp.py": "77d1c72dd028c2e5d2aa521a9cb67f5644f31bf2a3d2cddb325b8dec693708cb",
     "tools/start-legacy-edge-upgrade-webapp.cmd": "4117769e55c2b7a0680e1f91453dee56a123d585ae3fcebf167623a8d26ff6a7",
     "tools/gateway-update-requirements.txt": "68adc66b9c7a2d58ef8db894fd37cd5ae465d597ae7eb0f3cb14789316038dfa",
     "tools/releases/manifests/edge-0.1.9.json": "dffbb61a800917eee26a3b1711d3f6fce7c23b82c442af66bcf1214f5199efa0",
