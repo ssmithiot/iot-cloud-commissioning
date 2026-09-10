@@ -1235,7 +1235,7 @@ def parse_upgrade_request(body: bytes) -> UpgradeRequest:
         raise ValueError(f"Missing required field(s): {', '.join(missing)}")
     if request.edge_release != manifest.edge_release:
         raise ValueError(f"Edge Release {request.edge_release} does not match manifest Edge Release {manifest.edge_release}")
-    if request.install_mode == InstallMode.FULL:
+    if request.install_mode == InstallMode.FULL and not request.dry_run:
         if not re.fullmatch(r"[A-Za-z0-9_.:-]+", request.bacnet_lan_interface):
             raise ValueError("Full installation requires a selected BACnet LAN interface from Preflight.")
         if not re.fullmatch(r"(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}", request.bacnet_router_address):
