@@ -887,6 +887,28 @@ def test_auth_commands_include_safe_verification() -> None:
     assert "BACNET_PORT_MODE" in verify_command
 
 
+def test_auth_token_write_creates_missing_agent_directory_and_preserves_env_entries(tmp_path: Path) -> None:
+    command = next(command for label, command, _sudo in auth_commands(make_request()) if label == "write edge agent adapter token")
+    agent_dir = tmp_path / "etc" / "iot-cx-agent"
+    agent_env = agent_dir / "edge-agent.env"
+    # Exercise the exact generated shell program without requiring root in the
+    # test process. The updater itself retains root ownership requirements.
+    script = shlex.split(command)[-1]
+    script = script.replace("/etc/iot-cx-agent", str(agent_dir))
+    script = script.replace("install -d -m 0755 -o root -g root", "install -d -m 0755")
+    script = script.replace("install -m 0600 -o root -g root", "install -m 0600")
+
+    subprocess.run(["sh", "-c", script], check=True)
+    assert agent_dir.is_dir()
+    assert (agent_dir.stat().st_mode & 0o777) == 0o755
+    assert agent_env.read_text(encoding="utf-8") == "gateway-local-write-secret\n"
+
+    agent_env.write_text("OTHER_SETTING=retained\nEDGE_AGENT_WRITE_TOKEN=old\nSECOND=also-retained\n", encoding="utf-8")
+    subprocess.run(["sh", "-c", script], check=True)
+    assert agent_env.read_text(encoding="utf-8") == "OTHER_SETTING=retained\nSECOND=also-retained\ngateway-local-write-secret\n"
+    assert (agent_env.stat().st_mode & 0o777) == 0o600
+
+
 def test_verify_safe_start_sh_auth_command_has_balanced_shell_quotes() -> None:
     verify_command = safe_auth_verify_command()
 

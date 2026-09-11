@@ -1249,7 +1249,7 @@ def auth_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         raise ValueError("A gateway-local edge-agent write token is required.")
     token_b64 = b64(request.edge_agent_write_token + "\n")
     agent_env_script = (
-        "set -eu; tmp=$(mktemp); "
+        "set -eu; install -d -m 0755 -o root -g root /etc/iot-cx-agent; tmp=$(mktemp); "
         "grep -v '^EDGE_AGENT_WRITE_TOKEN=' /etc/iot-cx-agent/edge-agent.env 2>/dev/null > \"$tmp\" || true; "
         f"printf %s {shell_quote(token_b64)} | base64 -d >> \"$tmp\"; "
         "install -m 0600 -o root -g root \"$tmp\" /etc/iot-cx-agent/edge-agent.env; rm -f \"$tmp\""
