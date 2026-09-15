@@ -1243,7 +1243,14 @@ def send_shell_command(shell, command: str) -> None:
     shell.send(command + "\n")
 
 
-def wait_for_shell_marker(shell, marker: str, timeout_sec: float = 600.0, *, on_chunk=None) -> tuple[str, str]:
+def wait_for_shell_marker(
+    shell,
+    marker: str,
+    timeout_sec: float = 600.0,
+    *,
+    on_chunk=None,
+    terminal_text: str | None = None,
+) -> tuple[str, str]:
     deadline = time.time() + timeout_sec
     output = ""
     marker_prefix = f"{marker}:"
@@ -1252,6 +1259,8 @@ def wait_for_shell_marker(shell, marker: str, timeout_sec: float = 600.0, *, on_
         if chunk and on_chunk is not None:
             on_chunk(chunk)
         output += chunk
+        if terminal_text is not None and terminal_text in output:
+            return output, "0"
         for line in output.splitlines():
             stripped = line.strip()
             if stripped.startswith(marker_prefix):
@@ -2081,6 +2090,7 @@ class LegacyUpgradeRunner:
             command_to_send = command_to_send.replace(placeholder, password_pipe, 1)
         send_shell_command(shell, f"{command_to_send}\nprintf '\\n{marker}:%s\\n' $?")
         stream_output = label == "install MS/TP router runtime from UI artifact"
+        terminal_text = "MS_TP_ROUTER_RUNTIME=service_restart_requested" if stream_output else None
         def stream(chunk: str) -> None:
             self._nested_output_streamed = True
             self.log.append(chunk)
@@ -2090,6 +2100,7 @@ class LegacyUpgradeRunner:
                 marker,
                 timeout_sec=self.command_timeout(label),
                 on_chunk=stream if stream_output else None,
+                terminal_text=terminal_text,
             )
         except Exception:
             self.log.append(f"{label} timed out; sending Ctrl-C and collecting shell output.\n")

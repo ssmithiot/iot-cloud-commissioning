@@ -789,7 +789,7 @@ def test_router_runtime_handoff_streams_nested_shell_output() -> None:
         def __init__(self):
             self.chunks = [
                 b"MS_TP_ROUTER_RUNTIME=installer_started\n",
-                b"LEGACY_UPGRADE_router_runtime:0\n",
+                b"MS_TP_ROUTER_RUNTIME=service_restart_requested\n",
             ]
 
         def recv_ready(self):
@@ -804,9 +804,10 @@ def test_router_runtime_handoff_streams_nested_shell_output() -> None:
         "LEGACY_UPGRADE_router_runtime",
         timeout_sec=1.0,
         on_chunk=streamed.append,
+        terminal_text="MS_TP_ROUTER_RUNTIME=service_restart_requested",
     )
     assert exit_text == "0"
-    assert output == "MS_TP_ROUTER_RUNTIME=installer_started\nLEGACY_UPGRADE_router_runtime:0\n"
+    assert output == "MS_TP_ROUTER_RUNTIME=installer_started\nMS_TP_ROUTER_RUNTIME=service_restart_requested\n"
     assert "".join(streamed) == output
     assert "MS_TP_ROUTER_RUNTIME=installer_started" in streamed[0]
 
