@@ -784,30 +784,24 @@ def test_apply_ui_hands_off_packaged_mstp_router_runtime_only() -> None:
     assert "edge-bacnet-ui.service" not in handoff
 
 
-def test_router_runtime_handoff_streams_nested_shell_output() -> None:
-    class Shell:
-        def __init__(self):
-            self.chunks = [
-                b"MS_TP_ROUTER_RUNTIME=installer_started\n",
-                b"MS_TP_ROUTER_RUNTIME=service_restart_requested\n",
-            ]
-
-        def recv_ready(self):
-            return bool(self.chunks)
-
-        def recv(self, _size):
-            return self.chunks.pop(0)
-
+def test_router_runtime_handoff_streams_until_the_nested_shell_prompt(monkeypatch) -> None:
+    chunks = iter((
+        "MS_TP_ROUTER_RUNTIME=installer_started\n",
+        "MS_TP_ROUTER_RUNTIME=service_restart_requested\n",
+        "\x1b[?2004h\x1b]0;swadmin@GW007: ~/edge-bacnet-ui-v2swadmin@GW007:~/edge-bacnet-ui-v2$ ",
+    ))
+    monkeypatch.setattr(dev, "read_shell", lambda *_args, **_kwargs: next(chunks))
     streamed: list[str] = []
     output, exit_text = dev.wait_for_shell_marker(
-        Shell(),
+        object(),
         "LEGACY_UPGRADE_router_runtime",
         timeout_sec=1.0,
         on_chunk=streamed.append,
         terminal_text="MS_TP_ROUTER_RUNTIME=service_restart_requested",
+        terminal_prompt=True,
     )
     assert exit_text == "0"
-    assert output == "MS_TP_ROUTER_RUNTIME=installer_started\nMS_TP_ROUTER_RUNTIME=service_restart_requested\n"
+    assert output.endswith("$ ")
     assert "".join(streamed) == output
     assert "MS_TP_ROUTER_RUNTIME=installer_started" in streamed[0]
 

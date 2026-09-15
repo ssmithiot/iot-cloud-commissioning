@@ -1250,16 +1250,23 @@ def wait_for_shell_marker(
     *,
     on_chunk=None,
     terminal_text: str | None = None,
+    terminal_prompt: bool = False,
 ) -> tuple[str, str]:
     deadline = time.time() + timeout_sec
     output = ""
     marker_prefix = f"{marker}:"
+    terminal_seen = False
     while time.time() < deadline:
         chunk = read_shell(shell, timeout_sec=1.0, quiet_sec=0.1)
         if chunk and on_chunk is not None:
             on_chunk(chunk)
         output += chunk
         if terminal_text is not None and terminal_text in output:
+            terminal_seen = True
+        if terminal_seen and terminal_prompt:
+            if any(line.strip().endswith(("$", "#")) for line in output.splitlines()):
+                return output, "0"
+        elif terminal_seen:
             return output, "0"
         for line in output.splitlines():
             stripped = line.strip()
@@ -2108,6 +2115,7 @@ class LegacyUpgradeRunner:
                 timeout_sec=self.command_timeout(label),
                 on_chunk=stream if stream_output else None,
                 terminal_text=terminal_text,
+                terminal_prompt=stream_output,
             )
         except Exception:
             self.log.append(f"{label} timed out; sending Ctrl-C and collecting shell output.\n")
