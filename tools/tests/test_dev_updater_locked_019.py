@@ -34,8 +34,7 @@ BASELINE = {
 }
 CONNECTIONS = (
     "connect_client", "connect_client_keyboard_interactive", "read_shell", "send_shell_command",
-    "wait_for_shell_text", "wait_for_shell_marker", "ensure_cradlepoint_client", "ensure_gateway_client",
-    "ensure_gateway_shell", "run_nested_command",
+    "wait_for_shell_text", "ensure_cradlepoint_client", "ensure_gateway_client", "ensure_gateway_shell",
 )
 
 def code(path: Path, name: str) -> str:
@@ -779,8 +778,37 @@ def test_apply_ui_hands_off_packaged_mstp_router_runtime_only() -> None:
     commands = {label: command for label, command, _needs_sudo in dev.apply_ui_commands(SimpleNamespace(skip_edge_ui_stop=False))}
     handoff = commands["install MS/TP router runtime from UI artifact"]
     assert "install-edge-router-runtime.sh" in handoff
-    assert "systemctl restart iot-cx-mstp-router.service" in handoff
+    assert "MS_TP_ROUTER_RUNTIME=installer_started" in handoff
+    assert "MS_TP_ROUTER_RUNTIME=service_restart_requested" in handoff
+    assert "systemctl restart --no-block iot-cx-mstp-router.service" in handoff
     assert "edge-bacnet-ui.service" not in handoff
+
+
+def test_router_runtime_handoff_streams_nested_shell_output() -> None:
+    class Shell:
+        def __init__(self):
+            self.chunks = [
+                b"MS_TP_ROUTER_RUNTIME=installer_started\n",
+                b"LEGACY_UPGRADE_router_runtime:0\n",
+            ]
+
+        def recv_ready(self):
+            return bool(self.chunks)
+
+        def recv(self, _size):
+            return self.chunks.pop(0)
+
+    streamed: list[str] = []
+    output, exit_text = dev.wait_for_shell_marker(
+        Shell(),
+        "LEGACY_UPGRADE_router_runtime",
+        timeout_sec=1.0,
+        on_chunk=streamed.append,
+    )
+    assert exit_text == "0"
+    assert output == "MS_TP_ROUTER_RUNTIME=installer_started\nLEGACY_UPGRADE_router_runtime:0\n"
+    assert "".join(streamed) == output
+    assert "MS_TP_ROUTER_RUNTIME=installer_started" in streamed[0]
 
 def test_ui_artifact_rejects_missing_runtime_file_and_hash_tampering(tmp_path):
     source, commit = ui_checkout(tmp_path / "source", include_required=False)

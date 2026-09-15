@@ -1243,12 +1243,15 @@ def send_shell_command(shell, command: str) -> None:
     shell.send(command + "\n")
 
 
-def wait_for_shell_marker(shell, marker: str, timeout_sec: float = 600.0) -> tuple[str, str]:
+def wait_for_shell_marker(shell, marker: str, timeout_sec: float = 600.0, *, on_chunk=None) -> tuple[str, str]:
     deadline = time.time() + timeout_sec
     output = ""
     marker_prefix = f"{marker}:"
     while time.time() < deadline:
-        output += read_shell(shell, timeout_sec=1.0, quiet_sec=0.1)
+        chunk = read_shell(shell, timeout_sec=1.0, quiet_sec=0.1)
+        if chunk and on_chunk is not None:
+            on_chunk(chunk)
+        output += chunk
         for line in output.splitlines():
             stripped = line.strip()
             if stripped.startswith(marker_prefix):
@@ -1484,7 +1487,7 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         ("apply code-only UI files", apply_ui_files_command(), False),
         (
             "install MS/TP router runtime from UI artifact",
-            "if test -f /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh; then sudo -S -p '' bash /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh && sudo -S -p '' systemctl restart iot-cx-mstp-router.service; else echo 'MS/TP router runtime payload not present in selected UI artifact; skipping router handoff.'; fi",
+            "if test -f /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh; then echo 'MS_TP_ROUTER_RUNTIME=installer_started'; sudo -S -p '' bash /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh && echo 'MS_TP_ROUTER_RUNTIME=installer_completed' && echo 'MS_TP_ROUTER_RUNTIME=service_restart_started' && sudo -S -p '' systemctl restart --no-block iot-cx-mstp-router.service && echo 'MS_TP_ROUTER_RUNTIME=service_restart_requested'; else echo 'MS/TP router runtime payload not present in selected UI artifact; skipping router handoff.'; fi",
             True,
         ),
         ("verify UI file ownership", "find /home/swadmin/edge-bacnet-ui-v2 -maxdepth 2 \\( ! -user swadmin -o ! -group swadmin \\) -print | head -20 || true", False),
@@ -1982,6 +1985,7 @@ class LegacyUpgradeRunner:
         self.cp_client = None
         self.gateway_client = None
         self.gateway_shell = None
+        self._nested_output_streamed = False
 
     def close(self) -> None:
         if self.gateway_shell is not None:
@@ -2076,8 +2080,17 @@ class LegacyUpgradeRunner:
             command_to_send = command_to_send.replace(sudo_prefix, "sudo -n")
             command_to_send = command_to_send.replace(placeholder, password_pipe, 1)
         send_shell_command(shell, f"{command_to_send}\nprintf '\\n{marker}:%s\\n' $?")
+        stream_output = label == "install MS/TP router runtime from UI artifact"
+        def stream(chunk: str) -> None:
+            self._nested_output_streamed = True
+            self.log.append(chunk)
         try:
-            output, exit_text = wait_for_shell_marker(shell, marker, timeout_sec=self.command_timeout(label))
+            output, exit_text = wait_for_shell_marker(
+                shell,
+                marker,
+                timeout_sec=self.command_timeout(label),
+                on_chunk=stream if stream_output else None,
+            )
         except Exception:
             self.log.append(f"{label} timed out; sending Ctrl-C and collecting shell output.\n")
             shell.send("\x03")
@@ -2106,6 +2119,7 @@ class LegacyUpgradeRunner:
             sudo_password = self.request.gateway_password if needs_sudo else None
             if client is None:
                 marker = f"LEGACY_UPGRADE_{int(time.time())}_{index}"
+                self._nested_output_streamed = False
                 exit_code, output = self.run_nested_command(label, command, marker, sudo_password=sudo_password)
             else:
                 self.log.append(f"\n$ {label}\n")
@@ -2116,7 +2130,7 @@ class LegacyUpgradeRunner:
                     timeout=int(self.command_timeout(label)),
                 )
             output_all += output
-            if output.strip():
+            if output.strip() and not (client is None and self._nested_output_streamed):
                 self.log.append(output)
             if exit_code != 0 and stop_on_failure:
                 raise RuntimeError(f"{label} failed with exit code {exit_code}")
