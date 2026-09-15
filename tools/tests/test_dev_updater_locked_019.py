@@ -811,6 +811,36 @@ def test_router_runtime_handoff_streams_nested_shell_output() -> None:
     assert "".join(streamed) == output
     assert "MS_TP_ROUTER_RUNTIME=installer_started" in streamed[0]
 
+
+def test_router_runtime_handoff_does_not_queue_a_legacy_marker(monkeypatch) -> None:
+    request = dev.UpgradeRequest(
+        gateway_id="GW007", site_id="GW007", cloud_url="https://example.test", admin_api_token="x",
+        cradlepoint_host="x", cradlepoint_user="x", cradlepoint_password="x", gateway_host="x",
+        gateway_user="x", gateway_password="gateway-password", git_ref="x", remote_repo="/repo",
+        ui_source_folder="x", ui_username="x", ui_password="x",
+    )
+    runner = dev.LegacyUpgradeRunner("router-marker-test", request)
+    sent: list[str] = []
+    monkeypatch.setattr(runner, "ensure_gateway_shell", lambda: object())
+    monkeypatch.setattr(dev, "send_shell_command", lambda _shell, command: sent.append(command))
+
+    seen: dict[str, object] = {}
+    def wait(_shell, _marker, **kwargs):
+        seen.update(kwargs)
+        return "MS_TP_ROUTER_RUNTIME=service_restart_requested\n", "0"
+    monkeypatch.setattr(dev, "wait_for_shell_marker", wait)
+
+    exit_code, _output = runner.run_nested_command(
+        "install MS/TP router runtime from UI artifact",
+        "echo MS_TP_ROUTER_RUNTIME=service_restart_requested",
+        "LEGACY_UPGRADE_router_runtime",
+        sudo_password="gateway-password",
+    )
+    assert exit_code == 0
+    assert sent == ["echo MS_TP_ROUTER_RUNTIME=service_restart_requested"]
+    assert seen["terminal_text"] == "MS_TP_ROUTER_RUNTIME=service_restart_requested"
+
+
 def test_ui_artifact_rejects_missing_runtime_file_and_hash_tampering(tmp_path):
     source, commit = ui_checkout(tmp_path / "source", include_required=False)
     with pytest.raises(ui_artifact.UIArtifactError, match="missing"):

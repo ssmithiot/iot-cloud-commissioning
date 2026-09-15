@@ -2088,9 +2088,16 @@ class LegacyUpgradeRunner:
             command_to_send = command_to_send.replace(sudo_prefix, placeholder, 1)
             command_to_send = command_to_send.replace(sudo_prefix, "sudo -n")
             command_to_send = command_to_send.replace(placeholder, password_pipe, 1)
-        send_shell_command(shell, f"{command_to_send}\nprintf '\\n{marker}:%s\\n' $?")
         stream_output = label == "install MS/TP router runtime from UI artifact"
         terminal_text = "MS_TP_ROUTER_RUNTIME=service_restart_requested" if stream_output else None
+        if terminal_text is None:
+            send_shell_command(shell, f"{command_to_send}\nprintf '\\n{marker}:%s\\n' $?")
+        else:
+            # The gateway's interactive SSH channel can leave a trailing
+            # marker command queued after this sudo/systemctl handoff.  Its
+            # final explicit milestone is emitted only after the restart was
+            # accepted, so use that as the terminal signal with no marker.
+            send_shell_command(shell, command_to_send)
         def stream(chunk: str) -> None:
             self._nested_output_streamed = True
             self.log.append(chunk)
