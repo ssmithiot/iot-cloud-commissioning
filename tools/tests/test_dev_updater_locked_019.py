@@ -882,6 +882,10 @@ def test_ui_artifact_checkout_disables_autocrlf(tmp_path):
     assert command[-3:] == ["checkout", "--detach", "a" * 40]
 
 
+def test_ui_artifact_schema_invalidates_pre_autocrlf_cache():
+    assert ui_artifact.ARTIFACT_SCHEMA_VERSION == 3
+
+
 def test_ui_artifact_rejects_missing_runtime_file_and_hash_tampering(tmp_path):
     source, commit = ui_checkout(tmp_path / "source", include_required=False)
     with pytest.raises(ui_artifact.UIArtifactError, match="missing"):

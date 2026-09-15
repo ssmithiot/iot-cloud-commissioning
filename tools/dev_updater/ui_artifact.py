@@ -16,7 +16,7 @@ from .identity import data_dir
 REPOSITORY_URL = f"https://github.com/{EDGE_UI_REPOSITORY}.git"
 REQUIRED_FILES = ("app.py", "edge_program_engine.py", "edge_trend_store.py", "timed_override_store.py", "router_config.py", "README.md", "requirements.txt")
 REQUIRED_DIRS = ("templates", "static")
-ARTIFACT_SCHEMA_VERSION = 2
+ARTIFACT_SCHEMA_VERSION = 3
 # These are the only deployment payload files the Development Updater may
 # carry from an immutable UI checkout.  They remain optional because older
 # approved UI commits do not necessarily contain the MS/TP router runtime.
