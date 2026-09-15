@@ -845,6 +845,37 @@ def test_ui_artifact_rejects_missing_runtime_file_and_hash_tampering(tmp_path):
     with pytest.raises((ui_artifact.UIArtifactError, tarfile.ReadError)):
         ui_artifact.verify_contents(built.path)
 
+
+def test_stale_pre_router_runtime_cache_record_is_rejected(tmp_path):
+    source, commit = ui_checkout(tmp_path / "source")
+    root = tmp_path / "cache"
+    artifact_path = root / f"edge-ui-{commit}.tar.gz"
+    built = ui_artifact.build_from_checkout(source, commit, artifact_path)
+    artifact_path.with_suffix(".json").write_text(json.dumps({
+        "repository": built.repository,
+        "commit": built.commit,
+        "sha256": built.sha256,
+    }), encoding="utf-8")
+
+    assert ui_artifact._cached(commit, root) is None
+
+
+def test_current_cache_record_accepts_router_runtime_payload(tmp_path):
+    source, commit = ui_checkout(tmp_path / "source")
+    root = tmp_path / "cache"
+    artifact_path = root / f"edge-ui-{commit}.tar.gz"
+    built = ui_artifact.build_from_checkout(source, commit, artifact_path)
+    artifact_path.with_suffix(".json").write_text(
+        json.dumps(ui_artifact.cache_record(built), sort_keys=True),
+        encoding="utf-8",
+    )
+
+    cached = ui_artifact._cached(commit, root)
+    assert cached is not None
+    with tarfile.open(cached.path, "r:gz") as archive:
+        assert set(ui_artifact.OPTIONAL_DEPLOY_FILES).issubset(archive.getnames())
+
+
 def test_two_ui_commits_produce_commit_bound_artifacts(tmp_path):
     source, first = ui_checkout(tmp_path / "source")
     one = ui_artifact.build_from_checkout(source, first, tmp_path / "one.tar.gz")

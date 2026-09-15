@@ -16,6 +16,7 @@ from .identity import data_dir
 REPOSITORY_URL = f"https://github.com/{EDGE_UI_REPOSITORY}.git"
 REQUIRED_FILES = ("app.py", "edge_program_engine.py", "edge_trend_store.py", "timed_override_store.py", "router_config.py", "README.md", "requirements.txt")
 REQUIRED_DIRS = ("templates", "static")
+ARTIFACT_SCHEMA_VERSION = 2
 # These are the only deployment payload files the Development Updater may
 # carry from an immutable UI checkout.  They remain optional because older
 # approved UI commits do not necessarily contain the MS/TP router runtime.
@@ -101,13 +102,27 @@ def build_from_checkout(source: Path, commit: str, output: Path) -> UIArtifact:
 def cache_root() -> Path:
     return data_dir() / "artifacts" / "edge-ui"
 
+def cache_record(artifact: UIArtifact) -> dict[str, str | int]:
+    return {
+        "schema_version": ARTIFACT_SCHEMA_VERSION,
+        "repository": artifact.repository,
+        "commit": artifact.commit,
+        "sha256": artifact.sha256,
+    }
+
 def _cached(commit: str, root: Path) -> UIArtifact | None:
     artifact = root / f"edge-ui-{commit}.tar.gz"
     metadata = artifact.with_suffix(".json")
     if not artifact.is_file() or not metadata.is_file(): return None
     try:
         record = json.loads(metadata.read_text(encoding="utf-8"))
-        if record != {"repository": EDGE_UI_REPOSITORY, "commit": commit, "sha256": sha256(artifact)}: return None
+        if record != {
+            "schema_version": ARTIFACT_SCHEMA_VERSION,
+            "repository": EDGE_UI_REPOSITORY,
+            "commit": commit,
+            "sha256": sha256(artifact),
+        }:
+            return None
         verify_contents(artifact)
     except (OSError, ValueError, UIArtifactError): return None
     return UIArtifact(EDGE_UI_REPOSITORY, commit, artifact, record["sha256"])
@@ -148,5 +163,5 @@ def materialize(commit: str, *, root: Path | None = None, token: str = "") -> UI
             raise UIArtifactError(f"could not materialize UI commit {commit}: {detail}") from exc
         artifact = root / f"edge-ui-{commit}.tar.gz"
         built = build_from_checkout(checkout, commit, artifact)
-    built.path.with_suffix(".json").write_text(json.dumps({"repository": built.repository, "commit": built.commit, "sha256": built.sha256}, sort_keys=True), encoding="utf-8")
+    built.path.with_suffix(".json").write_text(json.dumps(cache_record(built), sort_keys=True), encoding="utf-8")
     return built
