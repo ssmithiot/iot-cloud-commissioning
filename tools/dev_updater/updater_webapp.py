@@ -2098,8 +2098,12 @@ class LegacyUpgradeRunner:
             command_to_send = command_to_send.replace(sudo_prefix, placeholder, 1)
             command_to_send = command_to_send.replace(sudo_prefix, "sudo -n")
             command_to_send = command_to_send.replace(placeholder, password_pipe, 1)
-        stream_output = label == "install MS/TP router runtime from UI artifact"
-        terminal_text = "MS_TP_ROUTER_RUNTIME=service_restart_requested" if stream_output else None
+        stream_output = True
+        terminal_text = (
+            "MS_TP_ROUTER_RUNTIME=service_restart_requested"
+            if label == "install MS/TP router runtime from UI artifact"
+            else None
+        )
         if terminal_text is None:
             send_shell_command(shell, f"{command_to_send}\nprintf '\\n{marker}:%s\\n' $?")
         else:
@@ -2116,7 +2120,7 @@ class LegacyUpgradeRunner:
                 shell,
                 marker,
                 timeout_sec=self.command_timeout(label),
-                on_chunk=stream if stream_output else None,
+                on_chunk=stream,
                 terminal_text=terminal_text,
                 terminal_prompt=stream_output,
             )

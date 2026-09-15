@@ -854,6 +854,28 @@ def test_router_runtime_handoff_does_not_queue_a_legacy_marker(monkeypatch) -> N
     assert seen["terminal_text"] == "MS_TP_ROUTER_RUNTIME=service_restart_requested"
 
 
+def test_all_nested_ssh_command_output_is_streamed(monkeypatch) -> None:
+    request = dev.UpgradeRequest(
+        gateway_id="GW007", site_id="GW007", cloud_url="https://example.test", admin_api_token="x",
+        cradlepoint_host="x", cradlepoint_user="x", cradlepoint_password="x", gateway_host="x",
+        gateway_user="x", gateway_password="gateway-password", git_ref="x", remote_repo="/repo",
+        ui_source_folder="x", ui_username="x", ui_password="x",
+    )
+    runner = dev.LegacyUpgradeRunner("stream-all-test", request)
+    monkeypatch.setattr(runner, "ensure_gateway_shell", lambda: object())
+    monkeypatch.setattr(dev, "send_shell_command", lambda *_args: None)
+
+    def wait(_shell, _marker, **kwargs):
+        kwargs["on_chunk"]("live command output\n")
+        return "live command output\nLEGACY_UPGRADE_test:0\n", "0"
+    monkeypatch.setattr(dev, "wait_for_shell_marker", wait)
+
+    exit_code, output = runner.run_nested_command("ordinary command", "echo live", "LEGACY_UPGRADE_test")
+    assert exit_code == 0
+    assert output == "live command output\nLEGACY_UPGRADE_test:0\n"
+    assert runner._nested_output_streamed is True
+
+
 def test_ui_artifact_checkout_disables_autocrlf(tmp_path):
     command = ui_artifact.detached_checkout_command(tmp_path / "checkout", "a" * 40)
     assert command[:3] == ["git", "-c", "core.autocrlf=false"]
