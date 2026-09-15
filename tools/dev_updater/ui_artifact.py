@@ -15,6 +15,13 @@ from .identity import data_dir
 
 REPOSITORY_URL = f"https://github.com/{EDGE_UI_REPOSITORY}.git"
 REQUIRED_FILES = ("app.py", "edge_program_engine.py", "edge_trend_store.py", "timed_override_store.py", "router_config.py", "README.md", "requirements.txt")
+OPTIONAL_FILES = (
+    "deploy/install-edge-router-runtime.sh",
+    "deploy/iot-cx-edge-router-control.py",
+    "deploy/iot-cx-edge-router.sudoers",
+    "deploy/router-mstp-nat-advertisement.patch",
+    "deploy/router-mstp-native-capture.patch",
+)
 REQUIRED_DIRS = ("templates", "static")
 FORBIDDEN_PARTS = {".git", "tests", "imports", "data", ".local-backups", "__pycache__", ".venv", ".pytest_cache"}
 FORBIDDEN_NAMES = {".env", "start.sh"}
@@ -47,19 +54,23 @@ def members(source: Path) -> list[Path]:
         if not root.is_dir():
             raise UIArtifactError(f"required UI runtime directory is missing: {directory}")
         selected.extend(path.relative_to(source) for path in root.rglob("*") if path.is_file())
+    for name in OPTIONAL_FILES:
+        if (source / name).is_file():
+            selected.append(Path(name))
     return sorted(set(selected), key=lambda path: path.as_posix())
 
 def verify_contents(path: Path) -> None:
     with tarfile.open(path, "r:gz") as archive:
         names = [member.name.rstrip("/") for member in archive.getmembers() if member.isfile()]
     expected = set(REQUIRED_FILES)
+    allowed_files = {*REQUIRED_FILES, *OPTIONAL_FILES}
     if not expected.issubset(names):
         raise UIArtifactError(f"artifact is missing required runtime file(s): {', '.join(sorted(expected - set(names)))}")
     for name in names:
         parts = Path(name).parts
         if name in FORBIDDEN_NAMES or any(part in FORBIDDEN_PARTS for part in parts) or name.endswith((".db", ".sqlite", ".pyc")):
             raise UIArtifactError(f"artifact contains forbidden content: {name}")
-        if name not in REQUIRED_FILES and not name.startswith("templates/") and not name.startswith("static/"):
+        if name not in allowed_files and not name.startswith("templates/") and not name.startswith("static/"):
             raise UIArtifactError(f"artifact contains non-runtime content: {name}")
 
 def build_from_checkout(source: Path, commit: str, output: Path) -> UIArtifact:

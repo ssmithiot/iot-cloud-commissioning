@@ -764,6 +764,29 @@ def test_ui_artifact_is_built_from_the_exact_clean_commit_and_is_allowlisted(tmp
         names = archive.getnames()
     assert ".env" not in names and not any(name.startswith("tests/") for name in names)
 
+
+def test_ui_artifact_packages_router_capture_runtime_when_the_ui_commit_supplies_it(tmp_path):
+    source, commit = ui_checkout(tmp_path / "source")
+    for name in ui_artifact.OPTIONAL_FILES:
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(name, encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "router runtime"], check=True)
+    commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    built = ui_artifact.build_from_checkout(source, commit, tmp_path / "artifact.tar.gz")
+    with tarfile.open(built.path, "r:gz") as archive:
+        names = set(archive.getnames())
+    assert set(ui_artifact.OPTIONAL_FILES).issubset(names)
+
+
+def test_ui_update_installs_and_restarts_router_runtime_only_when_capture_payload_is_present():
+    commands = dict((label, command) for label, command, _sudo in dev.apply_ui_commands(SimpleNamespace(skip_edge_ui_stop=False)))
+    command = commands["install native MS/TP capture runtime"]
+    assert "install-edge-router-runtime.sh" in command
+    assert "router-mstp-native-capture.patch" in command
+    assert "systemctl restart iot-cx-mstp-router.service" in command
+
 def test_ui_artifact_rejects_missing_runtime_file_and_hash_tampering(tmp_path):
     source, commit = ui_checkout(tmp_path / "source", include_required=False)
     with pytest.raises(ui_artifact.UIArtifactError, match="missing"):

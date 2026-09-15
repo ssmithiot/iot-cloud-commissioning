@@ -72,9 +72,13 @@ UI_PACKAGE_FILES = (
 )
 UI_PACKAGE_DIRS = ("templates", "static")
 UI_OPTIONAL_PACKAGE_FILES = (
+    "deploy/install-edge-router-runtime.sh",
     "deploy/iot-cx-edge-router-control.py",
+    "deploy/iot-cx-edge-router.sudoers",
     "deploy/edge-bacnet-ui.service.example",
     "deploy/iot-cx-bacnet-router.service.example",
+    "deploy/router-mstp-nat-advertisement.patch",
+    "deploy/router-mstp-native-capture.patch",
 )
 UI_FORBIDDEN_ARTIFACT_NAMES = {".env", "start.sh"}
 UI_FORBIDDEN_ARTIFACT_PARTS = {"data", ".git", ".local-backups", "__pycache__"}
@@ -1486,6 +1490,11 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         stop_command,
         ("confirm edge UI stopped", "systemctl is-active edge-bacnet-ui.service || true", False),
         ("apply code-only UI files", apply_ui_files_command(), False),
+        (
+            "install native MS/TP capture runtime",
+            "if test -x /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh && test -f /home/swadmin/edge-bacnet-ui-v2/deploy/router-mstp-native-capture.patch; then sudo -S -p '' bash /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh && sudo -S -p '' systemctl restart iot-cx-mstp-router.service; else echo 'Router runtime payload not present; skipped.'; fi",
+            True,
+        ),
         ("verify UI file ownership", "find /home/swadmin/edge-bacnet-ui-v2 -maxdepth 2 \\( ! -user swadmin -o ! -group swadmin \\) -print | head -20 || true", False),
         ("preserve start.sh executable", "chmod +x /home/swadmin/edge-bacnet-ui-v2/start.sh", False),
         ("verify replaced templates", "ls -lah /home/swadmin/edge-bacnet-ui-v2/templates", False),
