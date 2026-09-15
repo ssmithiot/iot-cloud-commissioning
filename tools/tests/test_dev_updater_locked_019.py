@@ -748,6 +748,10 @@ def ui_checkout(root: Path, *, include_required: bool = True) -> tuple[Path, str
         (root / name).write_text(name)
     for directory in ui_artifact.REQUIRED_DIRS:
         (root / directory).mkdir(); (root / directory / "asset.txt").write_text(directory)
+    for name in ui_artifact.OPTIONAL_DEPLOY_FILES:
+        destination = root / name
+        destination.parent.mkdir(exist_ok=True)
+        destination.write_text(name)
     (root / ".env").write_text("SECRET=value")
     (root / "tests").mkdir(); (root / "tests" / "bad.py").write_text("bad")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True)
@@ -756,6 +760,10 @@ def ui_checkout(root: Path, *, include_required: bool = True) -> tuple[Path, str
 
 def test_ui_artifact_is_built_from_the_exact_clean_commit_and_is_allowlisted(tmp_path):
     source, commit = ui_checkout(tmp_path / "source")
+    (source / "deploy" / "unapproved-helper.sh").write_text("must not package")
+    subprocess.run(["git", "-C", str(source), "add", "deploy/unapproved-helper.sh"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "unapproved deploy fixture"], check=True)
+    commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
     built = ui_artifact.build_from_checkout(source, commit, tmp_path / "artifact.tar.gz")
     assert built.commit == commit and built.sha256 == ui_artifact.sha256(built.path)
     ui_artifact.verify_contents(built.path)
@@ -763,6 +771,16 @@ def test_ui_artifact_is_built_from_the_exact_clean_commit_and_is_allowlisted(tmp
     with tarfile.open(built.path, "r:gz") as archive:
         names = archive.getnames()
     assert ".env" not in names and not any(name.startswith("tests/") for name in names)
+    assert set(ui_artifact.OPTIONAL_DEPLOY_FILES).issubset(names)
+    assert "deploy/unapproved-helper.sh" not in names
+
+
+def test_apply_ui_hands_off_packaged_mstp_router_runtime_only() -> None:
+    commands = {label: command for label, command, _needs_sudo in dev.apply_ui_commands(SimpleNamespace(skip_edge_ui_stop=False))}
+    handoff = commands["install MS/TP router runtime from UI artifact"]
+    assert "install-edge-router-runtime.sh" in handoff
+    assert "systemctl restart iot-cx-mstp-router.service" in handoff
+    assert "edge-bacnet-ui.service" not in handoff
 
 def test_ui_artifact_rejects_missing_runtime_file_and_hash_tampering(tmp_path):
     source, commit = ui_checkout(tmp_path / "source", include_required=False)
