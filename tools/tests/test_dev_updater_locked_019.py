@@ -786,6 +786,7 @@ def test_apply_ui_hands_off_packaged_mstp_router_runtime_only() -> None:
 
 def test_router_runtime_handoff_streams_until_the_nested_shell_prompt(monkeypatch) -> None:
     chunks = iter((
+        "if test -f runtime.sh; then echo 'MS_TP_ROUTER_RUNTIME=service_restart_requested'; fi\n",
         "MS_TP_ROUTER_RUNTIME=installer_started\n",
         "MS_TP_ROUTER_RUNTIME=service_restart_requested\n",
         "\x1b[?2004h\x1b]0;swadmin@GW007: ~/edge-bacnet-ui-v2swadmin@GW007:~/edge-bacnet-ui-v2$ ",
@@ -803,7 +804,25 @@ def test_router_runtime_handoff_streams_until_the_nested_shell_prompt(monkeypatc
     assert exit_text == "0"
     assert output.endswith("$ ")
     assert "".join(streamed) == output
-    assert "MS_TP_ROUTER_RUNTIME=installer_started" in streamed[0]
+    assert any("MS_TP_ROUTER_RUNTIME=installer_started" in chunk for chunk in streamed)
+
+
+def test_router_runtime_handoff_reports_failure_when_prompt_returns_without_completion(monkeypatch) -> None:
+    chunks = iter((
+        "if test -f runtime.sh; then echo 'MS_TP_ROUTER_RUNTIME=service_restart_requested'; fi\n",
+        "runtime.sh: line 4: set: pipefail\r: invalid option name\n",
+        "swadmin@GW007:~/edge-bacnet-ui-v2$ ",
+    ))
+    monkeypatch.setattr(dev, "read_shell", lambda *_args, **_kwargs: next(chunks))
+
+    _output, exit_text = dev.wait_for_shell_marker(
+        object(),
+        "LEGACY_UPGRADE_router_runtime",
+        timeout_sec=1.0,
+        terminal_text="MS_TP_ROUTER_RUNTIME=service_restart_requested",
+        terminal_prompt=True,
+    )
+    assert exit_text == "1"
 
 
 def test_router_runtime_handoff_does_not_queue_a_legacy_marker(monkeypatch) -> None:
@@ -833,6 +852,12 @@ def test_router_runtime_handoff_does_not_queue_a_legacy_marker(monkeypatch) -> N
     assert exit_code == 0
     assert sent == ["echo MS_TP_ROUTER_RUNTIME=service_restart_requested"]
     assert seen["terminal_text"] == "MS_TP_ROUTER_RUNTIME=service_restart_requested"
+
+
+def test_ui_artifact_checkout_disables_autocrlf(tmp_path):
+    command = ui_artifact.detached_checkout_command(tmp_path / "checkout", "a" * 40)
+    assert command[:3] == ["git", "-c", "core.autocrlf=false"]
+    assert command[-3:] == ["checkout", "--detach", "a" * 40]
 
 
 def test_ui_artifact_rejects_missing_runtime_file_and_hash_tampering(tmp_path):

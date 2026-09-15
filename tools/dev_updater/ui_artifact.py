@@ -146,6 +146,11 @@ def _safe_git_error(exc: BaseException, token: str) -> str:
     detail = getattr(exc, "stderr", "") or str(exc)
     return str(detail).replace(token, "[redacted]").strip()[:1000]
 
+def detached_checkout_command(checkout: Path, commit: str) -> list[str]:
+    # Windows Git can otherwise honor a global core.autocrlf setting and
+    # silently mutate shell scripts before they are placed in the artifact.
+    return ["git", "-c", "core.autocrlf=false", "-C", str(checkout), "checkout", "--detach", commit]
+
 def materialize(commit: str, *, root: Path | None = None, token: str = "") -> UIArtifact:
     """Use a verified full-SHA cache or clone a fresh detached checkout."""
     if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
@@ -157,7 +162,7 @@ def materialize(commit: str, *, root: Path | None = None, token: str = "") -> UI
         try:
             environment = git_askpass_environment(token, Path(temporary))
             subprocess.run(["git", "clone", "--no-checkout", "--filter=blob:none", REPOSITORY_URL, str(checkout)], check=True, capture_output=True, text=True, env=environment)
-            subprocess.run(["git", "-C", str(checkout), "checkout", "--detach", commit], check=True, capture_output=True, text=True, env=environment)
+            subprocess.run(detached_checkout_command(checkout, commit), check=True, capture_output=True, text=True, env=environment)
         except (OSError, subprocess.CalledProcessError) as exc:
             detail = _safe_git_error(exc, token)
             raise UIArtifactError(f"could not materialize UI commit {commit}: {detail}") from exc

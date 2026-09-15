@@ -1261,11 +1261,14 @@ def wait_for_shell_marker(
         if chunk and on_chunk is not None:
             on_chunk(chunk)
         output += chunk
-        if terminal_text is not None and terminal_text in output:
+        if terminal_text is not None and any(line.strip() == terminal_text for line in output.splitlines()):
             terminal_seen = True
         if terminal_seen and terminal_prompt:
             if any(line.strip().endswith(("$", "#")) for line in output.splitlines()):
                 return output, "0"
+        elif terminal_text is not None and terminal_prompt:
+            if any(line.strip().endswith(("$", "#")) for line in output.splitlines()):
+                return output, "1"
         elif terminal_seen:
             return output, "0"
         for line in output.splitlines():
@@ -1503,7 +1506,7 @@ def apply_ui_commands(request: UpgradeRequest) -> list[tuple[str, str, bool]]:
         ("apply code-only UI files", apply_ui_files_command(), False),
         (
             "install MS/TP router runtime from UI artifact",
-            "if test -f /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh; then echo 'MS_TP_ROUTER_RUNTIME=installer_started'; sudo -S -p '' bash /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh && echo 'MS_TP_ROUTER_RUNTIME=installer_completed' && echo 'MS_TP_ROUTER_RUNTIME=service_restart_started' && sudo -S -p '' systemctl restart --no-block iot-cx-mstp-router.service && echo 'MS_TP_ROUTER_RUNTIME=service_restart_requested'; else echo 'MS/TP router runtime payload not present in selected UI artifact; skipping router handoff.'; fi",
+            "if test -f /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh; then sed -i 's/\\r$//' /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh && echo 'MS_TP_ROUTER_RUNTIME=installer_started'; sudo -S -p '' bash /home/swadmin/edge-bacnet-ui-v2/deploy/install-edge-router-runtime.sh && echo 'MS_TP_ROUTER_RUNTIME=installer_completed' && echo 'MS_TP_ROUTER_RUNTIME=service_restart_started' && sudo -S -p '' systemctl restart --no-block iot-cx-mstp-router.service && echo 'MS_TP_ROUTER_RUNTIME=service_restart_requested'; else echo 'MS/TP router runtime payload not present in selected UI artifact; skipping router handoff.'; fi",
             True,
         ),
         ("verify UI file ownership", "find /home/swadmin/edge-bacnet-ui-v2 -maxdepth 2 \\( ! -user swadmin -o ! -group swadmin \\) -print | head -20 || true", False),
