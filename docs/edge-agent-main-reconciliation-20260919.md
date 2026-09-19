@@ -12,7 +12,8 @@ with the separately maintained `ssmithiot/edge-bacnet-commissioning-ui` main.
   cloud, development-updater, release selection, migrations and CI
   configuration. Supporting documentation and narrowly scoped test fixture
   corrections are recorded below.
-- Agent runtime/package version remains the working source's `0.2.2`.
+- At reconciliation the Agent runtime/package version remained the working
+  source's `0.2.3` (corrected from this record's initial `0.2.2` description).
 - Do not merge the Agent branch's unrelated cloud/updater history wholesale.
 - This main update does not deploy to any cloud server or gateway, rebuild an
   installer, replace a release artifact, or change existing updater pins.
@@ -84,3 +85,29 @@ retain every behavior assertion and leave production thresholds unchanged.
   `d9232758b93fc9954a64235be918724df08238de` exactly.
 - Cloud runtime, migrations, updater tools, deployment and CI configuration
   remain unchanged from main. No gateway or cloud deployment is performed.
+
+## Rollout 0.2.5 version stamp
+
+After reconciliation, the user designated the paired UI/Agent rollout as
+`0.2.5`. Agent module and package metadata now declare `0.2.5`, alongside
+the separately versioned Edge UI's `0.2.5` footer. The example configuration
+also reports the paired UI as `0.2.5`; an existing private gateway config is
+not overwritten and must describe the UI actually installed on that gateway.
+The Agent's legacy missing-UI-version fallback is not evidence of an installed
+UI upgrade and is left unchanged.
+
+This update changes version identity, example configuration, tests and this
+record only. Cloud trend transport remains disabled. Router/trend behavior,
+Cloud runtime, updater defaults, historical release artifacts and gateway
+services are not changed. Reconciliation validation above is historical;
+this version stamp requires new immutable UI/Agent rollout commit pins.
+
+Version-stamp validation: **134 Agent tests and 222 tools tests passed**, with
+one existing tools skip. The new test verifies that loading the paired example
+configuration reports both components as `0.2.5`. No Cloud tests were rerun for
+this identity-only change; the pre-existing Cloud failures above remain open.
+
+The Development Updater's existing release manifest still identifies `0.2.0`.
+Its release-name field must match its selected manifest, independently of the
+explicit source commit pins. A separately packaged `0.2.5` manifest is not
+created or implied by this version stamp.

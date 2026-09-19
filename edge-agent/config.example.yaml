@@ -54,7 +54,8 @@ trend_max_points_per_cycle: 200
 # Local trend samples uploaded to the cloud mirror per agent cycle.
 trend_local_upload_batch_size: 200
 # agent_version is read from the installed edge app package and cannot be overridden here.
-ui_version: 0.1.0
+# Match the actual installed UI; this example is for the paired 0.2.5 rollout.
+ui_version: 0.2.5
 bacnet:
   router_profile: contemporary
   default_port: 47814
