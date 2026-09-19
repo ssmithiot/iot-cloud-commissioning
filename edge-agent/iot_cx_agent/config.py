@@ -45,9 +45,32 @@ class AgentConfig:
     bacnet_lock_path: Path | None = None
     bacnet_lock_timeout_sec: float = 30.0
     bacnet_lock_stale_sec: float = 120.0
-    heartbeat_interval_sec: int = 30
+    # Heartbeats are liveness signals, not a command transport. Commands use
+    # the separate bounded long-poll below.
+    heartbeat_interval_sec: int = 7_200
+    command_wait_timeout_sec: int = 600
+    command_failure_backoff_initial_sec: int = 5
+    command_failure_backoff_max_sec: int = 300
     edge_ui_data_dir: Path | None = None
-    local_edge_trends_enabled: bool = False
+    # Local Edge trends ship enabled in 0.2.0. The Edge UI gate
+    # (EDGE_TRENDS_UI_ENABLED) must be set to match; both are required.
+    local_edge_trends_enabled: bool = True
+    # Edge 0.2.2 is Edge-authoritative by default.  Older gateways can retain
+    # their cloud-configured collector explicitly while they are migrated.
+    trend_transport_mode: str = "edge_local"
+    trend_sync_interval_sec: int = 7_200
+    # Trend reads must never make an operator's read or write wait. A trend
+    # batch gives up on the BACnet runtime lock almost immediately and retries
+    # on the next agent cycle, rather than queueing behind live work for the
+    # full operator lock timeout.
+    trend_lock_timeout_sec: float = 2.0
+    # Points read per BACnet request during trend collection. The runtime lock
+    # is acquired and released per batch so live work can interleave.
+    trend_read_batch_size: int = 8
+    # Upper bound on trend points read in a single agent cycle, so one large
+    # group cannot monopolise the BACnet runtime.
+    trend_max_points_per_cycle: int = 200
+    trend_local_upload_batch_size: int = 200
     trend_upload_batch_size: int = 100
     trend_queue_max_pending_samples: int = 10_000
     trend_upload_retry_base_sec: int = 30
@@ -113,6 +136,16 @@ def _positive_int(raw_value: object, source: str, *, minimum: int = 1) -> int:
     return value
 
 
+def _positive_float(raw_value: object, source: str) -> float:
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{source} must be a number greater than zero") from exc
+    if value <= 0:
+        raise ValueError(f"{source} must be a number greater than zero")
+    return value
+
+
 def _bool_flag(raw_value: object, source: str) -> bool:
     if isinstance(raw_value, bool):
         return raw_value
@@ -124,6 +157,13 @@ def _bool_flag(raw_value: object, source: str) -> bool:
     if value in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{source} must be true or false")
+
+
+def _trend_transport_mode(raw_value: object) -> str:
+    value = str(raw_value or "edge_local").strip().lower()
+    if value not in {"edge_local", "legacy_cloud_configured"}:
+        raise ValueError("trend_transport_mode must be edge_local or legacy_cloud_configured")
+    return value
 
 
 def normalize_bacnet_router_profile(raw_profile: object | None) -> str:
@@ -195,9 +235,18 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         bacnet_lock_path=lock_path,
         bacnet_lock_timeout_sec=float(bacnet.get("lock_timeout_sec", 30)),
         bacnet_lock_stale_sec=float(bacnet.get("lock_stale_sec", 120)),
-        heartbeat_interval_sec=int(raw.get("heartbeat_interval_sec", 30)),
+        heartbeat_interval_sec=_positive_int(raw.get("heartbeat_interval_sec", 7_200), "heartbeat_interval_sec"),
+        command_wait_timeout_sec=_positive_int(raw.get("command_wait_timeout_sec", 600), "command_wait_timeout_sec", minimum=300),
+        command_failure_backoff_initial_sec=_positive_int(raw.get("command_failure_backoff_initial_sec", 5), "command_failure_backoff_initial_sec"),
+        command_failure_backoff_max_sec=_positive_int(raw.get("command_failure_backoff_max_sec", 300), "command_failure_backoff_max_sec"),
         edge_ui_data_dir=Path(raw["edge_ui_data_dir"]) if raw.get("edge_ui_data_dir") else None,
-        local_edge_trends_enabled=_bool_flag(raw.get("local_edge_trends_enabled", False), "local_edge_trends_enabled"),
+        local_edge_trends_enabled=_bool_flag(raw.get("local_edge_trends_enabled", True), "local_edge_trends_enabled"),
+        trend_transport_mode=_trend_transport_mode(raw.get("trend_transport_mode", "edge_local")),
+        trend_sync_interval_sec=_positive_int(raw.get("trend_sync_interval_sec", 7_200), "trend_sync_interval_sec", minimum=300),
+        trend_lock_timeout_sec=_positive_float(raw.get("trend_lock_timeout_sec", 2.0), "trend_lock_timeout_sec"),
+        trend_read_batch_size=_positive_int(raw.get("trend_read_batch_size", 8), "trend_read_batch_size"),
+        trend_max_points_per_cycle=_positive_int(raw.get("trend_max_points_per_cycle", 200), "trend_max_points_per_cycle"),
+        trend_local_upload_batch_size=_positive_int(raw.get("trend_local_upload_batch_size", 200), "trend_local_upload_batch_size"),
         trend_upload_batch_size=_positive_int(raw.get("trend_upload_batch_size", 100), "trend_upload_batch_size"),
         trend_queue_max_pending_samples=_positive_int(raw.get("trend_queue_max_pending_samples", 10_000), "trend_queue_max_pending_samples"),
         trend_upload_retry_base_sec=_positive_int(raw.get("trend_upload_retry_base_sec", 30), "trend_upload_retry_base_sec"),

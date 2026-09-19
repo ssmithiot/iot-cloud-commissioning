@@ -101,7 +101,7 @@ def test_offline_alert_fires_once_then_recovers(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(main_module.settings, "alert_webhook_url", "https://hooks.example.test/x")
     monkeypatch.setattr(main_module, "_deliver_alert_webhook", lambda url, payload: sent.append(payload) or True)
 
-    create_gateway("GW001", heartbeat_seconds_ago=7200)  # far beyond offline threshold (1800 s)
+    create_gateway("GW001", heartbeat_seconds_ago=main_module.settings.gateway_offline_after_seconds + 3600)
 
     first = evaluate()
     assert [e["type"] for e in first["events"]] == ["gateway_offline"]
@@ -149,7 +149,12 @@ def test_trend_backlog_alert_and_recovery(monkeypatch: pytest.MonkeyPatch) -> No
 def test_offline_gateway_does_not_also_backlog_alert(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main_module.settings, "alert_webhook_url", "https://hooks.example.test/x")
     monkeypatch.setattr(main_module, "_deliver_alert_webhook", lambda url, payload: True)
-    create_gateway("GW003", heartbeat_seconds_ago=7200, trend_oldest_pending_hours_ago=48, trend_pending=900)
+    create_gateway(
+        "GW003",
+        heartbeat_seconds_ago=main_module.settings.gateway_offline_after_seconds + 3600,
+        trend_oldest_pending_hours_ago=48,
+        trend_pending=900,
+    )
 
     result = evaluate()
     assert [e["type"] for e in result["events"]] == ["gateway_offline"]  # backlog suppressed while offline
@@ -159,7 +164,7 @@ def test_groundwork_mode_reports_without_delivering() -> None:
     # No webhook configured (default): events appear in the response once,
     # marked undelivered, and are acknowledged so a later webhook rollout
     # does not replay history.
-    create_gateway("GW004", heartbeat_seconds_ago=7200)
+    create_gateway("GW004", heartbeat_seconds_ago=main_module.settings.gateway_offline_after_seconds + 3600)
     first = evaluate()
     assert first["webhook_configured"] is False
     assert [e["type"] for e in first["events"]] == ["gateway_offline"]
@@ -178,7 +183,7 @@ def test_failed_delivery_is_retried_next_run(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(main_module.settings, "alert_webhook_url", "https://hooks.example.test/x")
     monkeypatch.setattr(main_module, "_deliver_alert_webhook", flaky)
-    create_gateway("GW005", heartbeat_seconds_ago=7200)
+    create_gateway("GW005", heartbeat_seconds_ago=main_module.settings.gateway_offline_after_seconds + 3600)
 
     first = evaluate()
     assert first["delivery_failures"] == 1

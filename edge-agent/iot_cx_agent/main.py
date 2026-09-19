@@ -1,7 +1,10 @@
 import argparse
+import hashlib
+import json
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import requests
@@ -10,17 +13,44 @@ from iot_cx_agent.config import DEFAULT_CONFIG_PATH, AgentConfig, load_config
 from iot_cx_agent.db import initialize_database, record_heartbeat_attempt
 from iot_cx_agent.heartbeat import send_heartbeat
 from iot_cx_agent.jobs import process_next_job
+from iot_cx_agent.network_traffic import report as network_traffic_report
 from iot_cx_agent.status import collect_status, utc_timestamp
-from iot_cx_agent.tunnel import run_tunnel_forever
-from iot_cx_agent.trends import sample_configured_trends, sample_local_edge_trends, upload_pending_trend_samples
+from iot_cx_agent.tunnel import TunnelLeaseWorker
+from iot_cx_agent.trends import (
+    local_trend_retry_due,
+    local_trend_sync_due,
+    schedule_next_local_trend_sync,
+    sample_configured_trends,
+    sample_local_edge_trends,
+    trend_cloud_upload_enabled,
+    upload_pending_local_trend_samples,
+    upload_pending_trend_samples,
+)
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("iot-cx-agent")
-_local_edge_trends_disabled_logged = False
 
 
-def run_once(config: AgentConfig) -> bool:
+def startup_stagger_seconds(gateway_id: str) -> int:
+    """Stable 0–30 second offset, preventing coordinated fleet restarts."""
+    digest = hashlib.sha256(gateway_id.strip().upper().encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") % 31
+
+
+def _cloud_sync_interval(response: object, fallback: int) -> int:
+    try:
+        value = int(response.json().get("trend_sync_interval_sec", fallback))  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError):
+        return fallback
+    return max(300, min(604_800, value))
+
+
+def run_once(
+    config: AgentConfig,
+    tunnel_worker: TunnelLeaseWorker | None = None,
+    run_periodic_steps: bool = True,
+) -> bool:
     sqlite_db_ok = True
     try:
         initialize_database(config.sqlite_path)
@@ -41,9 +71,12 @@ def run_once(config: AgentConfig) -> bool:
         return False
 
     heartbeat_success = False
+    sync_interval = config.trend_sync_interval_sec
     try:
         response = send_heartbeat(config, payload)
         heartbeat_success = 200 <= response.status_code < 300
+        if heartbeat_success:
+            sync_interval = _cloud_sync_interval(response, sync_interval)
         safe_record_heartbeat_attempt(
             config.sqlite_path,
             attempted_at=attempted_at,
@@ -59,25 +92,87 @@ def run_once(config: AgentConfig) -> bool:
         safe_record_heartbeat_attempt(config.sqlite_path, attempted_at=attempted_at, success=False, error=str(exc))
         logger.warning("Heartbeat upload failed: %s", exc)
 
-    if sqlite_db_ok:
-        try:
-            maybe_sample_local_edge_trends(config)
-            sample_configured_trends(config)
-            upload_pending_trend_samples(config)
-        except requests.RequestException as exc:
-            logger.warning("Trend sync failed: %s", exc)
-        except Exception:
-            logger.exception("Trend sampling failed")
-        process_next_job(config)
+    if sqlite_db_ok and run_periodic_steps:
+        # Each trend step is isolated. Local collection is Edge-owned and must
+        # keep running when the cloud is unreachable, so a failed upload can
+        # never stop sampling, and neither can stop job processing.
+        run_step("Local Edge trend sampling", maybe_sample_local_edge_trends, config)
+        if config.trend_transport_mode == "legacy_cloud_configured":
+            run_step("Cloud trend sampling", sample_configured_trends, config)
+        if trend_cloud_upload_enabled():
+            if config.trend_transport_mode == "edge_local":
+                due = local_trend_sync_due(config, sync_interval)
+                retry_due = local_trend_retry_due(config)
+                if due or retry_due:
+                    if retry_due and not due:
+                        run_step("Local Edge trend retry", lambda item: upload_pending_local_trend_samples(item, retry_only=True), config)
+                    else:
+                        run_step("Local Edge trend upload", upload_pending_local_trend_samples, config)
+                    if due:
+                        schedule_next_local_trend_sync(config, sync_interval)
+            else:
+                run_step("Cloud trend upload", upload_pending_trend_samples, config)
+        process_next_job(config, tunnel_worker.update if tunnel_worker is not None else None)
     return heartbeat_success
 
 
+def run_local_maintenance(config: AgentConfig) -> None:
+    """Keep the pre-existing local trend cadence independent of heartbeats."""
+    try:
+        initialize_database(config.sqlite_path)
+    except OSError:
+        logger.exception("Failed to initialize SQLite database")
+        return
+    run_step("Local Edge trend sampling", maybe_sample_local_edge_trends, config)
+    if config.trend_transport_mode == "legacy_cloud_configured":
+        run_step("Cloud trend sampling", sample_configured_trends, config)
+    # Cloud trend transport is gated off in the authority baseline. Retain the
+    # existing guarded code path without introducing any new trend traffic.
+    if trend_cloud_upload_enabled():
+        run_step("Cloud trend upload", upload_pending_trend_samples, config)
+
+
+def command_loop(config: AgentConfig, tunnel_worker: TunnelLeaseWorker, stop: threading.Event) -> None:
+    """Renew one bounded long-poll; only failures use a capped backoff."""
+    delay = config.command_failure_backoff_initial_sec
+    with requests.Session() as http_client:
+        while not stop.is_set():
+            if not config.is_provisioned:
+                stop.wait(delay)
+                delay = min(config.command_failure_backoff_max_sec, delay * 2)
+                continue
+            success = process_next_job(config, tunnel_worker.update, http_client)
+            if success:
+                delay = config.command_failure_backoff_initial_sec
+                continue
+            record_network_traffic_failure(config, delay)
+            stop.wait(delay)
+            delay = min(config.command_failure_backoff_max_sec, delay * 2)
+
+
+def record_network_traffic_failure(config: AgentConfig, delay: int) -> None:
+    # The failed HTTP attempt is already recorded as jobs_poll. Do not add a
+    # local database category: historical traffic databases remain unchanged.
+    logger.warning("Command long-poll retrying in %ss", delay)
+
+
+def run_step(description: str, step: Callable[[AgentConfig], object], config: AgentConfig) -> None:
+    """Run one periodic step, logging and swallowing its failure.
+
+    A gateway is unattended, so a raised exception here must never end the
+    agent loop or skip the steps that follow it.
+    """
+    try:
+        step(config)
+    except requests.RequestException as exc:
+        logger.warning("%s failed: %s", description, exc)
+    except Exception:
+        logger.exception("%s failed", description)
+
+
 def maybe_sample_local_edge_trends(config: AgentConfig) -> int:
-    global _local_edge_trends_disabled_logged
     if not config.local_edge_trends_enabled:
-        if not _local_edge_trends_disabled_logged:
-            logger.info("Local Edge trend sampling disabled")
-            _local_edge_trends_disabled_logged = True
+        logger.debug("Local Edge trend sampling disabled")
         return 0
     return sample_local_edge_trends(config)
 
@@ -90,24 +185,44 @@ def safe_record_heartbeat_attempt(config_path: Path, **kwargs: object) -> None:
 
 
 def run_forever(config: AgentConfig) -> None:
-    if config.is_provisioned and config.tunnel_enabled:
-        threading.Thread(target=run_tunnel_forever, args=(config,), daemon=True).start()
-        logger.info("Outbound gateway tunnel enabled for %s", config.gateway_id)
-    elif config.tunnel_enabled:
-        logger.info("Outbound gateway tunnel skipped until gateway is provisioned")
+    tunnel_worker = TunnelLeaseWorker(config)
+    if config.tunnel_enabled:
+        logger.info("Outbound gateway tunnel ready for Cloud request: %s", config.gateway_id)
 
-    while True:
-        run_once(config)
-        time.sleep(config.heartbeat_interval_sec)
+    stagger = startup_stagger_seconds(config.gateway_id)
+    if stagger:
+        logger.info("Applying deterministic %ss startup stagger for %s", stagger, config.gateway_id)
+        time.sleep(stagger)
+
+    stop = threading.Event()
+    worker = threading.Thread(target=command_loop, args=(config, tunnel_worker, stop), name="edge-command-wait", daemon=True)
+    worker.start()
+    next_heartbeat = 0.0
+    try:
+        while True:
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                # run_once remains the one-shot-compatible full cycle. In the
+                # resident service, only heartbeat work is due at this cadence.
+                run_once(config, tunnel_worker, False)
+                next_heartbeat = time.monotonic() + config.heartbeat_interval_sec
+            run_local_maintenance(config)
+            time.sleep(30)
+    finally:
+        stop.set()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the IOT Cx edge heartbeat agent.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--once", action="store_true", help="Send one heartbeat and exit.")
+    parser.add_argument("--network-traffic", action="store_true", help="Print local agent network traffic history and exit.")
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.network_traffic:
+        print(json.dumps(network_traffic_report(config.sqlite_path), indent=2, sort_keys=True))
+        return
     if args.once:
         raise SystemExit(0 if run_once(config) else 1)
     run_forever(config)
