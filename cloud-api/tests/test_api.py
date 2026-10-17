@@ -469,7 +469,7 @@ def test_dashboard_gateway_table_supports_search_and_sort() -> None:
     assert "gatewayReleaseStatus(gateway).updateRequired" in response.text
     assert "const releaseStatus = gatewayReleaseStatus(gateway);" in response.text
     assert "gatewayReleaseReason(gateway)" in response.text
-    assert 'return `<strong>${escapeHtml(releaseStatus.requiredAgentVersion)}</strong>`;' in response.text
+    assert 'return `<strong>${escapeHtml(edgeAppVersion(gateway))}</strong>`;' in response.text
     assert '<strong>Update Needed</strong>' in response.text
     assert 'Update ${escapeHtml(releaseStatus.requiredUiVersion)} needed' not in response.text
     assert 'data-request-update="${escapeHtml(gateway.gateway_id)}"' in response.text
@@ -508,7 +508,7 @@ def test_dashboard_edge_app_cell_uses_short_release_labels_and_preserves_update_
     response = client.get("/app")
 
     assert response.status_code == 200
-    assert 'return `<strong>${escapeHtml(releaseStatus.requiredAgentVersion)}</strong>`;' in response.text
+    assert 'return `<strong>${escapeHtml(edgeAppVersion(gateway))}</strong>`;' in response.text
     assert "Agent ${escapeHtml(gateway.agent_version" not in response.text
     assert "UI ${escapeHtml(gateway.ui_version" not in response.text
     assert '<strong>Update Needed</strong>' in response.text
@@ -1079,14 +1079,15 @@ def test_gateway_update_explicit_ui_only_recovery_remains_available() -> None:
 @pytest.mark.parametrize(
     ("agent_version", "ui_version", "expected_status", "update_required"),
     [
-        ("0.2.0", "0.2.0", "0.2.0", False),
-        ("0.2.0", "current", "0.2.0", False),
-        ("0.2.0", "0.1.9", "0.2.0", False),
-        ("0.1.9", "0.2.0", "0.2.0", False),
+        ("0.2.3", "0.2.0", "0.2.3", False),
+        ("0.2.4", "current", "0.2.4", False),
+        ("0.2.5", "0.1.9", "0.2.5", False),
+        ("0.2.0", "current", "Update Needed", True),
+        ("0.1.9", "0.2.0", "Update Needed", True),
         ("0.1.9", "0.1.9", "Update Needed", True),
         ("0.1.7", "0.1.7", "Update Needed", True),
-        ("", "0.2.0", "0.2.0", False),
-        ("0.2.0", "", "0.2.0", False),
+        ("", "0.2.0", "Update Needed", True),
+        ("0.2.3", "", "0.2.3", False),
     ],
 )
 def test_gateway_release_status_is_consistent_on_dashboard_refresh(
@@ -1112,7 +1113,7 @@ def test_gateway_release_status_is_consistent_on_dashboard_refresh(
         gateway = response.json()[0]
         assert gateway["agent_version"] == agent_version
         assert gateway["ui_version"] == ui_version
-        assert gateway["required_agent_version"] == "0.2.0"
+        assert gateway["required_agent_version"] == "0.2.3"
         assert gateway["required_ui_version"] == "0.2.0"
         assert gateway["gateway_release_status"] == expected_status
         assert gateway["gateway_release_reason"] == expected_status
@@ -1122,14 +1123,37 @@ def test_gateway_release_status_is_consistent_on_dashboard_refresh(
 @pytest.mark.parametrize(
     ("agent_version", "ui_version", "expected_status", "update_required"),
     [
-        ("0.2.4", "current", "0.2.4", False),
-        ("0.2.3", "0.2.4", "0.2.4", False),
-        ("0.2.3", "0.2.3", "Update Needed", True),
-        ("0.2.3", "current", "Update Needed", True),
-        ("", "0.2.4", "0.2.4", False),
+        ("0.2.2", "current", "Update Needed", True),
+        ("0.2.3", "not-installed", "0.2.3", False),
+        ("0.2.4", "e965c9aec9ca1cdd1e5f0254681c02a0873158c2", "0.2.4", False),
+        ("0.2.5", "e965c9aec9ca1cdd1e5f0254681c02a0873158c2", "0.2.5", False),
     ],
 )
-def test_gateway_release_status_accepts_either_current_edge_component_version(
+def test_update_badge_accepts_agent_023_and_newer(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_version: str,
+    ui_version: str,
+    expected_status: str,
+    update_required: bool,
+) -> None:
+    monkeypatch.setattr(main_module.settings, "edge_release_version", "0.2.5")
+    result = main_module._gateway_release_status(agent_version, ui_version)
+    assert result["required_agent_version"] == "0.2.3"
+    assert result["gateway_release_status"] == expected_status
+    assert result["gateway_update_required"] is update_required
+
+
+@pytest.mark.parametrize(
+    ("agent_version", "ui_version", "expected_status", "update_required"),
+    [
+        ("0.2.4", "current", "0.2.4", False),
+        ("0.2.3", "0.2.4", "0.2.3", False),
+        ("0.2.3", "0.2.3", "0.2.3", False),
+        ("0.2.3", "current", "0.2.3", False),
+        ("", "0.2.4", "Update Needed", True),
+    ],
+)
+def test_gateway_release_status_uses_agent_version_only(
     monkeypatch: pytest.MonkeyPatch,
     agent_version: str,
     ui_version: str,
@@ -1147,7 +1171,7 @@ def test_gateway_release_status_accepts_either_current_edge_component_version(
 
     gateway = client.get("/api/ui/gateways", headers=admin_headers()).json()[0]
 
-    assert gateway["required_agent_version"] == "0.2.4"
+    assert gateway["required_agent_version"] == "0.2.3"
     assert gateway["required_ui_version"] == "0.2.4"
     assert gateway["gateway_release_status"] == expected_status
     assert gateway["gateway_release_reason"] == expected_status

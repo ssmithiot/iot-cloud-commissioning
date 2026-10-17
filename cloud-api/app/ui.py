@@ -1661,7 +1661,7 @@ APP_SCRIPT = r"""
     const releaseStatus = gatewayReleaseStatus(gateway);
     const releaseReason = releaseStatus.reason;
     if (!releaseStatus.updateRequired) {
-      return `<strong>${escapeHtml(releaseStatus.requiredAgentVersion)}</strong>`;
+      return `<strong>${escapeHtml(edgeAppVersion(gateway))}</strong>`;
     }
     return `<strong>Update Needed</strong><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
   }
