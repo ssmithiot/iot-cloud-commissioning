@@ -1,3 +1,4 @@
+import os
 from html import escape
 
 
@@ -150,9 +151,15 @@ APP_SCRIPT = r"""
         attributionControl: true,
         preferCanvas: true
       }).setView([39.5, -98.35], 4);
-      window.L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+      const cartoKey = document.querySelector('meta[name="carto-basemap-key"]')?.content || "";
+      const tileUrl = cartoKey
+        ? `https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=${encodeURIComponent(cartoKey)}`
+        : "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+      window.L.tileLayer(tileUrl, {
         maxZoom: 19,
-        attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
+        attribution: cartoKey
+          ? '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; CARTO'
+          : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
       }).addTo(roadMap);
       roadMarkerLayer = window.L.layerGroup().addTo(roadMap);
       addRoadMapShark();
@@ -5153,11 +5160,16 @@ APP_SCRIPT = r"""
 
 
 def _layout(title: str, body: str, page: str, body_attrs: str = "") -> str:
+    carto_key_meta = (
+        f'<meta name="carto-basemap-key" content="{escape(os.getenv("CARTO_BASEMAP_API_KEY", ""), quote=True)}">'
+        if page == "app" else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  {carto_key_meta}
   <title>{title}</title>
   <style>
     :root {{
