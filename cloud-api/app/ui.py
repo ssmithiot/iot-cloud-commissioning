@@ -59,6 +59,7 @@ APP_SCRIPT = r"""
   const edgeResourceHealthMinimumVersion = "0.1.6";
   const edgeAgentReleaseVersion = "0.1.9";
   const edgeUiReleaseVersion = "0.1.9";
+  const minimumCurrentAgentVersion = "0.2.3";
   const edgeReleaseUpdateScope = "full_non_provisioning";
   const leafletCssUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
   const leafletScriptUrl = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
@@ -1635,14 +1636,12 @@ APP_SCRIPT = r"""
         requiredUiVersion: gateway.required_ui_version || edgeUiReleaseVersion
       };
     }
-    const agent = versionAtLeast(gateway.agent_version, edgeAgentReleaseVersion);
-    const ui = versionAtLeast(gateway.ui_version, edgeUiReleaseVersion);
-    const current = agent.current && ui.current;
-    const reason = current ? edgeUiReleaseVersion : "Update Needed";
+    const current = versionAtLeast(gateway.agent_version, minimumCurrentAgentVersion).current;
+    const reason = current ? edgeAppVersion(gateway) : "Update Needed";
     return {
       reason,
       updateRequired: !current,
-      requiredAgentVersion: edgeAgentReleaseVersion,
+      requiredAgentVersion: minimumCurrentAgentVersion,
       requiredUiVersion: edgeUiReleaseVersion
     };
   }
@@ -1668,7 +1667,7 @@ APP_SCRIPT = r"""
     const releaseStatus = gatewayReleaseStatus(gateway);
     const releaseReason = releaseStatus.reason;
     if (!releaseStatus.updateRequired) {
-      return `<strong>${escapeHtml(releaseStatus.requiredAgentVersion)}</strong>`;
+      return `<strong>${escapeHtml(edgeAppVersion(gateway))}</strong>`;
     }
     return `<strong>Update Needed</strong><button type="button" class="button table-command secondary" data-request-update="${escapeHtml(gateway.gateway_id)}">${actionLabel}</button>`;
   }

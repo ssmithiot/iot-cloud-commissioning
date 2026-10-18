@@ -636,6 +636,7 @@ def _scoped_gateway_statement(db: Session, auth: AdminAuthContext):
 
 FULL_NON_PROVISIONING_PUBLIC_SCOPE = "full_non_provisioning"
 FULL_NON_PROVISIONING_STORED_SCOPE = "edge_release"
+MINIMUM_CURRENT_AGENT_VERSION = "0.2.3"
 
 
 def _approved_release_version() -> str:
@@ -701,17 +702,15 @@ def _version_at_least(actual: str | None, required: str) -> tuple[bool, bool]:
 
 def _gateway_release_status(agent_version: str | None, ui_version: str | None) -> dict[str, object]:
     approved_version = _approved_release_version()
-    agent_current, agent_known = _version_at_least(agent_version, approved_version)
-    ui_current, ui_known = _version_at_least(ui_version, approved_version)
-    # The normal operator status intentionally answers one question only.
-    # Component commits and transition details remain diagnostics, not UI text.
-    current = agent_current and ui_current
-    reason = approved_version if current else "Update Needed"
+    # The installed Agent version alone controls the update badge. Older Edge
+    # UIs may report a source commit instead of a release number.
+    current, _ = _version_at_least(agent_version, MINIMUM_CURRENT_AGENT_VERSION)
+    reason = (agent_version or "").strip() if current else "Update Needed"
     return {
         "gateway_release_status": reason,
         "gateway_release_reason": reason,
         "gateway_update_required": not current,
-        "required_agent_version": approved_version,
+        "required_agent_version": MINIMUM_CURRENT_AGENT_VERSION,
         "required_ui_version": approved_version,
     }
 
